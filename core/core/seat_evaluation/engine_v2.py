@@ -17,9 +17,11 @@ from .imu_location_config import (
     get_location_config, get_metrics_for_location,
     get_channel_by_location
 )
+from .metadata_registry import INDICATOR_DEFINITIONS
+from .diagnosis_engine import generate_single_group_diagnosis
 from ..analysis.core_types import (
     EvaluationTrigger, EvaluationResult, LocationEvaluationResult,
-    RiskLevel, INDICATOR_DEFINITIONS, generate_single_group_diagnosis
+    RiskLevel
 )
 from .metadata_registry import get_global_registry, METRIC_THRESHOLDS
 
@@ -317,6 +319,14 @@ class MultiChannelSeatEvaluationEngine(QObject):
         Returns:
             指标值
         """
+        reg = get_global_registry()
+        if not reg.validate_indicator_code(metric_id):
+            logger.warning(
+                f"[MetadataConstraint] 未注册指标代码被调用: {metric_id}, "
+                f"请在元数据管理中心注册该指标"
+            )
+            return float('nan')
+
         ops = self.operator_system
         ax = data_window.get('ax', np.array([]))
         ay = data_window.get('ay', np.array([]))
@@ -611,11 +621,11 @@ class MultiChannelSeatEvaluationEngine(QObject):
         acc_peak = metrics.get('ACC_H_PEAK', 0.0)
         fds = metrics.get('FDS_D', 0.0)
         
-        if hic > 1000 or acc_peak > 20 or fds > 0.5:
+        if hic > 700 or acc_peak > 20 or fds > 1.0:
             return RiskLevel.DANGER
-        elif hic > 500 or acc_peak > 10 or fds > 0.2:
+        elif hic > 500 or acc_peak > 15 or fds > 0.5:
             return RiskLevel.WARNING
-        elif hic > 100 or acc_peak > 5 or fds > 0.05:
+        elif hic > 300 or acc_peak > 10 or fds > 0.2:
             return RiskLevel.CAUTION
         else:
             return RiskLevel.SAFE
@@ -1257,9 +1267,10 @@ class MultiChannelSeatEvaluationEngine(QObject):
 
         for lbl, e_arr, c_arr in [('X', ax_exp, ax_ctrl), ('Y', ay_exp, ay_ctrl), ('Z', az_exp, az_ctrl)]:
             # 降采样到 ~10Hz 避免膨胀（参照专家方案第964行）
-            ds_factor = max(1, int(sr / 10))
-            e_ds = e_arr[::ds_factor]
-            c_ds = c_arr[::ds_factor]
+            rng_axes = np.random.default_rng(42)
+            indices = rng_axes.choice(len(e_arr), size=min(1000, len(e_arr)), replace=False)
+            e_ds = e_arr[indices]
+            c_ds = c_arr[indices]
 
             try:
                 from scipy import stats as scipy_stats
@@ -1304,8 +1315,10 @@ class MultiChannelSeatEvaluationEngine(QObject):
         a_res_exp = np.sqrt(ax_exp**2 + ay_exp**2 + az_exp**2)
         a_res_ctrl = np.sqrt(ax_ctrl**2 + ay_ctrl**2 + az_ctrl**2)
         ds_factor = max(1, int(sr / 10))
-        e_res_ds = a_res_exp[::ds_factor]
-        c_res_ds = a_res_ctrl[::ds_factor]
+        rng_res = np.random.default_rng(42)
+        indices_res = rng_res.choice(len(a_res_exp), size=min(1000, len(a_res_exp)), replace=False)
+        e_res_ds = a_res_exp[indices_res]
+        c_res_ds = a_res_ctrl[indices_res]
         try:
             from scipy import stats as scipy_stats
             t_res, p_res = scipy_stats.ttest_rel(e_res_ds, c_res_ds)

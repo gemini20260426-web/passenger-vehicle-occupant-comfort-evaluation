@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-IMU 专业可视化组件 v3.0 — 车辆动力学监控级别
-专业优化版，包含:
-1. 视窗内动态降采样 (分段极值采样) + 渲染缓存
-2. 固定/自适应 Y 轴范围，可配置视窗时长
-3. 多通道独立显示 + 告警阈值色带
-4. 峰值标记 + 辉光波形渲染
-5. 数据预处理 (低通滤波/巴特沃斯/S-G)
-6. 网格/标签渲染缓存 (QPicture)
-7. 渐变面板背景 + 专业光标提示框
+IMU 专业可视化组件 v2.0 — 车辆动力学监控级别
+优化升级版本，包含:
+1. 视窗内动态降采样 (分段极值采样)
+2. 固定Y轴范围，可配置视窗时长
+3. 多通道独立显示，避免波形重叠
+4. 峰值标记、数据点显示
+5. 数据预处理 (低通滤波)
+6. 高性能渲染优化
 """
 
 import logging
@@ -25,8 +24,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QCheckBox, QScrollArea)
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, Signal
 from PySide6.QtGui import (QFont, QColor, QPainter, QPen, QBrush,
-                           QPainterPath, QLinearGradient, QPolygon,
-                           QPicture)
+                           QPainterPath, QLinearGradient, QPolygon)
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +36,12 @@ FONT_MONO = "Consolas"
 
 CLR_BG = "#010508"
 CLR_PANEL = "#0c1218"
-CLR_PANEL_TOP = "#101820"
-CLR_PANEL_BOT = "#0a0f14"
 CLR_BORDER = "#1a2530"
-CLR_BORDER_GLOW = "#243040"
 CLR_GRID_MAJOR = "#1a2838"
 CLR_GRID_MINOR = "#0f1a25"
-CLR_GRID_TEXT = "#4a5a6a"
 CLR_TEXT = "#d0d8e0"
 CLR_TEXT_DIM = "#506070"
 CLR_ACCENT = "#00b8d4"
-CLR_ACCENT_DIM = "#006678"
 
 CLR_AX = "#ff5252"
 CLR_AY = "#69f0ae"
@@ -59,15 +52,6 @@ CLR_GZ = "#ffd740"
 CLR_SPEED = "#ffffff"
 CLR_WHEEL = "#ff9800"
 CLR_OK = "#4caf50"
-
-CLR_AX_GLOW = "#40ff5252"
-CLR_AY_GLOW = "#4069f0ae"
-CLR_AZ_GLOW = "#40448aff"
-CLR_GX_GLOW = "#4000e5ff"
-CLR_GY_GLOW = "#40ea80fc"
-CLR_GZ_GLOW = "#40ffd740"
-CLR_SPEED_GLOW = "#40ffffff"
-CLR_WHEEL_GLOW = "#40ff9800"
 
 MATLAB_BLUE = "#0072BD"
 MATLAB_RED = "#D95319"
@@ -91,27 +75,24 @@ ALARM_WHEEL_LO = -450
 
 # 默认固定Y轴范围 — 标准模式
 DEFAULT_AX_RANGE = (-4, 4)
-DEFAULT_GYRO_RANGE = (-6, 6)
+DEFAULT_GYRO_RANGE = (-2, 2)
 DEFAULT_SPEED_RANGE = (0, 150)
 DEFAULT_WHEEL_RANGE = (-720, 720)
 
-# 精密模式Y轴范围
+# 精密模式Y轴范围 — 参考脚本建议（座椅振动分析专用，适合已校准数据）
 PRECISION_AX_RANGE = (-1.0, 1.0)
-PRECISION_GYRO_RANGE = (-1.5, 1.5)
+PRECISION_GYRO_RANGE = (-0.5, 0.5)
 
 # 视窗时长选项
 TIME_WINDOW_OPTIONS = [0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]
 
-# 告警色带透明度
-ALARM_BAND_ALPHA = 12
-ALARM_BAND_CRITICAL_ALPHA = 20
-
 
 class _RealtimeButterworth:
-    """实时巴特沃斯低通滤波器
+    """实时巴特沃斯低通滤波器 — 参考imu可视化数据曲线优化参考.py
 
     SAE J211-1 建议座椅振动分析使用 CFC 60 (截止频率 ~100Hz)，
     人体振动感知关注 0-10Hz，此处默认10Hz截止频率 + 2阶滤波。
+    使用 lfilter (因果) + 状态追踪实现实时流式处理。
     """
 
     def __init__(self, cutoff=10.0, fs=100.0, order=2):
@@ -146,7 +127,7 @@ class _RealtimeButterworth:
 
 
 def _filter_low_pass(value, prev, alpha=0.3):
-    """简易EMA低通"""
+    """简易EMA低通（保留兼容，推荐使用 _RealtimeButterworth）"""
     if prev is None:
         return value
     return alpha * value + (1.0 - alpha) * prev
@@ -166,7 +147,7 @@ class SmoothMode(Enum):
     SAVGOL = "Savitzky-Golay"
 
 
-# S-G 系数缓存
+# S-G 系数缓存 — 避免重复计算 pinv
 _sg_coeffs_cache: Dict[Tuple[int, int], List[float]] = {}
 
 
@@ -222,22 +203,20 @@ def _apply_moving_avg(values, window_size=5):
 # 专业数据点类
 # ============================================================
 class DataPoint:
-    __slots__ = ('t', 'v')
-
     def __init__(self, t, v):
         self.t = t
         self.v = v
 
 
 # ============================================================
-# 分段极值采样核心算法 (优化版)
+# 分段极值采样核心算法
 # ============================================================
 class ExtremaDownsampler:
     @staticmethod
     def downsample(data: List[DataPoint], target_points: int,
                    mode: DownsampleMode = DownsampleMode.EXTREMA) -> List[DataPoint]:
         if len(data) <= target_points:
-            return list(data)
+            return data.copy()
 
         if mode == DownsampleMode.EXTREMA:
             return ExtremaDownsampler._downsample_extrema(data, target_points)
@@ -248,87 +227,74 @@ class ExtremaDownsampler:
 
     @staticmethod
     def _downsample_extrema(data: List[DataPoint], target_points: int) -> List[DataPoint]:
-        n = len(data)
-        if n <= target_points:
-            return list(data)
+        if len(data) <= target_points:
+            return data.copy()
 
         result = []
-        window_size = n / target_points
+        window_size = len(data) / target_points
 
         for i in range(target_points):
             start = int(i * window_size)
-            end = min(int((i + 1) * window_size), n - 1)
+            end = min(int((i + 1) * window_size), len(data) - 1)
 
-            if start >= n:
+            if start >= len(data):
                 break
 
-            # 在窗口内一次遍历找极值，避免多次迭代
-            win_min = data[start]
-            win_max = data[start]
-            for j in range(start + 1, end + 1):
-                dp = data[j]
-                if dp.v < win_min.v:
-                    win_min = dp
-                if dp.v > win_max.v:
-                    win_max = dp
+            window = data[start:end + 1]
+            min_val = min(window, key=lambda x: x.v)
+            max_val = max(window, key=lambda x: x.v)
 
-            if win_min.t < win_max.t:
-                result.append(DataPoint(win_min.t, win_min.v))
-                if win_min is not win_max:
-                    result.append(DataPoint(win_max.t, win_max.v))
+            if min_val.t < max_val.t:
+                result.append(min_val)
+                if min_val != max_val:
+                    result.append(max_val)
             else:
-                result.append(DataPoint(win_max.t, win_max.v))
-                if win_min is not win_max:
-                    result.append(DataPoint(win_min.t, win_min.v))
+                result.append(max_val)
+                if min_val != max_val:
+                    result.append(min_val)
 
         return result
 
     @staticmethod
     def _downsample_average(data: List[DataPoint], target_points: int) -> List[DataPoint]:
-        n = len(data)
-        if n <= target_points:
-            return list(data)
+        if len(data) <= target_points:
+            return data.copy()
 
         result = []
-        window_size = n / target_points
+        window_size = len(data) / target_points
 
         for i in range(target_points):
             start = int(i * window_size)
-            end = min(int((i + 1) * window_size), n - 1)
+            end = min(int((i + 1) * window_size), len(data) - 1)
 
-            if start >= n:
+            if start >= len(data):
                 break
 
-            t_sum = 0.0
-            v_sum = 0.0
-            count = end - start + 1
-            for j in range(start, end + 1):
-                t_sum += data[j].t
-                v_sum += data[j].v
+            window = data[start:end + 1]
+            avg_t = sum(d.t for d in window) / len(window)
+            avg_v = sum(d.v for d in window) / len(window)
 
-            result.append(DataPoint(t_sum / count, v_sum / count))
+            result.append(DataPoint(avg_t, avg_v))
 
         return result
 
     @staticmethod
     def _downsample_max_points(data: List[DataPoint], target_points: int) -> List[DataPoint]:
-        n = len(data)
-        if n <= target_points:
-            return list(data)
+        if len(data) <= target_points:
+            return data.copy()
 
-        step = n / target_points
+        step = len(data) / target_points
         result = []
         for i in range(target_points):
             idx = int(i * step)
-            if idx < n:
-                dp = data[idx]
-                result.append(DataPoint(dp.t, dp.v))
+            if idx < len(data):
+                result.append(data[idx])
 
         return result
 
 
 # ============================================================
-# 参数瓦片组件 (增强版 — 含微型趋势线)
+# 参数瓦片组件 (增强版)
 # ============================================================
 class IMUValueTile(QFrame):
     def __init__(self, title, unit, color, parent=None):
@@ -393,8 +359,7 @@ class IMUValueTile(QFrame):
             return ""
         if current is None or math.isnan(current) or math.isinf(current):
             return ""
-        hlist = list(self._history)
-        avg_prev = sum(hlist[-3:-1]) / min(2, len(hlist) - 1)
+        avg_prev = sum(list(self._history)[-3:-1]) / min(2, len(self._history)-1)
         if abs(avg_prev) < 1e-9:
             return ""
         diff_pct = (current - avg_prev) / abs(avg_prev) * 100
@@ -406,7 +371,7 @@ class IMUValueTile(QFrame):
 
     def set_value(self, value, lo=None, hi=None):
         self._value = value
-        if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
+        if value is None or math.isnan(value) or math.isinf(value):
             self._value_label.setText("---")
             self._value_label.setStyleSheet(f"color: {CLR_TEXT_DIM}; border: none; background: transparent;")
             self._trend_label.setText("")
@@ -414,6 +379,7 @@ class IMUValueTile(QFrame):
 
         self._history.append(value)
         arrow = self._trend_arrow(value)
+
         clr = self._alarm_color(value, lo, hi, self._color) if lo is not None and hi is not None else self._color
 
         if abs(value) < 10:
@@ -433,7 +399,6 @@ class IMUValueTile(QFrame):
         self._value_label.setText("---")
         self._value_label.setStyleSheet(f"color: {CLR_TEXT_DIM}; border: none; background: transparent;")
         self._trend_label.setText("")
-
 
 
 class IMUParameterTile(QFrame):
@@ -502,8 +467,7 @@ class IMUParameterTile(QFrame):
             return ""
         if current is None or math.isnan(current) or math.isinf(current):
             return ""
-        hlist = list(self._history)
-        avg_prev = sum(hlist[-3:-1]) / min(2, len(hlist) - 1)
+        avg_prev = sum(list(self._history)[-3:-1]) / min(2, len(self._history)-1)
         if abs(avg_prev) < 1e-9:
             return ""
         diff_pct = (current - avg_prev) / abs(avg_prev) * 100
@@ -515,7 +479,7 @@ class IMUParameterTile(QFrame):
 
     def set_value(self, value, lo=None, hi=None):
         self._value = value
-        if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
+        if value is None or math.isnan(value) or math.isinf(value):
             self._value_label.setText("---")
             self._value_label.setStyleSheet(f"color: {CLR_TEXT_DIM}; border: none; background: transparent;")
             self._trend_label.setText("")
@@ -524,6 +488,7 @@ class IMUParameterTile(QFrame):
         self._history.append(value)
         self._trend_data.append(value)
         arrow = self._trend_arrow(value)
+
         clr = self._alarm_color(value, lo, hi, self._color) if lo is not None and hi is not None else self._color
 
         if abs(value) < 10:
@@ -575,12 +540,10 @@ class IMUParameterTile(QFrame):
         plot_w = w - margin_l - margin_r
         plot_h = plot_y_bot - plot_y_top
 
-        # 辉光线
         path = QPainterPath()
         first = True
-        n_vals = len(vals)
         for i, v in enumerate(vals):
-            x = margin_l + plot_w * i / max(n_vals - 1, 1)
+            x = margin_l + plot_w * i / (len(vals) - 1)
             norm = (v - self._trend_min) / rng
             y = plot_y_bot - plot_h * norm
             if first:
@@ -589,13 +552,8 @@ class IMUParameterTile(QFrame):
             else:
                 path.lineTo(x, y)
 
-        glow = QColor(self._color)
-        glow.setAlpha(35)
-        painter.setPen(QPen(glow, 2.2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(path)
-
         painter.setPen(QPen(QColor(self._color), 1.2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(path)
 
         if vals:
@@ -609,33 +567,15 @@ class IMUParameterTile(QFrame):
 
 
 # ============================================================
-# 着色器辅助
-# ============================================================
-def _glow_color(hex_color: str, alpha: int = 40) -> QColor:
-    c = QColor(hex_color)
-    c.setAlpha(alpha)
-    return c
-
-
-def _panel_gradient(w: int, h: int) -> QLinearGradient:
-    grad = QLinearGradient(0, 0, 0, h)
-    grad.setColorAt(0.0, QColor(CLR_PANEL_TOP))
-    grad.setColorAt(0.5, QColor(CLR_PANEL))
-    grad.setColorAt(1.0, QColor(CLR_PANEL_BOT))
-    return grad
-
-
-# ============================================================
-# 专业波形通道组件 (v3.0 — 含渲染缓存、告警色带、辉光效果)
+# 专业波形通道组件 (含降采样核心)
 # ============================================================
 class IMUWaveformChannel(QWidget):
-    def __init__(self, title, unit, y_range, series_config, alarm_bands=None, parent=None):
+    def __init__(self, title, unit, y_range, series_config, parent=None):
         super().__init__(parent)
         self._title = title
         self._unit = unit
         self._fixed_y_lo, self._fixed_y_hi = y_range
         self._series_config = series_config
-        self._alarm_bands = alarm_bands or []  # [(lo, hi, color, alpha), ...]
         self._buffers: Dict[str, deque] = {}
         self._filtered_buffers: Dict[str, deque] = {}
         self._raw_buffers: Dict[str, deque] = {}
@@ -648,9 +588,8 @@ class IMUWaveformChannel(QWidget):
         self._bias_sample_count = 100
         self._calibration_enabled = False
 
-        self._max_points = 10000
-        self._render_points = 1000
-        self._time_window = None  # None=显示全部, 数值=裁剪最近N秒
+        self._max_points = 2000
+        self._render_points = 100
         self._frozen = False
 
         self._auto_range = False
@@ -678,12 +617,6 @@ class IMUWaveformChannel(QWidget):
         self._mouse_y = -1
         self._cursor_data = {}
         self.setMouseTracking(True)
-
-        # 渲染缓存
-        self._grid_cache: Optional[QPicture] = None
-        self._last_cache_size: Tuple[int, int] = (0, 0)
-        self._last_cache_yrange: Tuple[float, float] = (0, 0)
-        self._dirty = True
 
         self.setMinimumHeight(100)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -722,39 +655,44 @@ class IMUWaveformChannel(QWidget):
                 self._bias_samples[series_name].clear()
 
         calibrated = value - self._bias_offsets[series_name]
-        filtered = self._apply_filter(series_name, calibrated)
-        self._filtered_buffers[series_name].append(DataPoint(t, filtered))
-        self._prev_filtered[series_name] = filtered
-        self._dirty = True
 
-    def _apply_filter(self, series_name, calibrated):
         if self._smooth_mode == SmoothMode.NONE:
-            return calibrated
+            filtered = calibrated
         elif self._smooth_mode == SmoothMode.BUTTERWORTH:
             bw = self._bw_filters.get(series_name)
             if bw and bw.is_ready():
-                return bw.filter(calibrated)
-            return calibrated
+                filtered = bw.filter(calibrated)
+            else:
+                filtered = calibrated
         elif self._smooth_mode == SmoothMode.LOW_PASS:
-            return _filter_low_pass(calibrated, self._prev_filtered.get(series_name), alpha=0.5)
+            filtered = _filter_low_pass(calibrated, self._prev_filtered[series_name], alpha=0.2)
         elif self._smooth_mode == SmoothMode.MOVING_AVG:
             self._raw_buffers[series_name].append(calibrated)
             window = list(self._raw_buffers[series_name])[-self._ma_window:]
-            return sum(window) / len(window)
+            filtered = sum(window) / len(window)
         elif self._smooth_mode == SmoothMode.SAVGOL:
             self._raw_buffers[series_name].append(calibrated)
             window = list(self._raw_buffers[series_name])[-self._sg_window:]
             if len(window) >= self._sg_window:
                 coeffs = _sg_coefficients(self._sg_window, 2)
-                return sum(c * w for c, w in zip(coeffs, window))
-            return calibrated
-        return calibrated
+                filtered = sum(c * w for c, w in zip(coeffs, window))
+            else:
+                filtered = calibrated
+        else:
+            filtered = calibrated
+
+        self._filtered_buffers[series_name].append(DataPoint(t, filtered))
+        self._prev_filtered[series_name] = filtered
 
     def feed_many(self, series_name, t_arr, v_arr):
-        """批量喂入数据（numpy 数组），用于 SQLite 直读高速加载。"""
+        """批量喂入数据（numpy 数组），用于 SQLite 直读高速加载。
+        t_arr: 1D numpy array of timestamps
+        v_arr: 1D numpy array of values (same length as t_arr)
+        """
         if self._frozen or t_arr is None or v_arr is None or len(t_arr) == 0:
             return
 
+        # 初始化系列
         if (series_name not in self._buffers or
                 series_name not in self._bias_offsets or
                 series_name not in self._bias_samples or
@@ -770,26 +708,11 @@ class IMUWaveformChannel(QWidget):
                 self._bw_filters[series_name] = _RealtimeButterworth(
                     cutoff=self._bw_cutoff, fs=self._bw_fs)
 
+        # 降采样：如果数据量超过显示容量，按步长抽取
         step = 1
         n = len(t_arr)
         if n > self._max_points:
             step = max(1, n // self._max_points)
-
-        if not self._bias_calibrated[series_name]:
-            sample_count = min(n, self._bias_sample_count)
-            sample_step = max(1, n // sample_count)
-            bias_sum = 0.0
-            bias_n = 0
-            for i in range(0, n, sample_step):
-                v_raw = float(v_arr[i])
-                if not (math.isnan(v_raw) or math.isinf(v_raw)):
-                    bias_sum += v_raw
-                    bias_n += 1
-                if bias_n >= sample_count:
-                    break
-            if bias_n > 0:
-                self._bias_offsets[series_name] = bias_sum / bias_n
-            self._bias_calibrated[series_name] = True
 
         offset = self._bias_offsets[series_name]
 
@@ -800,13 +723,37 @@ class IMUWaveformChannel(QWidget):
                 continue
 
             v_calib = v_raw - offset
-            filtered = self._apply_filter(series_name, v_calib)
+            dp_raw = DataPoint(t_val, v_raw)
 
-            self._buffers[series_name].append(DataPoint(t_val, v_raw))
+            # 简化滤波：批量加载用 low-pass，避免逐点 BW/SG 开销
+            if self._smooth_mode == SmoothMode.NONE:
+                filtered = v_calib
+            elif self._smooth_mode == SmoothMode.LOW_PASS:
+                filtered = _filter_low_pass(v_calib, self._prev_filtered[series_name], alpha=0.2)
+            elif self._smooth_mode == SmoothMode.BUTTERWORTH:
+                bw = self._bw_filters.get(series_name)
+                if bw and bw.is_ready():
+                    filtered = bw.filter(v_calib)
+                else:
+                    filtered = v_calib
+            elif self._smooth_mode == SmoothMode.MOVING_AVG:
+                self._raw_buffers[series_name].append(v_calib)
+                window = list(self._raw_buffers[series_name])[-self._ma_window:]
+                filtered = sum(window) / len(window)
+            elif self._smooth_mode == SmoothMode.SAVGOL:
+                self._raw_buffers[series_name].append(v_calib)
+                window = list(self._raw_buffers[series_name])[-self._sg_window:]
+                if len(window) >= self._sg_window:
+                    coeffs = _sg_coefficients(self._sg_window, 2)
+                    filtered = sum(c * w for c, w in zip(coeffs, window))
+                else:
+                    filtered = v_calib
+            else:
+                filtered = v_calib
+
+            self._buffers[series_name].append(dp_raw)
             self._filtered_buffers[series_name].append(DataPoint(t_val, filtered))
             self._prev_filtered[series_name] = filtered
-
-        self._dirty = True
 
     def flush(self):
         if self._auto_range:
@@ -828,12 +775,6 @@ class IMUWaveformChannel(QWidget):
     def set_frozen(self, frozen):
         self._frozen = frozen
 
-    def set_time_window(self, tw):
-        """设置时间窗口（秒），None 表示显示全部数据"""
-        self._time_window = tw
-        self._dirty = True
-        self.update()
-
     def clear(self):
         self._buffers.clear()
         self._filtered_buffers.clear()
@@ -851,8 +792,6 @@ class IMUWaveformChannel(QWidget):
             self._target_y_lo = self._y_lo
             self._target_y_hi = self._y_hi
             self._first_update = True
-        self._grid_cache = None
-        self._dirty = True
         self.update()
 
     def set_auto_range(self, enabled):
@@ -863,7 +802,6 @@ class IMUWaveformChannel(QWidget):
         else:
             self._first_update = True
         self._range_update_counter = 0
-        self._grid_cache = None
 
     def toggle_auto_range(self):
         self.set_auto_range(not self._auto_range)
@@ -890,6 +828,7 @@ class IMUWaveformChannel(QWidget):
     def set_calibration_enabled(self, enabled):
         self._calibration_enabled = enabled
         if not enabled:
+            # 不要完全清空字典，而是重置每个序列的偏移量为 0.0
             for series_name in self._bias_offsets:
                 self._bias_offsets[series_name] = 0.0
             for series_name in self._bias_calibrated:
@@ -902,7 +841,6 @@ class IMUWaveformChannel(QWidget):
         if not self._auto_range:
             self._target_y_lo = float(lo)
             self._target_y_hi = float(hi)
-        self._grid_cache = None
 
     def _update_auto_range(self):
         all_vals = []
@@ -926,7 +864,6 @@ class IMUWaveformChannel(QWidget):
 
         self._target_y_lo = new_lo
         self._target_y_hi = new_hi
-        self._grid_cache = None
 
     def _apply_smooth_range(self):
         self._y_lo += (self._target_y_lo - self._y_lo) * self._smooth_factor
@@ -951,7 +888,7 @@ class IMUWaveformChannel(QWidget):
         pw = w - ml - mr
         ph = h - mt - mb
 
-        if self._mouse_x < ml or self._mouse_x > ml + pw or pw <= 0 or ph <= 0:
+        if self._mouse_x < ml or self._mouse_x > ml + pw:
             return
 
         y_lo = self._y_lo
@@ -960,10 +897,12 @@ class IMUWaveformChannel(QWidget):
             return
 
         t_norm = (self._mouse_x - ml) / pw
+        y_norm = 1.0 - (self._mouse_y - mt) / ph
+        cursor_val = y_lo + y_norm * (y_hi - y_lo)
 
         for name in self._series_config:
-            buf = self._filtered_buffers.get(name)
-            if buf is None or len(buf) < 2:
+            buf = self._filtered_buffers.get(name, deque())
+            if len(buf) < 2:
                 continue
             vals = list(buf)
             t_min = vals[0].t
@@ -974,26 +913,14 @@ class IMUWaveformChannel(QWidget):
             nearest = min(vals, key=lambda dp: abs(dp.t - cursor_t))
             self._cursor_data[name] = (nearest.t, nearest.v)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._grid_cache = None
-
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
 
-        # 渐变背景
-        grad = _panel_gradient(w, h)
-        painter.fillRect(self.rect(), grad)
-
-        # 边框 — 外层辉光 + 内层实线
-        painter.setPen(QPen(QColor(CLR_BORDER_GLOW), 2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(0, 0, w - 1, h - 1, 4, 4)
-
-        painter.setPen(QPen(QColor(CLR_BORDER), 1))
-        painter.drawRoundedRect(1, 1, w - 3, h - 3, 3, 3)
+        painter.fillRect(self.rect(), QColor(CLR_PANEL))
+        painter.setPen(QColor(CLR_BORDER))
+        painter.drawRect(0, 0, w - 1, h - 1)
 
         ml = 70
         mt = 22
@@ -1002,163 +929,63 @@ class IMUWaveformChannel(QWidget):
         pw = w - ml - mr
         ph = h - mt - mb
 
-        if pw <= 0 or ph <= 0:
-            painter.end()
-            return
-
-        # 渲染缓存判断
-        cache_size = (w, h)
-        cache_yrange = (self._y_lo, self._y_hi)
-        if (self._grid_cache is None or
-                self._last_cache_size != cache_size or
-                not self._same_range(self._last_cache_yrange, cache_yrange)):
-            self._build_grid_cache(ml, mt, pw, ph)
-            self._last_cache_size = cache_size
-            self._last_cache_yrange = cache_yrange
-
-        # 绘制缓存网格
-        if self._grid_cache:
-            painter.drawPicture(0, 0, self._grid_cache)
-
-        self._draw_alarm_bands(painter, ml, mt, pw, ph)
+        self._draw_grid(painter, ml, mt, pw, ph)
         self._draw_series(painter, ml, mt, pw, ph)
-        self._draw_dynamic_labels(painter, ml, mt, pw, ph)
+        self._draw_labels(painter, ml, mt, pw, ph)
         self._draw_cursor(painter, ml, mt, pw, ph)
         painter.end()
 
-    @staticmethod
-    def _same_range(a, b, tol=1e-6):
-        return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
-
-    def _build_grid_cache(self, ml, mt, pw, ph):
-        pic = QPicture()
-        painter = QPainter(pic)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        y_lo = self._y_lo
-        y_hi = self._y_hi
-
-        # 主网格线
+    def _draw_grid(self, painter, ml, mt, pw, ph):
         for i in range(5):
             y = mt + int(ph * i / 4)
             painter.setPen(QPen(QColor(CLR_GRID_MAJOR), 1))
             painter.drawLine(ml, y, ml + pw, y)
 
-        # 次网格线
         for i in range(11):
             x = ml + int(pw * i / 10)
             painter.setPen(QPen(QColor(CLR_GRID_MINOR), 0.5))
             painter.drawLine(x, mt, x, mt + ph)
 
-        # 零线 — 加粗虚线
-        if y_lo <= 0 <= y_hi and abs(y_hi - y_lo) > 1e-9:
-            y_norm = 1.0 - (0 - y_lo) / (y_hi - y_lo)
+        y_zero = mt + ph * 0.5
+        if self._y_lo <= 0 <= self._y_hi:
+            y_norm = 1.0 - (0 - self._y_lo) / (self._y_hi - self._y_lo)
             y_zero = mt + ph * y_norm
-            pen = QPen(QColor("#406080"), 1.8, Qt.DashLine)
-            pen.setDashPattern([5, 3])
-            painter.setPen(pen)
-            painter.drawLine(ml, int(y_zero), ml + pw, int(y_zero))
 
-        # Y轴刻度标签
-        painter.setPen(QColor(CLR_GRID_TEXT))
-        painter.setFont(QFont(FONT_FAMILY, 7))
-        for i in range(5):
-            y = mt + int(ph * i / 4)
-            val = y_hi - (y_hi - y_lo) * i / 4
-            painter.drawText(QRectF(2, y - 8, ml - 6, 16),
-                           Qt.AlignRight | Qt.AlignVCenter, f"{val:.1f}")
-
-        # 标题
-        painter.setPen(QColor(CLR_ACCENT))
-        painter.setFont(QFont(FONT_FAMILY, 8, QFont.Bold))
-        mode_tag = " [AUTO]" if self._auto_range else ""
-        painter.drawText(QRectF(ml + 4, mt - 2, 200, 16),
-                       Qt.AlignLeft | Qt.AlignVCenter, self._title + mode_tag)
-
-        painter.end()
-        self._grid_cache = pic
-
-    def _draw_alarm_bands(self, painter, ml, mt, pw, ph):
-        """绘制告警阈值色带"""
-        y_lo = self._y_lo
-        y_hi = self._y_hi
-        if abs(y_hi - y_lo) < 1e-9:
-            return
-
-        for band_lo, band_hi, band_color, band_alpha in self._alarm_bands:
-            # 裁剪到可视范围
-            vis_lo = max(band_lo, y_lo)
-            vis_hi = min(band_hi, y_hi)
-            if vis_lo >= vis_hi:
-                continue
-
-            y_norm_top = 1.0 - (vis_hi - y_lo) / (y_hi - y_lo)
-            y_norm_bot = 1.0 - (vis_lo - y_lo) / (y_hi - y_lo)
-            band_y = mt + ph * y_norm_top
-            band_h = ph * (y_norm_bot - y_norm_top)
-
-            color = QColor(band_color)
-            color.setAlpha(band_alpha)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawRect(QRectF(ml, band_y, pw, band_h))
+        painter.setPen(QPen(QColor("#305060"), 1.5, Qt.DashLine))
+        painter.drawLine(ml, int(y_zero), ml + pw, int(y_zero))
 
     def _draw_series(self, painter, ml, mt, pw, ph):
-        """MATLAB 风格渲染：干净细线 + 时间窗口裁剪 + 高精度降采样"""
         y_lo = self._y_lo
         y_hi = self._y_hi
         if abs(y_hi - y_lo) < 1e-9:
             y_hi = y_lo + 1.0
 
         for name, cfg in self._series_config.items():
-            buf = self._filtered_buffers.get(name)
-            if buf is None or len(buf) < 2:
+            buf = self._filtered_buffers.get(name, deque())
+            if len(buf) < 2:
                 continue
 
             vals = list(buf)
+            color = QColor(cfg.get('color', CLR_TEXT))
+            width = cfg.get('width', self._line_width)
 
-            # ── 时间窗口裁剪 ──
-            if self._time_window is not None and self._time_window > 0 and len(vals) >= 2:
-                t_max = vals[-1].t
-                t_cutoff = t_max - self._time_window
-                lo, hi = 0, len(vals) - 1
-                while lo < hi:
-                    mid = (lo + hi) // 2
-                    if vals[mid].t < t_cutoff:
-                        lo = mid + 1
-                    else:
-                        hi = mid
-                vals = vals[lo:]
+            downsampled = ExtremaDownsampler.downsample(
+                vals, self._render_points, self._downsample_mode)
 
-            if len(vals) < 2:
+            if len(downsampled) < 2:
                 continue
 
-            # 降采样：数据少时全量绘制，多时降到像素级精度
-            if len(vals) <= self._render_points:
-                render_data = vals
-            else:
-                render_data = ExtremaDownsampler.downsample(
-                    vals, self._render_points, DownsampleMode.EXTREMA)
-
-            if len(render_data) < 2:
-                continue
-
-            t_min = render_data[0].t
-            t_max = render_data[-1].t
+            t_min = downsampled[0].t
+            t_max = downsampled[-1].t
             if t_max - t_min < 1e-9:
                 t_max = t_min + 1.0
 
-            color_hex = cfg.get('color', CLR_TEXT)
-            color = QColor(color_hex)
-            width = cfg.get('width', self._line_width)
-
-            # ── 主线 (MATLAB: 1.2px 细线，无标记点，无辉光) ──
             path = QPainterPath()
+            fill_path = QPainterPath()
             first = True
-            start_pt = None
-            end_pt = None
+            peak_points = []
 
-            for i, dp in enumerate(render_data):
+            for i, dp in enumerate(downsampled):
                 t_norm = (dp.t - t_min) / (t_max - t_min)
                 x = ml + pw * t_norm
                 y_norm = (dp.v - y_lo) / (y_hi - y_lo)
@@ -1167,47 +994,70 @@ class IMUWaveformChannel(QWidget):
 
                 if first:
                     path.moveTo(x, y)
-                    start_pt = (x, y)
+                    fill_path.moveTo(x, mt + ph)
+                    fill_path.lineTo(x, y)
                     first = False
                 else:
                     path.lineTo(x, y)
-                end_pt = (x, y)
+                    fill_path.lineTo(x, y)
 
-            # 主线
+                if self._show_peaks and (i % 20 == 0 or i == len(downsampled) - 1 or i == 0):
+                    peak_points.append((x, y))
+
+            last_x = ml + pw
+            fill_path.lineTo(last_x, mt + ph)
+            fill_path.closeSubpath()
+
+            fill_color = QColor(color)
+            fill_color.setAlpha(30)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(fill_color)
+            painter.drawPath(fill_path)
+
             painter.setPen(QPen(color, width))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(path)
 
-            # 起点/终点小圆点（仅起止标记）
-            if self._show_peaks and start_pt and end_pt:
-                painter.setPen(QPen(color, 1.0))
-                painter.setBrush(color)
-                painter.drawEllipse(QPointF(*start_pt), 2.5, 2.5)
-                painter.drawEllipse(QPointF(*end_pt), 2.5, 2.5)
+            if self._show_peaks:
+                for (x, y) in peak_points:
+                    painter.setPen(QPen(color, 2))
+                    painter.setBrush(QBrush(color))
+                    painter.drawEllipse(int(x), int(y), 4, 4)
 
-    def _draw_dynamic_labels(self, painter, ml, mt, pw, ph):
-        """绘制动态标签 — 图例和统计信息"""
-        # 图例
+    def _draw_labels(self, painter, ml, mt, pw, ph):
+        y_lo = self._y_lo
+        y_hi = self._y_hi
+
+        painter.setPen(QColor(CLR_TEXT_DIM))
+        painter.setFont(QFont(FONT_FAMILY, 7))
+        for i in range(5):
+            y = mt + int(ph * i / 4)
+            val = y_hi - (y_hi - y_lo) * i / 4
+            painter.drawText(QRectF(2, y - 8, ml - 6, 16), Qt.AlignRight | Qt.AlignVCenter, f"{val:.1f}")
+
+        painter.setPen(QColor(CLR_ACCENT))
+        painter.setFont(QFont(FONT_FAMILY, 8, QFont.Bold))
+        mode_tag = " [AUTO]" if self._auto_range else ""
+        painter.drawText(QRectF(ml + 4, mt - 2, 200, 16), Qt.AlignLeft | Qt.AlignVCenter, self._title + mode_tag)
+
         legend_x = ml + pw - 120
         legend_y = mt + 2
         for name, cfg in self._series_config.items():
             color = QColor(cfg.get('color', CLR_TEXT))
             painter.setPen(color)
             painter.setBrush(color)
-            painter.drawRoundedRect(int(legend_x), int(legend_y + 2), 10, 4, 2, 2)
+            painter.drawRect(int(legend_x), int(legend_y + 2), 10, 4)
             painter.drawText(QRectF(legend_x + 16, legend_y, 60, 12), Qt.AlignLeft, name)
             legend_x += 40
 
-        # 数据点统计
         if self._buffers:
-            first_name = next(iter(self._buffers))
-            buf = self._buffers.get(first_name)
-            if buf is not None and len(buf) > 1:
+            first_name = list(self._buffers.keys())[0]
+            buf = self._buffers.get(first_name, deque())
+            if len(buf) > 1:
                 data_points = len(buf)
                 ds_points = min(self._render_points, data_points)
-                painter.setPen(QColor(CLR_GRID_TEXT))
-                painter.setFont(QFont(FONT_FAMILY, 7))
-                painter.drawText(QRectF(ml + 4, mt + ph + 4, 250, 18), Qt.AlignLeft,
+                painter.setPen(QColor(CLR_TEXT_DIM))
+                painter.drawText(QRectF(ml + 4, mt + ph + 4, 200, 20), Qt.AlignLeft,
                                f"{data_points} pts → {ds_points} pts  |  {self._downsample_mode.value}")
 
     def _draw_cursor(self, painter, ml, mt, pw, ph):
@@ -1219,10 +1069,7 @@ class IMUWaveformChannel(QWidget):
         mx = int(self._mouse_x)
         my = int(self._mouse_y)
 
-        # 十字线 — 发光效果
-        cursor_color = QColor("#60ffffff")
-        painter.setPen(QPen(cursor_color, 1, Qt.DashLine))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#80ffffff"), 1, Qt.DashLine))
         painter.drawLine(mx, mt, mx, mt + ph)
         painter.drawLine(ml, my, ml + pw, my)
 
@@ -1230,6 +1077,9 @@ class IMUWaveformChannel(QWidget):
         y_hi = self._y_hi
         if abs(y_hi - y_lo) < 1e-9:
             return
+
+        y_norm = 1.0 - (my - mt) / ph
+        cursor_y_val = y_lo + y_norm * (y_hi - y_lo)
 
         lines = []
         for name, (t_val, v_val) in self._cursor_data.items():
@@ -1243,7 +1093,7 @@ class IMUWaveformChannel(QWidget):
         font = QFont(FONT_MONO, 8)
         painter.setFont(font)
         line_h = 16
-        padding = 8
+        padding = 6
         max_w = 0
         for name, t_val, v_val, _ in lines:
             text = f"{name}: {v_val:.3f} {self._unit}"
@@ -1261,19 +1111,12 @@ class IMUWaveformChannel(QWidget):
         if box_y < 0:
             box_y = my + 14
 
-        # 提示框阴影
-        shadow_color = QColor(0, 0, 0, 80)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(shadow_color)
-        painter.drawRoundedRect(int(box_x + 2), int(box_y + 2), int(box_w), int(box_h), 5, 5)
-
-        # 提示框主体 — 半透明渐变
-        box_grad = QLinearGradient(box_x, box_y, box_x, box_y + box_h)
-        box_grad.setColorAt(0.0, QColor(24, 30, 42, 240))
-        box_grad.setColorAt(1.0, QColor(16, 20, 30, 245))
-        painter.setBrush(box_grad)
-        painter.setPen(QPen(QColor(CLR_BORDER_GLOW), 1))
-        painter.drawRoundedRect(int(box_x), int(box_y), int(box_w), int(box_h), 5, 5)
+        painter.setBrush(QColor(20, 24, 32, 220))
+        painter.drawRoundedRect(int(box_x), int(box_y), int(box_w), int(box_h), 4, 4)
+        painter.setPen(QColor(CLR_BORDER))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(int(box_x), int(box_y), int(box_w), int(box_h), 4, 4)
 
         for i, (name, t_val, v_val, color) in enumerate(lines):
             ty = box_y + padding + i * line_h
@@ -1288,7 +1131,7 @@ class IMUWaveformChannel(QWidget):
 
 
 # ============================================================
-# 主专业IMU可视化Tab (v3.0)
+# 主专业IMU可视化Tab
 # ============================================================
 class IMUVisualizationTab(QWidget):
     data_received = Signal(dict)
@@ -1299,7 +1142,7 @@ class IMUVisualizationTab(QWidget):
         self._init_data()
         self._init_ui()
         self._init_timers()
-        self.logger.info("IMU 专业可视化 v3.0 初始化完成")
+        self.logger.info("IMU 专业可视化 v2.0 初始化完成")
 
     def _init_data(self):
         self.data_bridge = None
@@ -1319,7 +1162,6 @@ class IMUVisualizationTab(QWidget):
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # ── 顶部控制栏 ──
         top_bar = QWidget()
         top_bar.setStyleSheet(f"background-color: {CLR_BG};")
         top_ctrl = QHBoxLayout(top_bar)
@@ -1329,6 +1171,7 @@ class IMUVisualizationTab(QWidget):
         self.status_label.setFont(QFont(FONT_FAMILY, 10))
         self.status_label.setStyleSheet(f"color: {CLR_TEXT_DIM}; background: transparent;")
         top_ctrl.addWidget(self.status_label)
+
         top_ctrl.addStretch()
 
         top_ctrl.addWidget(QLabel(" 视窗时长:"))
@@ -1400,7 +1243,6 @@ class IMUVisualizationTab(QWidget):
 
         root.addWidget(top_bar)
 
-        # ── 可滚动内容区 ──
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -1414,7 +1256,6 @@ class IMUVisualizationTab(QWidget):
         content_layout.setContentsMargins(10, 8, 10, 4)
         content_layout.setSpacing(6)
 
-        # 即时数值瓦片行
         value_grid = QHBoxLayout()
         value_grid.setSpacing(4)
         value_params = [
@@ -1435,77 +1276,44 @@ class IMUVisualizationTab(QWidget):
             value_grid.addWidget(tile)
         content_layout.addLayout(value_grid)
 
-        # 加速度通道 — 含告警色带
         self.channel_accel = IMUWaveformChannel(
             "加速度", "m/s²", DEFAULT_AX_RANGE,
             {"AX": {"color": CLR_AX, "width": 1.5},
              "AY": {"color": CLR_AY, "width": 1.5},
-             "AZ": {"color": CLR_AZ, "width": 1.5}},
-            alarm_bands=[
-                (ALARM_ACCEL_HI, 20.0, "#ff1744", ALARM_BAND_CRITICAL_ALPHA),
-                (6.0, ALARM_ACCEL_HI, "#ffc107", ALARM_BAND_ALPHA),
-                (-8.0, -6.0, "#ffc107", ALARM_BAND_ALPHA),
-                (-20.0, ALARM_ACCEL_LO, "#ff1744", ALARM_BAND_CRITICAL_ALPHA),
-            ]
+             "AZ": {"color": CLR_AZ, "width": 1.5}}
         )
         self.channel_accel._downsample_mode = DownsampleMode.EXTREMA
         self.channel_accel.setMinimumHeight(150)
         content_layout.addWidget(self.channel_accel)
 
-        # 角速度通道 — 含告警色带
         self.channel_gyro = IMUWaveformChannel(
             "角速度", "rad/s", DEFAULT_GYRO_RANGE,
             {"GX": {"color": CLR_GX, "width": 1.5},
              "GY": {"color": CLR_GY, "width": 1.5},
-             "GZ": {"color": CLR_GZ, "width": 1.5}},
-            alarm_bands=[
-                (ALARM_GYRO_HI, 10.0, "#ff1744", ALARM_BAND_CRITICAL_ALPHA),
-                (3.0, ALARM_GYRO_HI, "#ffc107", ALARM_BAND_ALPHA),
-                (-5.0, -3.0, "#ffc107", ALARM_BAND_ALPHA),
-                (-10.0, ALARM_GYRO_LO, "#ff1744", ALARM_BAND_CRITICAL_ALPHA),
-            ]
+             "GZ": {"color": CLR_GZ, "width": 1.5}}
         )
         self.channel_gyro._downsample_mode = DownsampleMode.EXTREMA
         self.channel_gyro.setMinimumHeight(150)
         content_layout.addWidget(self.channel_gyro)
 
-        # 车速通道
         self.channel_vehicle = IMUWaveformChannel(
             "车速", "km/h", DEFAULT_SPEED_RANGE,
-            {"Speed": {"color": CLR_SPEED, "width": 1.8}},
-            alarm_bands=[
-                (ALARM_SPEED_HI, 200, "#ff1744", ALARM_BAND_CRITICAL_ALPHA),
-                (100, ALARM_SPEED_HI, "#ffc107", ALARM_BAND_ALPHA),
-            ]
+            {"Speed": {"color": CLR_SPEED, "width": 1.8}}
         )
         self.channel_vehicle._downsample_mode = DownsampleMode.EXTREMA
         self.channel_vehicle.setMinimumHeight(150)
         content_layout.addWidget(self.channel_vehicle)
 
-        # 转向角通道
         self.channel_wheel = IMUWaveformChannel(
             "方向盘转向角", "°", DEFAULT_WHEEL_RANGE,
-            {"Wheel": {"color": CLR_WHEEL, "width": 1.8}},
-            alarm_bands=[
-                (ALARM_WHEEL_HI, 900, "#ff1744", ALARM_BAND_CRITICAL_ALPHA),
-                (350, ALARM_WHEEL_HI, "#ffc107", ALARM_BAND_ALPHA),
-                (-450, -350, "#ffc107", ALARM_BAND_ALPHA),
-                (-900, ALARM_WHEEL_LO, "#ff1744", ALARM_BAND_CRITICAL_ALPHA),
-            ]
+            {"Wheel": {"color": CLR_WHEEL, "width": 1.8}}
         )
         self.channel_wheel._downsample_mode = DownsampleMode.EXTREMA
         self.channel_wheel.setMinimumHeight(150)
         content_layout.addWidget(self.channel_wheel)
 
-        # 设置初始时间窗口（默认 5.0s）
-        self.channel_accel.set_time_window(self._time_window)
-        self.channel_gyro.set_time_window(self._time_window)
-        self.channel_vehicle.set_time_window(self._time_window)
-        self.channel_wheel.set_time_window(self._time_window)
-
         content_layout.addStretch()
 
-        # 趋势瓦片网格
         tiles_grid = QGridLayout()
         tiles_grid.setSpacing(4)
         trend_params = [
@@ -1530,7 +1338,6 @@ class IMUVisualizationTab(QWidget):
         scroll_area.setWidget(content_widget)
         root.addWidget(scroll_area, stretch=1)
 
-        # ── 底部信息栏 ──
         info_bar_widget = QWidget()
         info_bar_widget.setStyleSheet(f"background-color: {CLR_BG};")
         info_bar = QHBoxLayout(info_bar_widget)
@@ -1556,9 +1363,8 @@ class IMUVisualizationTab(QWidget):
                 padding: 6px 14px;
                 font-size: 11px;
             }}
-            QPushButton:hover {{ background-color: #1a2a38; border-color: {CLR_ACCENT}; }}
-            QPushButton:pressed {{ background-color: #0f1a25; }}
-            QPushButton:checked {{ background-color: #ffc107; color: #000; border-color: #ffc107; }}
+            QPushButton:hover {{ background-color: #1a2a38; }}
+            QPushButton:checked {{ background-color: #ffc107; color: #000; }}
         """
 
     def _combo_style(self):
@@ -1572,13 +1378,11 @@ class IMUVisualizationTab(QWidget):
                 font-size: 9pt;
             }}
             QComboBox:hover {{ border-color: {CLR_ACCENT}; }}
-            QComboBox::drop-down {{ border: none; }}
             QComboBox QAbstractItemView {{
                 background: {CLR_PANEL};
                 color: {CLR_TEXT};
                 selection-background-color: {CLR_ACCENT};
                 selection-color: #000;
-                border: 1px solid {CLR_BORDER};
             }}
         """
 
@@ -1597,25 +1401,30 @@ class IMUVisualizationTab(QWidget):
             return
         if self.freeze_btn.isChecked():
             return
-        if getattr(self, '_loaded_from_cache', False):
-            return  # BugFix: 缓存模式下数据已通过feed_many直接写入通道，无需render_loop
-
+        
+        # 检查是否有数据要处理
         if not self._ring_buffer:
             return
-
+        
+        # 如果缓冲区有数据但 is_running 是 False，自动启动
         if not self.is_running:
             self.start()
-
-        # 批量处理
-        batch_size = min(len(self._ring_buffer), 100)
-        for _ in range(batch_size):
-            self._apply_record(self._ring_buffer.popleft())
-
+        
+        # 处理一批数据
+        batch = []
+        for _ in range(min(len(self._ring_buffer), 100)):
+            batch.append(self._ring_buffer.popleft())
+        
+        # 应用每一条记录
+        for record in batch:
+            self._apply_record(record)
+        
+        # 总是 flush 所有通道，确保曲线刷新
         self.channel_accel.flush()
         self.channel_gyro.flush()
         self.channel_vehicle.flush()
         self.channel_wheel.flush()
-
+        
         self._fps_counter += 1
 
     def _apply_record(self, record):
@@ -1637,38 +1446,64 @@ class IMUVisualizationTab(QWidget):
         if self._start_time is None:
             self._start_time = t
 
-        t_rel = t - self._start_time  # BugFix: 使用实际时间戳，不再硬编码100Hz合成时间
+        t_rel = self._sample_count * 0.01
+
         self._sample_count += 1
 
-        # 批量更新瓦片值
-        field_map = {
-            'AX': ax, 'AY': ay, 'AZ': az,
-            'Speed': speed, 'Wheel': wheel,
-            'GX': gx, 'GY': gy, 'GZ': gz,
-        }
-        for key, val in field_map.items():
-            if key in self.value_tiles:
-                tile, lo, hi = self.value_tiles[key]
-                tile.set_value(val, lo, hi)
-            if hasattr(self, 'trend_tiles') and key in self.trend_tiles:
-                tile, lo, hi = self.trend_tiles[key]
-                tile.set_value(val, lo, hi)
+        tile_ax, lo_ax, hi_ax = self.value_tiles['AX']
+        tile_ax.set_value(ax, lo_ax, hi_ax)
+        tile_ay, lo_ay, hi_ay = self.value_tiles['AY']
+        tile_ay.set_value(ay, lo_ay, hi_ay)
+        tile_az, lo_az, hi_az = self.value_tiles['AZ']
+        tile_az.set_value(az, lo_az, hi_az)
 
-        # 喂入通道
+        tile_speed, lo_sp, hi_sp = self.value_tiles['Speed']
+        tile_speed.set_value(speed, lo_sp, hi_sp)
+        tile_wheel, lo_wh, hi_wh = self.value_tiles['Wheel']
+        tile_wheel.set_value(wheel, lo_wh, hi_wh)
+
+        tile_gx, lo_gx, hi_gx = self.value_tiles['GX']
+        tile_gx.set_value(gx, lo_gx, hi_gx)
+        tile_gy, lo_gy, hi_gy = self.value_tiles['GY']
+        tile_gy.set_value(gy, lo_gy, hi_gy)
+        tile_gz, lo_gz, hi_gz = self.value_tiles['GZ']
+        tile_gz.set_value(gz, lo_gz, hi_gz)
+
+        if hasattr(self, 'trend_tiles') and self.trend_tiles:
+            tr_ax, _, _ = self.trend_tiles['AX']
+            tr_ax.set_value(ax, lo_ax, hi_ax)
+            tr_ay, _, _ = self.trend_tiles['AY']
+            tr_ay.set_value(ay, lo_ay, hi_ay)
+            tr_az, _, _ = self.trend_tiles['AZ']
+            tr_az.set_value(az, lo_az, hi_az)
+            tr_speed, _, _ = self.trend_tiles['Speed']
+            tr_speed.set_value(speed, lo_sp, hi_sp)
+            tr_wheel, _, _ = self.trend_tiles['Wheel']
+            tr_wheel.set_value(wheel, lo_wh, hi_wh)
+            tr_gx, _, _ = self.trend_tiles['GX']
+            tr_gx.set_value(gx, lo_gx, hi_gx)
+            tr_gy, _, _ = self.trend_tiles['GY']
+            tr_gy.set_value(gy, lo_gy, hi_gy)
+            tr_gz, _, _ = self.trend_tiles['GZ']
+            tr_gz.set_value(gz, lo_gz, hi_gz)
+
         if ax is not None:
             self.channel_accel.feed("AX", ax, t_rel)
         if ay is not None:
             self.channel_accel.feed("AY", ay, t_rel)
         if az is not None:
             self.channel_accel.feed("AZ", az, t_rel)
+
         if gx is not None:
             self.channel_gyro.feed("GX", gx, t_rel)
         if gy is not None:
             self.channel_gyro.feed("GY", gy, t_rel)
         if gz is not None:
             self.channel_gyro.feed("GZ", gz, t_rel)
+
         if speed is not None:
             self.channel_vehicle.feed("Speed", speed, t_rel)
+
         if wheel is not None:
             self.channel_wheel.feed("Wheel", wheel, t_rel)
 
@@ -1676,10 +1511,7 @@ class IMUVisualizationTab(QWidget):
             self.lbl_samples.setText(f"样本: {self._sample_count}")
 
     def _update_fps(self):
-        if getattr(self, '_loaded_from_cache', False):
-            self.lbl_fps.setText("FPS: N/A (静态)")
-        else:
-            self.lbl_fps.setText(f"FPS: {self._fps_counter}")
+        self.lbl_fps.setText(f"FPS: {self._fps_counter}")
         self._fps_counter = 0
 
     def start(self):
@@ -1690,7 +1522,7 @@ class IMUVisualizationTab(QWidget):
 
     def stop(self):
         self.is_running = False
-        self._loaded_from_cache = False
+        self._loaded_from_cache = False  # 重置标记，下次可重新加载
         self.status_label.setText("已停止")
         self.status_label.setStyleSheet(f"color: {CLR_TEXT_DIM}; background: transparent;")
 
@@ -1703,25 +1535,34 @@ class IMUVisualizationTab(QWidget):
         if getattr(self, '_loaded_from_cache', False):
             return
 
+        # 确保数据同时有 t 和 timestamp 字段
         sensor_data = dict(sensor_data)
         if 't' not in sensor_data and 'timestamp' in sensor_data:
             sensor_data['t'] = sensor_data['timestamp']
         if 'timestamp' not in sensor_data and 't' in sensor_data:
             sensor_data['timestamp'] = sensor_data['t']
-
+        
+        # 总是往缓冲区里加数据，不管 is_running（render_loop自己会检查）
         self._ring_buffer.append(sensor_data)
-
+        
+        # 如果 is_running 是 False，但我们收到了数据，自动启动
         if not self.is_running:
             self.start()
 
+    # ─────────── SQLite 直读：一键加载全量数据（替代逐条信号）───────────
+
     def load_from_cache(self, multi_source_cache, start: float = None, end: float = None):
-        """从 MultiSourceCache SQLite 直读全量 IMU 数据，一次性加载到通道。"""
+        """从 MultiSourceCache SQLite 直读全量 IMU 数据，一次性加载到通道。
+        替代逐条 receive_imu_data → ring_buffer → _apply_record 的低效路径。
+        106k 记录从 30 分钟 → 2-5 秒。
+        """
         if multi_source_cache is None:
             self.logger.warning("load_from_cache: multi_source_cache is None")
             return
 
         t0 = time.time()
 
+        # 1. SQLite 直读 → numpy 数组（绕过 json.loads × N）
         t_arr, ax_arr, ay_arr, az_arr, gx_arr, gy_arr, gz_arr, speed_arr, wheel_arr = \
             multi_source_cache.query_imu_numpy(start, end)
 
@@ -1732,12 +1573,14 @@ class IMUVisualizationTab(QWidget):
 
         self.logger.info(f"load_from_cache: 查询到 {n} 条记录，开始批量喂入...")
 
+        # 2. 清空旧数据
         self.channel_accel.clear()
         self.channel_gyro.clear()
         self.channel_vehicle.clear()
         self.channel_wheel.clear()
         self._sample_count = n
 
+        # 3. 批量喂入各通道（feed_many 内部有降采样）
         self.channel_accel.feed_many("AX", t_arr, ax_arr)
         self.channel_accel.feed_many("AY", t_arr, ay_arr)
         self.channel_accel.feed_many("AZ", t_arr, az_arr)
@@ -1747,8 +1590,10 @@ class IMUVisualizationTab(QWidget):
         self.channel_gyro.feed_many("GZ", t_arr, gz_arr)
 
         self.channel_vehicle.feed_many("Speed", t_arr, speed_arr)
+
         self.channel_wheel.feed_many("Wheel", t_arr, wheel_arr)
 
+        # 4. 一次性 flush
         self.channel_accel.flush()
         self.channel_gyro.flush()
         self.channel_vehicle.flush()
@@ -1757,7 +1602,7 @@ class IMUVisualizationTab(QWidget):
         elapsed = time.time() - t0
         self._start_time = t_arr[0]
         self.is_running = True
-        self._loaded_from_cache = True
+        self._loaded_from_cache = True  # 标记已加载，阻止 receive_imu_data 重复加载
         self.status_label.setText(f"已加载 {n} 条 ({elapsed:.1f}s)")
         self.status_label.setStyleSheet(f"color: {CLR_OK}; background: transparent;")
         self.logger.info(f"load_from_cache 完成: {n} 条记录, 耗时 {elapsed:.2f}s")
@@ -1791,7 +1636,7 @@ class IMUVisualizationTab(QWidget):
         self.channel_vehicle.set_calibration_enabled(checked)
         self.channel_wheel.set_calibration_enabled(checked)
         self.calib_btn.setText("🎯 零偏校准: ON" if checked else "🎯 零偏校准: OFF")
-        self.logger.info(f"IMU 零偏校准: {'启用' if checked else '禁用'}")
+        self.logger.info(f"IMU 零偏校准: {'启用' if checked else '禁用'} (采集{self.channel_accel._bias_sample_count}样本计算均值)")
 
     def _toggle_precision(self, checked):
         if checked:
@@ -1801,13 +1646,12 @@ class IMUVisualizationTab(QWidget):
             self.channel_accel.set_y_range(*DEFAULT_AX_RANGE)
             self.channel_gyro.set_y_range(*DEFAULT_GYRO_RANGE)
         self.precision_btn.setText("🔬 精密Y轴: ON" if checked else "🔬 精密Y轴: OFF")
-        self.logger.info(f"IMU 精密Y轴: {'启用' if checked else '禁用'}")
+        self.logger.info(f"IMU 精密Y轴: {'启用 AX=±1.0 GYRO=±0.5' if checked else '禁用 (恢复默认)'}")
 
     def _on_clear(self):
         self._sample_count = 0
         self._start_time = None
         self._ring_buffer.clear()
-        self._loaded_from_cache = False  # BugFix: 重置缓存标志，允许再次接收实时数据
         self.channel_accel.clear()
         self.channel_gyro.clear()
         self.channel_vehicle.clear()
@@ -1816,39 +1660,27 @@ class IMUVisualizationTab(QWidget):
         self.calib_btn.setText("🎯 零偏校准: OFF")
         self.precision_btn.setChecked(False)
         self.precision_btn.setText("🔬 精密Y轴: OFF")
-        self.freeze_btn.setChecked(False)
         if hasattr(self, 'value_tiles') and self.value_tiles:
-            for tile, _, _ in self.value_tiles.values():
+            for key in self.value_tiles:
+                tile, _, _ = self.value_tiles[key]
                 tile.reset()
         if hasattr(self, 'trend_tiles') and self.trend_tiles:
-            for tile, _, _ in self.trend_tiles.values():
+            for key in self.trend_tiles:
+                tile, _, _ = self.trend_tiles[key]
                 tile.reset()
         self.lbl_samples.setText("样本: 0")
         self.lbl_fps.setText("FPS: 0")
-        self.is_running = False
-        self.status_label.setText("就绪")
-        self.status_label.setStyleSheet(f"color: {CLR_TEXT_DIM}; background: transparent;")
         self.logger.info("IMU 可视化已清除")
 
     def _on_time_window_changed(self, idx):
         t = self.time_window_combo.itemData(idx)
         self._time_window = t
         self.lbl_time.setText(f"时间窗口: {t:.1f} s")
-        # 传播到所有波形通道
-        for ch in [self.channel_accel, self.channel_gyro, self.channel_vehicle, self.channel_wheel]:
-            if hasattr(ch, 'set_time_window'):
-                ch.set_time_window(t)
         self.logger.info(f"IMU 时间窗口切换为: {t:.1f} s")
 
     def _on_speed_changed(self, text):
         multiplier = float(text.replace("x", ""))
         self.logger.info(f"IMU 播放速度切换为: {multiplier}x")
-        # 调整渲染定时器间隔（倍速 = 更快的刷新率）
-        base_interval = 33  # ms, 默认 ~30 FPS
-        new_interval = max(5, int(base_interval / multiplier))  # 最低 5ms (~200 FPS)
-        self._render_timer.setInterval(new_interval)
-        self._render_interval = new_interval / 1000.0
-        self.logger.info(f"IMU 渲染间隔: {new_interval}ms")
         if self.data_bridge:
             try:
                 from modules.ui.left_control_panel.utils.data_reader_manager import get_data_reader_manager
@@ -1869,9 +1701,22 @@ class IMUVisualizationTab(QWidget):
     def set_replay_mode(self, enabled):
         """设置回放模式，确保所有控件保持可用状态"""
         self.logger.info(f"IMU 可视化: 已切换到{'回放' if enabled else '实时'}模式")
-        for attr in ['time_window_combo', 'speed_combo', 'smooth_combo',
-                      'calib_btn', 'precision_btn', 'auto_range_btn',
-                      'peaks_btn', 'freeze_btn', 'clear_btn']:
-            widget = getattr(self, attr, None)
-            if widget:
-                widget.setEnabled(True)
+        # 确保所有控件不被禁用，保持可交互状态
+        if hasattr(self, 'time_window_combo'):
+            self.time_window_combo.setEnabled(True)
+        if hasattr(self, 'speed_combo'):
+            self.speed_combo.setEnabled(True)
+        if hasattr(self, 'smooth_combo'):
+            self.smooth_combo.setEnabled(True)
+        if hasattr(self, 'calib_btn'):
+            self.calib_btn.setEnabled(True)
+        if hasattr(self, 'precision_btn'):
+            self.precision_btn.setEnabled(True)
+        if hasattr(self, 'auto_range_btn'):
+            self.auto_range_btn.setEnabled(True)
+        if hasattr(self, 'peaks_btn'):
+            self.peaks_btn.setEnabled(True)
+        if hasattr(self, 'freeze_btn'):
+            self.freeze_btn.setEnabled(True)
+        if hasattr(self, 'clear_btn'):
+            self.clear_btn.setEnabled(True)

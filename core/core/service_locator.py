@@ -7,6 +7,7 @@
 """
 
 import logging
+import threading
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -16,12 +17,14 @@ class ServiceLocator:
     """全局服务注册与查找 — 线程安全的单例"""
 
     _instance: Optional['ServiceLocator'] = None
-    _services: Dict[str, Any] = {}
+    _lock: threading.Lock = threading.Lock()
 
     def __new__(cls) -> 'ServiceLocator':
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._services = {}
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._services = {}
         return cls._instance
 
     def register(self, name: str, service: Any) -> None:

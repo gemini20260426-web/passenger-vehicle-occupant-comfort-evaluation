@@ -61,9 +61,9 @@ ALARM_SPEED_LO = 0
 ALARM_WHEEL_HI = 540
 ALARM_WHEEL_LO = -540
 
-# 默认固定Y轴范围
-DEFAULT_AX_RANGE = (-16, 16)
-DEFAULT_GYRO_RANGE = (-10, 10)
+# 默认固定Y轴范围 — 贴合实际驾驶数据
+DEFAULT_AX_RANGE = (-2.5, 2.5)
+DEFAULT_GYRO_RANGE = (-1.5, 1.5)
 DEFAULT_SPEED_RANGE = (0, 150)
 DEFAULT_WHEEL_RANGE = (-720, 720)
 
@@ -300,17 +300,17 @@ class IMUProWaveformChannel(QWidget):
         self._filtered_buffers: Dict[str, deque] = {}
         self._prev_filtered: Dict[str, float] = {}
 
-        self._max_points = 2000
-        self._render_points = 500
+        self._max_points = 3000
+        self._render_points = 800
         self._frozen = False
 
-        self._auto_range = False
+        self._auto_range = True
         self._y_lo = float(self._fixed_y_lo)
         self._y_hi = float(self._fixed_y_hi)
         self._target_y_lo = self._y_lo
         self._target_y_hi = self._y_hi
-        self._smooth_factor = 0.30
-        self._padding_ratio = 0.10
+        self._smooth_factor = 0.25
+        self._padding_ratio = 0.15
         self._range_update_counter = 0
         self._range_update_interval = 10
 
@@ -625,9 +625,9 @@ class IMUProVisualizer(QWidget):
         top_ctrl.addStretch()
 
         # 功能按钮
-        self.auto_range_btn = QPushButton("📐 自适应Y轴: OFF")
+        self.auto_range_btn = QPushButton("📐 自适应Y轴: ON")
         self.auto_range_btn.setCheckable(True)
-        self.auto_range_btn.setChecked(False)
+        self.auto_range_btn.setChecked(True)
         self.auto_range_btn.setStyleSheet(self._btn_style())
         self.auto_range_btn.clicked.connect(self._toggle_auto_range)
         top_ctrl.addWidget(self.auto_range_btn)
@@ -678,14 +678,20 @@ class IMUProVisualizer(QWidget):
         splitter = QSplitter(Qt.Vertical)
         splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {CLR_BORDER}; }}")
 
-        self.channel_accel = IMUProWaveformChannel(
-            "加速度", "m/s²", DEFAULT_AX_RANGE,
-            {"AX": {"color": CLR_AX, "width": 1.5},
-             "AY": {"color": CLR_AY, "width": 1.5},
+        self.channel_ax = IMUProWaveformChannel(
+            "纵向加速度 AX", "m/s²", DEFAULT_AX_RANGE,
+            {"AX": {"color": CLR_AX, "width": 2.0}}
+        )
+        self.channel_ax._downsample_mode = DownsampleMode.EXTREMA
+        splitter.addWidget(self.channel_ax)
+
+        self.channel_ayaz = IMUProWaveformChannel(
+            "横向/垂向加速度 AY · AZ", "m/s²", (-1.5, 1.5),
+            {"AY": {"color": CLR_AY, "width": 1.5},
              "AZ": {"color": CLR_AZ, "width": 1.5}}
         )
-        self.channel_accel._downsample_mode = DownsampleMode.EXTREMA
-        splitter.addWidget(self.channel_accel)
+        self.channel_ayaz._downsample_mode = DownsampleMode.EXTREMA
+        splitter.addWidget(self.channel_ayaz)
 
         self.channel_gyro = IMUProWaveformChannel(
             "角速度", "rad/s", DEFAULT_GYRO_RANGE,
@@ -783,7 +789,8 @@ class IMUProVisualizer(QWidget):
         for record in batch:
             self._apply_record(record)
 
-        self.channel_accel.flush()
+        self.channel_ax.flush()
+        self.channel_ayaz.flush()
         self.channel_gyro.flush()
         self.channel_vehicle.flush()
         self.channel_wheel.flush()
@@ -833,11 +840,11 @@ class IMUProVisualizer(QWidget):
         tile_gz.set_value(gz, lo_gz, hi_gz)
 
         if ax is not None:
-            self.channel_accel.feed("AX", ax, t_rel)
+            self.channel_ax.feed("AX", ax, t_rel)
         if ay is not None:
-            self.channel_accel.feed("AY", ay, t_rel)
+            self.channel_ayaz.feed("AY", ay, t_rel)
         if az is not None:
-            self.channel_accel.feed("AZ", az, t_rel)
+            self.channel_ayaz.feed("AZ", az, t_rel)
 
         if gx is not None:
             self.channel_gyro.feed("GX", gx, t_rel)
@@ -880,14 +887,16 @@ class IMUProVisualizer(QWidget):
         self._ring_buffer.append(sensor_data)
 
     def _toggle_freeze(self, checked):
-        self.channel_accel.set_frozen(checked)
+        self.channel_ax.set_frozen(checked)
+        self.channel_ayaz.set_frozen(checked)
         self.channel_gyro.set_frozen(checked)
         self.channel_vehicle.set_frozen(checked)
         self.channel_wheel.set_frozen(checked)
         self.status_label.setText("已冻结" if checked else "运行中")
 
     def _toggle_auto_range(self, checked):
-        self.channel_accel.set_auto_range(checked)
+        self.channel_ax.set_auto_range(checked)
+        self.channel_ayaz.set_auto_range(checked)
         self.channel_gyro.set_auto_range(checked)
         self.channel_vehicle.set_auto_range(checked)
         self.channel_wheel.set_auto_range(checked)
@@ -895,7 +904,8 @@ class IMUProVisualizer(QWidget):
         self.logger.info(f"IMU Pro 自适应Y轴: {'启用' if checked else '禁用'}")
 
     def _toggle_peaks(self, checked):
-        self.channel_accel.set_show_peaks(checked)
+        self.channel_ax.set_show_peaks(checked)
+        self.channel_ayaz.set_show_peaks(checked)
         self.channel_gyro.set_show_peaks(checked)
         self.channel_vehicle.set_show_peaks(checked)
         self.channel_wheel.set_show_peaks(checked)
@@ -906,7 +916,8 @@ class IMUProVisualizer(QWidget):
         self._sample_count = 0
         self._start_time = None
         self._ring_buffer.clear()
-        self.channel_accel.clear()
+        self.channel_ax.clear()
+        self.channel_ayaz.clear()
         self.channel_gyro.clear()
         self.channel_vehicle.clear()
         self.channel_wheel.clear()

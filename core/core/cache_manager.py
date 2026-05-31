@@ -17,7 +17,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, List
 from collections import OrderedDict
 
 try:
@@ -54,7 +54,7 @@ class DiskBackedCache:
         self._cache_dir = cache_dir
         self._max_disk_size_mb = max_disk_size_mb
         self._disk_cache_initialized = False
-        self._init_lock = threading.Lock()
+        self._memory_lock = threading.RLock()
         
         # 统计信息
         self._hits = 0
@@ -69,7 +69,7 @@ class DiskBackedCache:
         if self._disk_cache_initialized:
             return
         
-        with self._init_lock:
+        with self._memory_lock:
             if self._disk_cache_initialized:
                 return
             
@@ -95,22 +95,20 @@ class DiskBackedCache:
         
         优先从内存获取，如果不存在则从磁盘获取
         """
-        # 尝试从内存缓存获取
-        if key in self._memory_cache:
-            self._hits += 1
-            # 更新访问顺序（LRU）
-            self._memory_cache.move_to_end(key)
-            return self._memory_cache[key]
+        with self._memory_lock:
+            if key in self._memory_cache:
+                self._hits += 1
+                self._memory_cache.move_to_end(key)
+                return self._memory_cache[key]
         
-        # 尝试从磁盘缓存获取
         if self._disk_cache is not None:
             try:
                 value = self._disk_cache.get(key)
                 if value is not None:
                     self._hits += 1
                     self._disk_reads += 1
-                    # 将数据提升到内存（热数据）
-                    self._set_memory(key, value)
+                    with self._memory_lock:
+                        self._set_memory(key, value)
                     return value
             except Exception as e:
                 logger.error(f"从磁盘缓存获取失败: {e}")
@@ -131,8 +129,8 @@ class DiskBackedCache:
         
         新数据先存入内存，内存满时迁移到磁盘
         """
-        # 先存入内存
-        self._set_memory(key, value)
+        with self._memory_lock:
+            self._set_memory(key, value)
     
     def _set_memory(self, key: str, value: Any):
         """将数据存入内存缓存"""
@@ -152,16 +150,14 @@ class DiskBackedCache:
     
     def _evict_oldest(self):
         """将最旧的数据迁移到磁盘"""
-        if not self._memory_cache:
-            return
+        with self._memory_lock:
+            if not self._memory_cache:
+                return
+            
+            oldest_key, oldest_value = next(iter(self._memory_cache.items()))
         
-        # 获取最旧的项
-        oldest_key, oldest_value = next(iter(self._memory_cache.items()))
-        
-        # 懒加载磁盘缓存
         self._ensure_disk_cache()
         
-        # 迁移到磁盘
         if self._disk_cache is not None:
             try:
                 self._disk_cache.set(oldest_key, oldest_value)
@@ -169,8 +165,8 @@ class DiskBackedCache:
             except Exception as e:
                 logger.error(f"迁移数据到磁盘失败: {e}")
         
-        # 从内存移除
-        del self._memory_cache[oldest_key]
+        with self._memory_lock:
+            del self._memory_cache[oldest_key]
     
     def delete(self, key: str) -> bool:
         """删除缓存数据"""
@@ -251,20 +247,34 @@ class DiskBackedCache:
 
 # 全局缓存实例
 _global_caches: Dict[str, DiskBackedCache] = {}
+_cache_access_order: List[str] = []  # LRU追踪
 
 
-def get_cache(name: str = 'default', **kwargs) -> DiskBackedCache:
+def get_cache(name: str = 'default', max_caches: int = 10, **kwargs) -> DiskBackedCache:
     """获取或创建全局缓存实例
     
     Args:
         name: 缓存名称
+        max_caches: 最大全局缓存数量，超出时淘汰LRU缓存
         **kwargs: 缓存配置参数
     
     Returns:
         DiskBackedCache 实例
     """
+    global _global_caches, _cache_access_order
+    
     if name not in _global_caches:
+        if len(_global_caches) >= max_caches:
+            oldest = _cache_access_order.pop(0)
+            old_cache = _global_caches.pop(oldest)
+            old_cache.close()
+            logger.info(f"LRU淘汰全局缓存: {oldest}")
         _global_caches[name] = DiskBackedCache(**kwargs)
+    
+    if name in _cache_access_order:
+        _cache_access_order.remove(name)
+    _cache_access_order.append(name)
+    
     return _global_caches[name]
 
 
@@ -273,4 +283,15 @@ def close_all_caches():
     for name, cache in _global_caches.items():
         cache.close()
     _global_caches.clear()
+    _cache_access_order.clear()
     logger.info("所有全局缓存已关闭")
+
+
+def clear_global_caches():
+    """显式清理所有全局缓存（含LRU追踪）"""
+    global _global_caches, _cache_access_order
+    for cache in _global_caches.values():
+        cache.close()
+    _global_caches.clear()
+    _cache_access_order.clear()
+    logger.info("所有全局缓存已清理")

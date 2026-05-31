@@ -10,10 +10,11 @@ from typing import Dict, Any, Optional, List, Tuple
 
 import numpy as np
 
+from .metadata_registry import INDICATOR_DEFINITIONS
 from ..analysis.core_types import (
     EvaluationResult, LocationEvaluationResult,
     ComparativeEvaluationResult, ComparativeEvaluationTrigger,
-    TestGroupReport, INDICATOR_DEFINITIONS, RiskLevel
+    TestGroupReport, RiskLevel
 )
 from .imu_location_config import (
     IMU_LOCATION_MAPPING, LOCATION_IDS,

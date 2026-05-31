@@ -201,7 +201,8 @@ class EventTable(QTableWidget):
         ms = int((event.end_time - int(event.end_time)) * 1000)
         self.setItem(row, 0, QTableWidgetItem(f"{t}.{ms:03d}"))
         self.setItem(row, 1, QTableWidgetItem(event.label_cn))
-        self.setItem(row, 2, QTableWidgetItem(event.category.value))
+        cat = event.category.value if hasattr(event.category, 'value') else str(event.category)
+        self.setItem(row, 2, QTableWidgetItem(cat))
         self.setItem(row, 3, QTableWidgetItem(f"{event.duration:.2f}s"))
         self.setItem(row, 4, QTableWidgetItem(f"{event.confidence:.2f}"))
 
@@ -383,7 +384,7 @@ class BehaviorTimelineView(QWidget):
                     ms = int((event.end_time - int(event.end_time)) * 1000)
                     t = f"{t}.{ms:03d}"
                     writer.writerow([
-                        t, event.label_cn, event.category.value,
+                        t, event.label_cn, (event.category.value if hasattr(event.category, 'value') else str(event.category)),
                         f"{event.duration:.2f}", f"{event.confidence:.2f}",
                         RISK_LABELS_CN.get(event.risk_level, "未知"),
                         f"{event.risk_score:.1f}",

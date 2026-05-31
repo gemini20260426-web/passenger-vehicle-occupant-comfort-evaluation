@@ -176,7 +176,7 @@ class DataSourceReader:
     def _read_loop(self):
         """数据读取循环 — 批量推送以降低信号开销"""
         batch = []
-        batch_max = 500
+        batch_max = 100
         signal_filter = None
         if FILTER_AVAILABLE:
             try:

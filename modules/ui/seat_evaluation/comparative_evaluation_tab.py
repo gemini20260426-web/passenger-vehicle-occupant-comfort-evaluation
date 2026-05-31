@@ -95,7 +95,7 @@ class IndicatorDetailDialog(QDialog):
         l.addWidget(t)
         html = (
             f"<table style='font-size:10px;width:100%;'>"
-            f"<tr><td style='color:{LC['text_muted']};width:80px;'>编码</td><td style='color:{LC['text_accent']};font-weight:600;'>{self._meta.indicator_code}</td></tr>"
+            f"<tr><td style='color:{LC['text_muted']};width:80px;'>编码</td><td style='color:{LC['text_accent']};font-weight:600;'>{self._meta.code}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>中文名</td><td>{self._meta.display_name_cn}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>维度</td><td>{self._meta.evaluation_dimension}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>位置</td><td>{', '.join(self._meta.applicable_locations)}</td></tr>"
@@ -164,7 +164,7 @@ class IndicatorDetailDialog(QDialog):
             f"<tr><td style='color:{LC['text_muted']};width:80px;'>通过(pass)</td><td style='color:{LC['success']};font-weight:600;'>{pv}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>警告(warn)</td><td>{wv}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>优秀基线</td><td>{ev}</td></tr>"
-            f"<tr><td style='color:{LC['text_muted']}'>方向</td><td>{self._meta.evaluation_direction.name}</td></tr>"
+            f"<tr><td style='color:{LC['text_muted']}'>方向</td><td>{self._meta.direction.name}</td></tr>"
             f"</table>"
         )
         lb = QLabel(html)
@@ -642,7 +642,7 @@ class ComparativeEvaluationTab(QWidget):
             dim = meta.evaluation_dimension
             grouped.setdefault(dim, []).append(meta)
         for indicators in grouped.values():
-            indicators.sort(key=lambda m: m.indicator_code)
+            indicators.sort(key=lambda m: m.code)
 
         rows = []
         for dim in sorted(grouped.keys(), key=lambda d: dimension_order.get(d, 99)):
@@ -653,7 +653,7 @@ class ComparativeEvaluationTab(QWidget):
         self._indicator_row_map = {}
 
         for row, meta in enumerate(rows):
-            code_item = QTableWidgetItem(meta.indicator_code)
+            code_item = QTableWidgetItem(meta.code)
             code_item.setTextAlignment(Qt.AlignCenter)
             self.comparison_table.setItem(row, 0, code_item)
 
@@ -709,13 +709,13 @@ class ComparativeEvaluationTab(QWidget):
                     background: {LC['accent_light']}; border-color: {LC['accent']};
                 }}
             """)
-            code = meta.indicator_code
+            code = meta.code
             detail_btn.clicked.connect(
                 lambda checked=False, c=code: self._open_indicator_detail(c)
             )
             self.comparison_table.setCellWidget(row, 9, detail_btn)
 
-            self._indicator_row_map[meta.indicator_code] = row
+            self._indicator_row_map[meta.code] = row
 
     def _on_comparison_cell_clicked(self, row: int, col: int):
         if col != 1 and col != 0:

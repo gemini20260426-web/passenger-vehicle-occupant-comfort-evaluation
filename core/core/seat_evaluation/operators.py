@@ -9,6 +9,7 @@ import numpy as np
 from scipy import signal
 from typing import Dict, Any, Optional, Tuple, List
 import logging
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +138,7 @@ class WeightingOperator:
         pass
 
     def apply_weighting_z(self, data: np.ndarray, sample_rate: float) -> np.ndarray:
-        try:
-            return self.apply_weighting_z_via_freq(data, sample_rate)
-        except Exception:
-            return self._apply_iso_weighting_time(data, sample_rate, axis='z')
+        return self.apply_weighting_z_via_freq(data, sample_rate)
 
     def apply_weighting_xy(self, data: np.ndarray, sample_rate: float) -> np.ndarray:
         try:
@@ -149,7 +147,17 @@ class WeightingOperator:
             return self._apply_iso_weighting_time(data, sample_rate, axis='xy')
 
     def _apply_iso_weighting_time(self, data: np.ndarray, sample_rate: float, axis: str = 'z') -> np.ndarray:
-        """时域Wk/Wd加权 (级联Butterworth近似 — 频域实现更精确，仅作回退)"""
+        """时域Wk/Wd加权 (级联Butterworth近似 — 已弃用，仅供参考)
+
+        三个Butterworth级联 ≠ ISO Wk滤波器，频域实现 apply_weighting_z_via_freq 才是正确方法。
+        此方法仅保留用于参考对比，请勿在生产代码中调用。
+        """
+        warnings.warn(
+            "_apply_iso_weighting_time is deprecated. "
+            "Use apply_weighting_z_via_freq instead. "
+            "Three-cascade Butterworth is NOT equivalent to ISO Wk filter.",
+            DeprecationWarning, stacklevel=2
+        )
         if len(data) < 4:
             return data
 
@@ -184,8 +192,8 @@ class WeightingOperator:
             f < 0.5:   W = 0.5
             0.5≤f<2:   W = f
             2≤f<5:     W = 2
-            5≤f<16:    W = 2 × 5/f
-            16≤f<80:   W = 2 × 5/16 × 16/f
+            5≤f<16:    W = 10/f
+            16≤f<80:   W = 50/(f²)的平方根 = √50 / f ≈7.071/f
             f ≥ 80:    W = 0
 
         Returns: PSD_weighted = PSD × W(f)²
@@ -199,9 +207,9 @@ class WeightingOperator:
             elif f < 5.0:
                 w = 2.0
             elif f < 16.0:
-                w = 2.0 * (5.0 / f)
+                w = 10.0 / f
             elif f < 80.0:
-                w = 2.0 * (5.0 / 16.0) * (16.0 / f)
+                w = np.sqrt(50.0) / f
             else:
                 w = 0.0
             weighted[i] = psd[i] * (w ** 2)
@@ -215,7 +223,7 @@ class WeightingOperator:
             0.5≤f<2:   W = f/0.5
             2≤f<5:     W = 1.0
             5≤f<16:    W = 5/f
-            16≤f<80:   W = 5/16 × 16/f
+            16≤f<80:   W = 25/(f²)的平方根 = 5/f
             f ≥ 80:    W = 0
 
         Returns: PSD_weighted = PSD × W(f)²
@@ -231,7 +239,7 @@ class WeightingOperator:
             elif f < 16.0:
                 w = 5.0 / f
             elif f < 80.0:
-                w = (5.0 / 16.0) * (16.0 / f)
+                w = 5.0 / f
             else:
                 w = 0.0
             weighted[i] = psd[i] * (w ** 2)
@@ -631,7 +639,12 @@ class FDSOperator:
 
     加速度-应力转换: 对于线性弹性系统，应力 σ ∝ 加速度 a
     转换因子 c_stress = m_eff / A_eff，其中 m_eff 为有效质量，A_eff 为有效截面积
-    默认 c_stress=1.0 保留相对比较能力，如需绝对损伤值请设置实际转换因子
+
+    c_stress 参数说明:
+        c_stress=1.0:       加速度直接代入S-N曲线，仅适用于相对比较（默认）
+        c_stress≈10-50:    钢材部件近似应力转换（根据截面/质量，Pa·s²/m）
+        c_stress用户自定义: 由有限元或实验标定获取
+        精确应力转换请参考 ISO 12108 进行材料级标定
     """
 
     def __init__(self, b: float = 8.0, k: float = 1.0, c_stress: float = 1.0):
@@ -875,23 +888,39 @@ class ISO2631_5_Operator:
             ay_h = ay
             az_h = ax * st + az * ct
 
-            omega_n = 2.0 * np.pi * 9.85 * np.sqrt(75.0 / self.weight_kg)
+            omega_n = 2.0 * np.pi * np.sqrt(52430.0 / self.weight_kg)
             zeta_val = 0.23 * np.sqrt(self.weight_kg / 75.0)
 
             sys_h = signal.lti([0.0, 1.0], [1.0, 31.4, 400.0])
             sys_h_d = signal.cont2discrete((sys_h.num, sys_h.den), dt, method='bilinear')
             sys_h_d = signal.dlti(*sys_h_d[:2], dt=dt)
-            _, a_lx, _ = signal.dlsim(sys_h_d, ax_h)
-            _, a_ly, _ = signal.dlsim(sys_h_d, ay_h)
+            dlx = signal.dlsim(sys_h_d, ax_h)
+            if len(dlx) == 3:
+                _, a_lx, _ = dlx
+            else:
+                _, a_lx = dlx
+            dly = signal.dlsim(sys_h_d, ay_h)
+            if len(dly) == 3:
+                _, a_ly, _ = dly
+            else:
+                _, a_ly = dly
+            a_lx = np.asarray(a_lx).flatten()
+            a_ly = np.asarray(a_ly).flatten()
 
             a_lz = np.zeros(n)
             disp, vel = 0.0, 0.0
             for i in range(1, n):
                 u_z = -az_h[i]
                 k_mod = 1.0 + 2.0 * (abs(disp) * 1000) if disp < 0 else 1.0
-                acc_spinal = u_z - (2.0 * zeta_val * omega_n * vel) - (k_mod * omega_n ** 2 * disp)
+                acc_spinal = u_z - (2.0 * zeta_val * omega_n * vel) - (k_mod * omega_n * omega_n * disp)
+                if not np.isfinite(acc_spinal):
+                    acc_spinal = 0.0
                 vel += acc_spinal * dt
+                if not np.isfinite(vel):
+                    vel = 0.0
                 disp += vel * dt
+                if not np.isfinite(disp):
+                    disp = 0.0
                 a_lz[i] = acc_spinal
 
             from scipy.signal import find_peaks

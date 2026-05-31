@@ -7,12 +7,14 @@
 
 import numpy as np
 import logging
+import warnings
 from typing import Dict, Any, Optional, List
 from PySide6.QtCore import QObject, Signal
 
 from .operators import OperatorSystem
+from .metadata_registry import INDICATOR_DEFINITIONS, METRIC_THRESHOLDS, get_global_registry
 from ..analysis.core_types import (
-    EvaluationTrigger, EvaluationResult, RiskLevel, INDICATOR_DEFINITIONS
+    EvaluationTrigger, EvaluationResult, RiskLevel
 )
 
 logger = logging.getLogger(__name__)
@@ -20,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 class SeatEvaluationEngine(QObject):
     """座椅评测引擎核心"""
-    
+
+    _DEPRECATED = True
+
     evaluation_started = Signal(dict)
     evaluation_completed = Signal(dict)
     metric_calculated = Signal(dict)
@@ -118,12 +122,9 @@ class SeatEvaluationEngine(QObject):
                 'sample_rate': self.default_sample_rate
             }
             
-            # 如果数据为空，生成一些模拟数据用于测试
             if len(data_window['ax']) == 0:
-                n_samples = int((window_config.get('pre', 0.5) + window_config.get('post', 1.5)) * self.default_sample_rate)
-                data_window['ax'] = np.random.randn(n_samples) * 0.5
-                data_window['ay'] = np.random.randn(n_samples) * 0.3
-                data_window['az'] = np.random.randn(n_samples) * 1.0 + 1.0
+                logger.warning("数据为空，无法提取数据窗口")
+                return None
             
             return data_window
             
@@ -167,14 +168,39 @@ class SeatEvaluationEngine(QObject):
                                 data_window: Dict[str, Any]) -> float:
         """
         计算单个指标
-        
+
+        NOTE: 本V1引擎的指标计算为简化实现，存在已知缺陷。
+        权威实现请参见 engine_v2.py 中的 MultiChannelSeatEvaluationEngine._calculate_single_metric，
+        该版本包含 CFC 滤波(SAE J211-1)、相干性检查、样本量校验等完整修正。
+
         Args:
             metric_id: 指标ID
             data_window: 数据窗口
-            
+
         Returns:
             指标值
         """
+        warnings.warn(
+            "SeatEvaluationEngine._calculate_single_metric is deprecated. "
+            "Use MultiChannelSeatEvaluationEngine from engine_v2.py instead.",
+            DeprecationWarning, stacklevel=2
+        )
+
+        logger.warning(
+            "使用V1引擎(SeatEvaluationEngine)的 _calculate_single_metric 计算指标 %s，"
+            "该实现为简化版本，存在已知缺陷。建议使用 engine_v2.py 中的 "
+            "MultiChannelSeatEvaluationEngine 获取正确的计算结果。",
+            metric_id
+        )
+
+        reg = get_global_registry()
+        if not reg.validate_indicator_code(metric_id):
+            logger.warning(
+                f"[MetadataConstraint] 未注册指标代码被调用: {metric_id}, "
+                f"请在元数据管理中心注册该指标"
+            )
+            return float('nan')
+
         ops = self.operator_system
         ax = data_window.get('ax', np.array([]))
         ay = data_window.get('ay', np.array([]))
@@ -183,38 +209,60 @@ class SeatEvaluationEngine(QObject):
         
         # 原有频域指标
         if metric_id == 'SEAT_Z':
-            # 座椅垂直加速度 RMS (ISO 2631-1 加权)
-            weighted = ops.weighting.apply_weighting_z(az, sr)
-            return np.sqrt(np.mean(weighted**2))
+            floor_az = data_window.get('floor_az', None)
+            if floor_az is not None and len(floor_az) > 0:
+                f_seat, psd_seat = ops.psd.compute(az, sr, nperseg=min(1024, len(az)))
+                f_floor, psd_floor = ops.psd.compute(floor_az, sr, nperseg=min(1024, len(floor_az)))
+                psd_seat_w = ops.weighting.apply_weighting_z_psd(psd_seat, f_seat)
+                psd_floor_w = ops.weighting.apply_weighting_z_psd(psd_floor, f_floor)
+                integral_seat = np.trapz(psd_seat_w, f_seat)
+                integral_floor = np.trapz(psd_floor_w, f_floor)
+                if integral_floor > 0:
+                    return float(np.sqrt(integral_seat / integral_floor))
+            weighted = ops.weighting.apply_weighting_z_via_freq(az, sr)
+            return float(np.sqrt(np.mean(weighted**2)))
         
         elif metric_id == 'SEAT_XY':
-            # 座椅水平加速度 RMS (ISO 2631-1 加权)
             xy = ops.vector.synthesize_xy(ax, ay)
-            weighted = ops.weighting.apply_weighting_xy(xy, sr)
-            return np.sqrt(np.mean(weighted**2))
+            floor_axy = data_window.get('floor_axy', None)
+            if floor_axy is not None and len(floor_axy) > 0:
+                f_seat, psd_seat = ops.psd.compute(xy, sr, nperseg=min(1024, len(xy)))
+                f_floor, psd_floor = ops.psd.compute(floor_axy, sr, nperseg=min(1024, len(floor_axy)))
+                psd_seat_w = ops.weighting.apply_weighting_xy_psd(psd_seat, f_seat)
+                psd_floor_w = ops.weighting.apply_weighting_xy_psd(psd_floor, f_floor)
+                integral_seat = np.trapz(psd_seat_w, f_seat)
+                integral_floor = np.trapz(psd_floor_w, f_floor)
+                if integral_floor > 0:
+                    return float(np.sqrt(integral_seat / integral_floor))
+            weighted = ops.weighting.apply_weighting_xy_via_freq(xy, sr)
+            return float(np.sqrt(np.mean(weighted**2)))
         
         elif metric_id == 'VDV_Z':
-            # 垂直振动剂量值 (VDV = (∫a(t)^4 dt)^(1/4))
-            vdv = np.power(np.mean(az**4) * len(az)/sr, 0.25)
+            # 垂直振动剂量值 (VDV = (∫a_w(t)^4 dt)^(1/4)), a_w是Wk加权后信号
+            az_cfc = ops.cfc.filter(az, sr) if len(az) >= 4 else az
+            az_w = ops.weighting.apply_weighting_z_via_freq(az_cfc, sr)
+            dt = 1.0 / sr
+            vdv = np.power(np.sum(az_w**4) * dt, 0.25)
             return float(vdv)
         
         elif metric_id == 'TR_Z':
-            # 垂直传递率 (简化)
-            floor_accel = data_window.get('floor_accel', None)
-            if floor_accel is not None and len(floor_accel) > 0 and np.std(floor_accel) > 0:
-                return float(np.std(az) / np.std(floor_accel))
-            # 无地板数据时返回无效标记
-            return np.nan
+            floor_az = data_window.get('floor_az', None)
+            if floor_az is not None and len(floor_az) > 0 and len(az) > 0:
+                tf_result = ops.csd.transfer_function_db(
+                    floor_az, az, sr, nperseg=min(1024, len(az)))
+                if tf_result.get('TR_peak_dB', 0.0) != 0.0:
+                    return float(tf_result['TR_peak_dB'])
+            if len(az) > 0 and len(data_window.get('floor_az', az)) > 0:
+                return float(np.std(az) / (np.std(data_window.get('floor_az', az)) + 0.001))
+            return 1.0
         
         elif metric_id == 'AW_Z':
-            # 垂直加权加速度
-            weighted = ops.weighting.apply_weighting_z(az, sr)
+            weighted = ops.weighting.apply_weighting_z_via_freq(az, sr)
             return float(np.sqrt(np.mean(weighted**2)))
         
         elif metric_id == 'AW_XY':
-            # 水平加权加速度
             xy = ops.vector.synthesize_xy(ax, ay)
-            weighted = ops.weighting.apply_weighting_xy(xy, sr)
+            weighted = ops.weighting.apply_weighting_xy_via_freq(xy, sr)
             return float(np.sqrt(np.mean(weighted**2)))
         
         elif metric_id == 'OVTV':
@@ -320,7 +368,12 @@ class SeatEvaluationEngine(QObject):
                 disp = self.operator_system.integration.integrate_to_displacement(az, sr)
                 return float(np.max(np.abs(disp)))
             return 0.0
-        
+
+        logger.warning(
+            "V1引擎 _calculate_single_metric 碰到未知指标 %s，返回 0.0。"
+            "请检查该指标是否已在 engine_v2.py 中实现。",
+            metric_id
+        )
         return 0.0
     
     def _calculate_overall_score(self, metrics: Dict[str, float]) -> float:
@@ -350,18 +403,36 @@ class SeatEvaluationEngine(QObject):
             'ACC_PEAK': 0.05,
         }
         
+        def _threshold_score(value, thresholds):
+            excellent = thresholds.get('excellent')
+            good = thresholds.get('good')
+            fair = thresholds.get('fair')
+            poor = thresholds.get('poor')
+            if excellent is not None and value <= excellent:
+                return 95.0 + (value / max(excellent, 0.001)) * 5.0
+            if good is not None and value <= good:
+                return 90.0 - (value - excellent) / max(good - excellent, 0.001) * 20.0
+            if fair is not None and value <= fair:
+                return 70.0 - (value - good) / max(fair - good, 0.001) * 20.0
+            if poor is not None and value <= poor:
+                return max(0.0, 50.0 - (value - fair) / max(poor - fair, 0.001) * 50.0)
+            fair_val = fair if fair is not None else value
+            return max(0.0, 50.0 - (value - fair_val) / max(fair_val, 0.001) * 50.0)
+
         total_weight = 0.0
         weighted_score = 0.0
-        
+
         for metric_id, weight in weights.items():
             if metric_id in metrics:
-                # 归一化到0-100分数 (简化)
                 value = metrics[metric_id]
-                # 假设越小越好的指标，反向评分
-                normalized_score = max(0.0, min(100.0, 100.0 - value * 10.0))
+                thresholds_entry = METRIC_THRESHOLDS.get(metric_id, {})
+                if thresholds_entry:
+                    normalized_score = _threshold_score(value, thresholds_entry)
+                else:
+                    normalized_score = max(0.0, min(100.0, 100.0 - value * 10.0))
                 weighted_score += normalized_score * weight
                 total_weight += weight
-        
+
         if total_weight > 0:
             return weighted_score / total_weight
         return 50.0
@@ -381,11 +452,11 @@ class SeatEvaluationEngine(QObject):
         acc_peak = metrics.get('ACC_H_PEAK', 0.0)
         fds = metrics.get('FDS_D', 0.0)
         
-        if hic > 1000 or acc_peak > 20 or fds > 0.5:
+        if hic > 700 or acc_peak > 20 or fds > 1.0:
             return RiskLevel.DANGER
-        elif hic > 500 or acc_peak > 10 or fds > 0.2:
+        elif hic > 500 or acc_peak > 15 or fds > 0.5:
             return RiskLevel.WARNING
-        elif hic > 100 or acc_peak > 5 or fds > 0.05:
+        elif hic > 300 or acc_peak > 10 or fds > 0.2:
             return RiskLevel.CAUTION
         else:
             return RiskLevel.SAFE

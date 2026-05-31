@@ -1,15 +1,15 @@
 {
   "version": "1.0",
-  "timestamp": 1780200653.660568,
+  "timestamp": 1780249751.841902,
   "data_sources": {
-    "e0772a99": {
-      "id": "e0772a99",
-      "name": "02",
+    "1b71a564": {
+      "id": "1b71a564",
+      "name": "CAN sm",
       "type": "CAN",
       "enabled": true,
       "connection": {
         "adapter": "文件读取",
-        "file_path": "D:/UI重构_全量备份_20250824_233403/260508_0939/2026_05_08_104344_ID0001.txt",
+        "file_path": "C:/Users/YR/Downloads/simulated_10imu_CAN_raw.txt",
         "file_type": "TXT",
         "tested": false
       },

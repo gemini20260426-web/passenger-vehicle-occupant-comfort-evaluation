@@ -109,6 +109,7 @@ class EvaluationQueue(QObject):
         self._queue: deque = deque()
         self._completed_ids: Set[str] = set()
         self._active_group_tags: List[str] = ['experimental', 'control']
+        self._evaluated_windows: Set[tuple] = set()
         logger.info("评测队列引擎初始化完成")
 
     def set_active_groups(self, group_tags: List[str]):
@@ -227,6 +228,25 @@ class EvaluationQueue(QObject):
         self._trip_summary.compute()
         self.trip_summary_ready.emit(self._trip_summary)
 
+    def _has_overlap(self, start_ts: float, end_ts: float) -> bool:
+        threshold = 0.5
+        for window in self._evaluated_windows:
+            ws, we = window
+            overlap_start = max(start_ts, ws)
+            overlap_end = min(end_ts, we)
+            if overlap_end > overlap_start:
+                overlap_duration = overlap_end - overlap_start
+                this_duration = end_ts - start_ts
+                if this_duration > 0 and overlap_duration / this_duration > threshold:
+                    return True
+        return False
+
+    def _mark_evaluated(self, start_ts: float, end_ts: float):
+        self._evaluated_windows.add((start_ts, end_ts))
+
+    def clear_dedup_cache(self):
+        self._evaluated_windows.clear()
+
     def get_records_by_type(self, event_type: str) -> List[EventEvaluationRecord]:
         return [r for r in self._records.values() if r.event_type == event_type]
 
@@ -279,6 +299,10 @@ class EvaluationQueue(QObject):
         added = 0
         for r in records:
             if r.status not in ('evaluating',) and r.event_id not in self._queue:
+                if not r.is_evaluated and self._has_overlap(r.start_ts, r.end_ts):
+                    logger.debug(f"跳过重叠窗口记录: {r.event_id} "
+                                 f"({r.start_ts:.3f}-{r.end_ts:.3f})")
+                    continue
                 self._queue.append(r.event_id)
                 added += 1
         if added == 0:
@@ -307,6 +331,8 @@ class EvaluationQueue(QObject):
             return
 
         self._evaluate_single(record)
+        if record.status == 'evaluated':
+            self._mark_evaluated(record.start_ts, record.end_ts)
         self._batch_completed += 1
 
         total = len(self._queue) + len(self._completed_ids)

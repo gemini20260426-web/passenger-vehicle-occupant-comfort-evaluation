@@ -24,21 +24,24 @@ from .layer3_maneuver_segmentation.event_detector import DrivingEventDetector
 from .layer3_maneuver_segmentation.temporal_consistency import TemporalConsistencyValidator
 from .layer4_behavior_classification.hybrid_classifier import HybridBehaviorClassifier
 from .layer5_risk_assessment.risk_assessor import RiskAssessor
+from ..seat_evaluation.imu_naming import get_primary_imu_names, is_primary_imu
 
 
 class AnalysisPipeline:
-    # 驾驶行为分析主IMU通道（硬约束，与DataBridge.PRIMARY_IMU_NAME保持一致）
-    # 状态机和事件生成必须且仅使用此通道数据
-    PRIMARY_IMU_NAME = 'IMU7_座椅底部-1'
+    PRIMARY_IMU_NAMES = get_primary_imu_names()
 
-    def __init__(self, vehicle_config: Optional[VehicleConfig] = None, primary_imu_name: str = None):
+    def __init__(self, vehicle_config: Optional[VehicleConfig] = None, primary_imu_names: list = None):
         self._logger = logging.getLogger(__name__)
 
         if isinstance(vehicle_config, dict):
-            vehicle_config = VehicleConfig()
+            vc = VehicleConfig()
+            for key in ['mass', 'iz', 'wheelbase', 'track_width']:
+                if key in vehicle_config:
+                    setattr(vc, key, vehicle_config[key])
+            vehicle_config = vc
         self._vehicle_config = vehicle_config or VehicleConfig()
 
-        self.PRIMARY_IMU_NAME = primary_imu_name or AnalysisPipeline.PRIMARY_IMU_NAME
+        self._primary_imu_names = primary_imu_names or list(AnalysisPipeline.PRIMARY_IMU_NAMES)
 
         self._signal_processor = SignalProcessor(self._vehicle_config)
         self._feature_extractor = FeatureExtractor(self._vehicle_config)
@@ -57,13 +60,10 @@ class AnalysisPipeline:
         self._stream_start_time = 0.0
         self._processed_count = 0
 
-        # ── 流式效率优化 ──
-        # 降采样: 每 processing_interval 秒触发一次检测 (专家策略: 0.1s)
         self._processing_interval = 0.1
         self._last_process_time = -1.0
 
-        # 环形缓冲区: pre-allocated numpy, 替换 deque 避免 list→array 转换开销
-        self._ring_max = 128  # 最近 128 帧 (~5s @ 25Hz after decimation)
+        self._ring_max = 128
         self._ring_t = np.full(self._ring_max, np.nan)
         self._ring_speed = np.full(self._ring_max, np.nan)
         self._ring_wheel = np.full(self._ring_max, np.nan)
@@ -71,25 +71,40 @@ class AnalysisPipeline:
         self._ring_pos = 0
         self._ring_count = 0
 
-        # 增量 VDV 累积 (ISO 2631-1)
         self._vdv_sum4 = 0.0
         self._peak_accel = 0.0
+
+    def _is_primary_imu(self, imu_name: str) -> bool:
+        if not imu_name:
+            return True
+        return is_primary_imu(imu_name)
 
     def process_frame(self, raw_data: Dict[str, Any]) -> FrameResult:
         self._frame_count += 1
         self._processed_count += 1
 
         imu_name = raw_data.get('_source_name', '') or raw_data.get('_imu_name', '')
-        if imu_name and imu_name != self.PRIMARY_IMU_NAME:
-            if self._processed_count <= 3:
-                self._logger.warning(
-                    f"[PIPELINE] 拒绝非主IMU通道数据: {imu_name} (期望: {self.PRIMARY_IMU_NAME})"
-                )
+        if not self._is_primary_imu(imu_name):
+            self._logger.debug(
+                f"[PIPELINE] 非主IMU通道数据(跳过驾驶状态检测, 信号数据已转发): {imu_name}"
+            )
+            frame = self._signal_processor.process(raw_data)
             return FrameResult(
-                timestamp=raw_data.get('timestamp', 0),
+                timestamp=frame.timestamp,
                 state=DrivingState.UNKNOWN,
                 features=None,
                 raw_data=raw_data,
+                ax=frame.ax,
+                ay=frame.ay,
+                az=frame.az,
+                gx=frame.gx,
+                gy=frame.gy,
+                gz=frame.gz,
+                speed=frame.speed,
+                wheel=frame.wheel,
+                loc1=frame.loc1,
+                loc2=frame.loc2,
+                quality=frame.quality,
             )
 
         frame = self._signal_processor.process(raw_data)
@@ -112,10 +127,11 @@ class AnalysisPipeline:
             # 专家级 vehicle_accel: diff(speed[-5:]) / dt / 3.6
             if self._ring_count >= 3:
                 n = min(5, self._ring_count)
-                valid = ~np.isnan(self._ring_speed)
+                t_slice, sp_slice, _, _ = self._get_ring_slice()
+                valid = ~np.isnan(sp_slice)
                 if valid.sum() >= 3:
-                    speeds = self._ring_speed[valid][-n:]
-                    times = self._ring_t[valid][-n:]
+                    speeds = sp_slice[valid][-n:]
+                    times = t_slice[valid][-n:]
                     if len(speeds) >= 2 and times[-1] > times[-2]:
                         dt_actual = np.median(np.diff(times))
                         if dt_actual > 0:
@@ -133,6 +149,14 @@ class AnalysisPipeline:
         last_ts = self._last_process_time
         self._last_process_time = ts
         should_process = (last_ts < 0 or (ts - last_ts) >= self._processing_interval)
+
+        if not should_process:
+            return FrameResult(
+                timestamp=frame.timestamp,
+                state=DrivingState.UNKNOWN,
+                features=None,
+                raw_data=raw_data,
+            )
 
         features = self._feature_extractor.extract(frame)
         state, state_changed, maneuver_ended = self._state_machine.update(frame, features)
@@ -229,22 +253,29 @@ class AnalysisPipeline:
         return items[-count:]
 
     def _get_ring_slice(self):
-        """获取环形缓冲区有效数据的连续视图 (按时间排序)"""
+        """获取环形缓冲区有效数据的连续视图 (按时间排序, 最新数据在末尾)"""
         n = min(self._ring_count, self._ring_max)
         pos = self._ring_pos
         if n < self._ring_max:
-            sl = slice(0, n)
-        else:
-            # 环绕情况: 拼接 [pos:] + [:pos]
             return (
-                np.concatenate([self._ring_t[pos:], self._ring_t[:pos]]),
-                np.concatenate([self._ring_speed[pos:], self._ring_speed[:pos]]),
-                np.concatenate([self._ring_wheel[pos:], self._ring_wheel[:pos]]),
-                np.concatenate([self._ring_accelexpert[pos:], self._ring_accelexpert[:pos]]),
+                self._ring_t[:n], self._ring_speed[:n],
+                self._ring_wheel[:n], self._ring_accelexpert[:n],
+            )
+        if pos == 0:
+            return (
+                self._ring_t[:n], self._ring_speed[:n],
+                self._ring_wheel[:n], self._ring_accelexpert[:n],
+            )
+        if pos >= n:
+            return (
+                self._ring_t[pos - n:pos], self._ring_speed[pos - n:pos],
+                self._ring_wheel[pos - n:pos], self._ring_accelexpert[pos - n:pos],
             )
         return (
-            self._ring_t[sl], self._ring_speed[sl],
-            self._ring_wheel[sl], self._ring_accelexpert[sl],
+            np.concatenate([self._ring_t[-(n - pos):], self._ring_t[:pos]]),
+            np.concatenate([self._ring_speed[-(n - pos):], self._ring_speed[:pos]]),
+            np.concatenate([self._ring_wheel[-(n - pos):], self._ring_wheel[:pos]]),
+            np.concatenate([self._ring_accelexpert[-(n - pos):], self._ring_accelexpert[:pos]]),
         )
 
     @property
@@ -333,11 +364,8 @@ class AnalysisPipeline:
         # ── Layer1-5: 逐帧分析 ──
         frame_results = []
         for i, rec in enumerate(enriched):
-            # 只处理主IMU通道
             imu_name = rec.get('_imu_name', '') or rec.get('imu_name', '')
             channel = rec.get('_channel', '') or rec.get('channel', '')
-            if imu_name and imu_name != self.PRIMARY_IMU_NAME:
-                continue
 
             result = self.process_frame(rec)
             if result.event:

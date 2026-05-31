@@ -210,7 +210,8 @@ class SeatEvaluationTab(QWidget):
                 }
             result = self.evaluation_engine.evaluate_by_event(trigger)
             if result:
-                self._queue_engine.update_result(result.get('trigger_id', ''), result)
+                tid = getattr(result, 'trigger_id', '') or ''
+                self._queue_engine.update_result(tid, result)
                 self._event_manager.refresh()
                 self.logger.debug(f"增量评测完成: {trigger.get('event_type')}")
             return result

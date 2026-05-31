@@ -124,6 +124,7 @@ class DataBridge(QObject):
         self._eval_queue_processing = False
 
         self._init_pipeline()
+        self._setup_metadata_validation()
         self.logger.info("DataBridge 初始化完成（五层ADAS架构）")
 
     def _init_pipeline(self, primary_imu_name: str = None):
@@ -131,10 +132,58 @@ class DataBridge(QObject):
         try:
             from .core_types import VehicleConfig
             imu_name = primary_imu_name or self.PRIMARY_IMU_NAME
-            self._pipeline = AnalysisPipeline(VehicleConfig(), primary_imu_name=imu_name)
+            self._pipeline = AnalysisPipeline(VehicleConfig(), primary_imu_names=[imu_name])
             self.logger.info(f"五层分析管道已初始化 (主IMU: {imu_name})")
         except Exception as e:
             self.logger.error(f"初始化五层分析管道失败: {e}")
+
+    def _setup_metadata_validation(self):
+        """初始化元数据校验器 — 延迟加载避免循环依赖"""
+        self._registry = None
+        self._validation_enabled = True
+        self._validation_log_interval = 500
+        self._validation_count = 0
+        self._validation_blocked = 0
+        self._validation_passed = 0
+        self._validation_unknown_fields = set()
+
+    def _get_registry(self):
+        if self._registry is None:
+            try:
+                from core.core.seat_evaluation.metadata_registry import get_global_registry
+                self._registry = get_global_registry()
+            except Exception as e:
+                self.logger.warning(f"元数据注册中心加载失败，校验功能关闭: {e}")
+                self._validation_enabled = False
+        return self._registry
+
+    def _validate_raw_record(self, record: Dict[str, Any]):
+        if not self._validation_enabled:
+            return
+        reg = self._get_registry()
+        if reg is None:
+            return
+        self._validation_count += 1
+        result = reg.validate_raw_data_record(record)
+        if not result['valid']:
+            self._validation_blocked += 1
+            if self._validation_blocked <= 10 or self._validation_blocked % self._validation_log_interval == 0:
+                for v in result['violations']:
+                    self.logger.warning(
+                        f"[MetadataValidator] 数据校验失败 | {v['message']} | "
+                        f"累计: passed={self._validation_passed} blocked={self._validation_blocked}"
+                    )
+        else:
+            self._validation_passed += 1
+
+    def get_validation_stats(self) -> Dict[str, Any]:
+        return {
+            'total_checked': self._validation_count,
+            'passed': self._validation_passed,
+            'blocked': self._validation_blocked,
+            'unknown_fields': sorted(self._validation_unknown_fields),
+            'enabled': self._validation_enabled,
+        }
 
     def set_seat_evaluation_engine(self, engine):
         """注入座椅评测引擎"""
@@ -176,6 +225,9 @@ class DataBridge(QObject):
         """接收解析后的单条数据"""
         self._data_queue.append(parsed_record)
         self._total_count += 1
+
+        if self._total_count % 100 == 1:
+            self._validate_raw_record(parsed_record)
 
         if self._is_can_wide_format(parsed_record) or self._is_can_long_format(parsed_record):
             self._recent_can_records.append(parsed_record)
@@ -1363,7 +1415,7 @@ class DataBridge(QObject):
     def reload_config(self):
         try:
             from .core_types import VehicleConfig
-            self._pipeline = AnalysisPipeline(VehicleConfig(), primary_imu_name=self.PRIMARY_IMU_NAME)
+            self._pipeline = AnalysisPipeline(VehicleConfig(), primary_imu_names=[self.PRIMARY_IMU_NAME])
             self.logger.info(f"五层分析管道已重新初始化 (主IMU: {self.PRIMARY_IMU_NAME})")
         except Exception as e:
             self.logger.error(f"重新初始化五层分析管道失败: {e}")

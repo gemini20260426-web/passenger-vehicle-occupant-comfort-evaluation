@@ -11,9 +11,10 @@ from datetime import datetime
 
 import numpy as np
 
+from .metadata_registry import INDICATOR_DEFINITIONS
 from ..analysis.core_types import (
     EvaluationResult, LocationEvaluationResult, RiskLevel,
-    ComparativeEvaluationResult, INDICATOR_DEFINITIONS
+    ComparativeEvaluationResult
 )
 from .imu_location_config import LOCATION_IDS, get_location_config
 

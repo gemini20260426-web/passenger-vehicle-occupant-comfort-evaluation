@@ -155,11 +155,7 @@ class CoreUIController(QObject):
         self.system_status = "就绪"
 
     def _async_init_step(self, name: str, init_func, next_delay_ms: int, next_func):
-        """执行单个异步初始化步骤，失败时记录错误并继续下一步"""
         try:
-            from PySide6.QtWidgets import QApplication
-            for _ in range(3):
-                QApplication.processEvents()
             init_func()
         except Exception as e:
             self.logger.error(f"异步初始化 [{name}] 失败: {e}")
@@ -169,9 +165,16 @@ class CoreUIController(QObject):
             next_func()
     
     def _init_seat_evaluation_components(self):
-        """初始化座椅评测组件"""
+        """初始化座椅评测组件
+
+        引擎版本说明:
+          - engine.py (SeatEvaluationEngine): V1 简化引擎，存在已知缺陷，仅用于兼容旧代码。
+          - engine_v2.py (MultiChannelSeatEvaluationEngine): V2 权威引擎，本控制器默认使用。
+            包含 CFC 滤波(SAE J211-1)、相干性检查、样本量校验等完整修正。
+            所有新增功能应优先在 engine_v2.py 中实现。
+        """
         try:
-            # 初始化座椅评测引擎 (V2版本 - 多通道支持)
+            # 初始化座椅评测引擎 (V2版本 - 多通道支持，权威实现)
             from core.core.seat_evaluation.engine_v2 import MultiChannelSeatEvaluationEngine
             self.seat_evaluation_engine = MultiChannelSeatEvaluationEngine(
                 config_manager=self.config_manager,
@@ -275,50 +278,6 @@ class CoreUIController(QObject):
         elif self.seat_evaluation_engine:
             # 只评测指定组
             self.seat_evaluation_engine.evaluate_by_event(trigger)
-    
-    def _init_controller(self):
-        """初始化控制器组件"""
-        try:
-            logger.info("开始初始化控制器组件")
-            
-            # 初始化配置管理器
-            self._init_config_manager()
-            
-            # 初始化数据存储
-            self._init_data_storage()
-            
-            # 初始化MQTT配置管理器
-            self._init_mqtt_config_manager()
-            
-            # 初始化MQTT管理器
-            self._init_mqtt_manager()
-            
-            # 初始化串口管理器
-            self._init_serial_manager()
-            
-            # 初始化基础分析器
-            self._init_basic_analyzer()
-            
-            # 初始化性能管理器
-            self._init_performance_manager()
-            
-            # 初始化数据源管理器
-            self._init_data_source_manager()
-            
-            # 初始化多源异构数据同步组件
-            self._init_multi_source_sync_components()
-            
-            # 初始化数据桥接器
-            self._init_data_bridge()
-
-            # 注册所有核心服务到 ServiceLocator
-            self._register_services()
-
-            logger.info("控制器组件初始化完成")
-        except Exception as e:
-            logger.error(f"控制器组件初始化失败: {e}")
-            logger.exception("详细错误信息:")
-            self.system_status = "初始化失败"
     
     def _init_config_manager(self):
         """初始化配置管理器"""
@@ -549,19 +508,7 @@ class CoreUIController(QObject):
             }
             
             self.multi_source_sync_engine = MultiSourceSyncEngine(config=sync_engine_config)
-            # 连接同步引擎的信号
-            if hasattr(self.multi_source_sync_engine, 'sync_started'):
-                self.multi_source_sync_engine.sync_started.connect(self._on_multi_source_sync_started)
-            if hasattr(self.multi_source_sync_engine, 'sync_stopped'):
-                self.multi_source_sync_engine.sync_stopped.connect(self._on_multi_source_sync_stopped)
-            if hasattr(self.multi_source_sync_engine, 'sync_paused'):
-                self.multi_source_sync_engine.sync_paused.connect(self._on_multi_source_sync_paused)
-            if hasattr(self.multi_source_sync_engine, 'sync_resumed'):
-                self.multi_source_sync_engine.sync_resumed.connect(self._on_multi_source_sync_resumed)
-            if hasattr(self.multi_source_sync_engine, 'sync_status_updated'):
-                self.multi_source_sync_engine.sync_status_updated.connect(self._on_multi_source_sync_status_updated)
-            if hasattr(self.multi_source_sync_engine, 'sync_error'):
-                self.multi_source_sync_engine.sync_error.connect(self._on_multi_source_sync_error)
+            self._connect_multi_source_sync_signals()
             
             logger.info("多源异构数据同步组件初始化成功")
         except Exception as e:
@@ -630,9 +577,6 @@ class CoreUIController(QObject):
             
             # 连接串口信号
             self._connect_serial_signals()
-            
-            # 连接多源同步信号
-            self._connect_multi_source_sync_signals()
             
             logger.info("信号连接初始化完成")
         except Exception as e:
@@ -946,50 +890,42 @@ class CoreUIController(QObject):
             from modules.ui.core_ui_refactored import CoreUIMainWindow
             from core.core.service_locator import ServiceLocator
             
-            for _ in range(5):
-                QApplication.processEvents()
+            QApplication.processEvents()
             
             self.logger.info("步骤1/4: 创建主窗口实例...")
             self.main_window = CoreUIMainWindow()
             
-            for _ in range(5):
-                QApplication.processEvents()
+            QApplication.processEvents()
             
             ServiceLocator().register('main_window', self.main_window)
             
-            for _ in range(5):
-                QApplication.processEvents()
+            QApplication.processEvents()
             
             self.logger.info("步骤2/4: 注入DataBridge...")
             if self.data_bridge:
                 self.main_window.data_bridge = self.data_bridge
                 self.logger.info("DataBridge 已注入到主窗口")
             
-            for _ in range(5):
-                QApplication.processEvents()
+            QApplication.processEvents()
             
             self.logger.info("步骤3/4: 显示主窗口...")
             self.main_window.show()
             
-            # 主窗口已显示，恢复自动退出功能
             self._app.setQuitOnLastWindowClosed(True)
             
-            for _ in range(5):
-                QApplication.processEvents()
+            QApplication.processEvents()
             
             if hasattr(self.main_window, 'ui_components'):
                 self.main_window.ui_components._inject_data_bridge()
                 self.logger.info("DataBridge 注入已调度（支持延迟重试）")
                 QTimer.singleShot(2000, lambda: self.main_window.ui_components._setup_cache_and_replay(None))
             
-            for _ in range(5):
-                QApplication.processEvents()
+            QApplication.processEvents()
             
             self.logger.info("步骤4/4: 连接信号...")
             self._connect_integrated_panel_signals()
             
-            for _ in range(5):
-                QApplication.processEvents()
+            QApplication.processEvents()
             
             self.logger.info("✅ 主UI异步启动完成")
             

@@ -974,7 +974,7 @@ class IndicatorDetailDialog(QDialog):
         html = (
             f"<table style='font-size:11px;width:100%;border-collapse:collapse;'>"
             f"<tr><td style='color:{LC['text_muted']};width:100px;'>指标编码</td>"
-            f"<td style='color:{LC['text_accent']};font-weight:600;'>{self._meta.indicator_code}</td></tr>"
+            f"<td style='color:{LC['text_accent']};font-weight:600;'>{self._meta.code}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>中文名称</td><td>{self._meta.display_name_cn}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>英文名称</td><td>{self._meta.display_name_en}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>评测维度</td><td>{self._meta.evaluation_dimension}</td></tr>"
@@ -1078,7 +1078,7 @@ class IndicatorDetailDialog(QDialog):
         pass_val = self._meta.threshold_pass or (self._threshold.get('pass') if self._threshold else '-')
         warn_val = (self._threshold.get('warn') if self._threshold else '-')
         excellent = self._meta.threshold_excellent or '-'
-        direction = self._meta.evaluation_direction.name
+        direction = self._meta.direction.name
 
         html = (
             f"<table style='font-size:11px;width:100%;border-collapse:collapse;'>"
@@ -3598,7 +3598,7 @@ class StatisticsAnalysisTab(QWidget):
         detail_html = (
             f"<table style='font-size:10px;width:100%;border-collapse:collapse;'>"
             f"<tr><td style='color:{LC['text_muted']};width:85px;'>指标编码</td>"
-            f"<td style='color:{LC['text_accent']};font-weight:600;'>{meta.indicator_code}</td>"
+            f"<td style='color:{LC['text_accent']};font-weight:600;'>{meta.code}</td>"
             f"<td style='color:{LC['text_muted']};width:70px;'>单位</td><td>{meta.unit}</td></tr>"
             f"<tr><td style='color:{LC['text_muted']}'>中文名称</td><td>{meta.display_name_cn}</td>"
             f"<td style='color:{LC['text_muted']}'>英文</td><td style='font-size:9px;'>{meta.display_name_en}</td></tr>"
@@ -3609,7 +3609,7 @@ class StatisticsAnalysisTab(QWidget):
             f"<div style='margin-top:4px;font-size:10px;color:{LC['text_secondary']};'>"
             f"<b>公式:</b> {meta.formula_text}<br>"
             f"<b>管线:</b> {' → '.join(meta.operator_pipeline)}<br>"
-            f"<b>阈值:</b> 通过={pass_val}, 警告={warn_val}, 优秀={excellent}, 方向={meta.evaluation_direction.name}"
+            f"<b>阈值:</b> 通过={pass_val}, 警告={warn_val}, 优秀={excellent}, 方向={meta.direction.name}"
             f"</div>"
             f"<div style='margin-top:4px;font-size:9px;color:{LC['text_muted']};"
             f"border-top:1px solid {LC['border_light']};padding-top:3px;'>"
@@ -4963,7 +4963,7 @@ class StatisticsAnalysisTab(QWidget):
             if exp_val is not None and ctrl_val is not None and ctrl_val != 0:
                 delta_pct = (exp_val - ctrl_val) / abs(ctrl_val) * 100
                 pct_item = QTableWidgetItem(f"{delta_pct:+.1f}%")
-                lower_better = meta.evaluation_direction.name in ('LOWER_IS_BETTER', 'LOWER_BETTER') if meta else True
+                lower_better = meta.direction.name in ('LOWER_IS_BETTER', 'LOWER_BETTER') if meta else True
                 is_better = delta_pct < 0 if lower_better else delta_pct > 0
                 pct_item.setForeground(QColor('#27AE60') if is_better else QColor('#E74C3C'))
             else:
@@ -4982,7 +4982,7 @@ class StatisticsAnalysisTab(QWidget):
                     try:
                         pass_v = float(pass_thr)
                         warn_v = float(warn_thr) if warn_thr is not None else None
-                        direction = meta.evaluation_direction.name if meta else 'LOWER_IS_BETTER'
+                        direction = meta.direction.name if meta else 'LOWER_IS_BETTER'
                         if direction in ('LOWER_IS_BETTER', 'LOWER_BETTER'):
                             if primary_val <= pass_v:
                                 status_text = '✓ 通过'; status_color = '#27AE60'
@@ -5241,7 +5241,7 @@ class StatisticsAnalysisTab(QWidget):
                 grade_color = LC['text_muted']
                 if delta_pct is not None:
                     delta = float(delta_pct)
-                    direction = meta.evaluation_direction.name if meta else 'LOWER_BETTER'
+                    direction = meta.direction.name if meta else 'LOWER_BETTER'
                     if direction in ('HIGHER_BETTER',):
                         if delta >= 35:
                             grade = '优秀'
@@ -5403,7 +5403,7 @@ class StatisticsAnalysisTab(QWidget):
             if delta_pct is not None:
                 delta = float(delta_pct)
                 # 根据 evaluation_direction 反转符号
-                direction = meta.evaluation_direction.name if meta else 'LOWER_BETTER'
+                direction = meta.direction.name if meta else 'LOWER_BETTER'
                 if direction in ('HIGHER_BETTER',):
                     atten = delta  # 正值=改善
                 else:
@@ -5489,7 +5489,7 @@ class StatisticsAnalysisTab(QWidget):
             dim = DIMENSION_MAP.get(raw_dim, '通用-基础')
             grouped.setdefault(dim, []).append(meta)
         for indicators in grouped.values():
-            indicators.sort(key=lambda m: m.indicator_code)
+            indicators.sort(key=lambda m: m.code)
 
         rows = []
         for dim in sorted(grouped.keys(), key=lambda d: DIMENSION_ORDER.get(d, 99)):
@@ -5500,7 +5500,7 @@ class StatisticsAnalysisTab(QWidget):
         self._indicator_row_map = {}
 
         for row, meta in enumerate(rows):
-            code_item = QTableWidgetItem(meta.indicator_code)
+            code_item = QTableWidgetItem(meta.code)
             code_item.setTextAlignment(Qt.AlignCenter)
             self._indicator_comp_table.setItem(row, 0, code_item)
 
@@ -5546,13 +5546,13 @@ class StatisticsAnalysisTab(QWidget):
                     background: {LC['accent_light']}; border-color: {LC['accent']};
                 }}
             """)
-            code = meta.indicator_code
+            code = meta.code
             detail_btn.clicked.connect(
                 lambda checked=False, c=code: self._open_comparison_indicator_detail(c)
             )
             self._indicator_comp_table.setCellWidget(row, 9, detail_btn)
 
-            self._indicator_row_map[meta.indicator_code] = row
+            self._indicator_row_map[meta.code] = row
 
     def _fill_indicator_comparison_data(self, report: dict):
         """用 report 中的对比数据填充 _indicator_comp_table 的实验组/对照组列
@@ -5648,13 +5648,13 @@ class StatisticsAnalysisTab(QWidget):
         pct_item = QTableWidgetItem(f"{delta_pct:+.1f}%" if delta_pct is not None else "--")
         pct_item.setTextAlignment(Qt.AlignCenter)
         if delta_pct is not None and meta:
-            improve = meta.evaluation_direction == EvaluationDirection.LOWER_BETTER if meta else True
+            improve = meta.direction == EvaluationDirection.LOWER_BETTER if meta else True
             is_better = delta_pct < 0 if improve else delta_pct > 0
             pct_item.setForeground(QColor('#27AE60') if is_better else QColor('#E74C3C'))
         self._indicator_comp_table.setItem(row, 7, pct_item)
 
         if delta_pct is not None and meta:
-            lower_better = meta.evaluation_direction == EvaluationDirection.LOWER_BETTER
+            lower_better = meta.direction == EvaluationDirection.LOWER_BETTER
             dir_text = "↓改善" if ((delta_pct < 0 and lower_better) or (delta_pct > 0 and not lower_better)) else "↑退步"
             dir_color = '#27AE60' if "改善" in dir_text else '#E74C3C'
         else:

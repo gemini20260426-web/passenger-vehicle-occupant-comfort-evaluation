@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QTableWidgetItem, QGroupBox, QFrame, QSplitter,
                                QProgressBar, QScrollArea, QGridLayout, QComboBox,
                                QApplication)
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer, QEventLoop
 from PySide6.QtGui import QFont, QPalette, QColor
 import logging
 import time
@@ -89,6 +89,8 @@ class RightContentPanel(QWidget):
         self._event_refresh_timer.timeout.connect(self._flush_event_refresh)
         self._event_refresh_timer.setInterval(500)
         self._event_refresh_timer.setSingleShot(True)
+        self._imu_viz_queue = []
+        self._imu_viz_idx = 0
 
         self._init_ui()
         self._apply_professional_style()
@@ -1089,6 +1091,13 @@ class RightContentPanel(QWidget):
             self._imu_batch_count = 0
         self._imu_batch_count += 1
 
+        now = time.time()
+        if not hasattr(self, '_last_imu_batch_time'):
+            self._last_imu_batch_time = 0
+        if now - self._last_imu_batch_time < 0.08:
+            return
+        self._last_imu_batch_time = now
+
         imu_count = 0
         last_imu = None
         processed_records = []
@@ -1208,24 +1217,10 @@ class RightContentPanel(QWidget):
                         self.logger.debug("[DEBUG] 自动启动 DataBridge 分析管线")
                     except Exception as e:
                         self.logger.error(f"自动启动 DataBridge 失败: {e}")
-                if self._imu_batch_count <= 3:
-                    self.logger.debug(f"[DEBUG] _data_bridge存在, is_running={self._data_bridge.is_running}, imu_count={imu_count}")
-                self._data_bridge.set_suppress_ui_signals(True)
-                try:
-                    self._data_bridge.feed_parsed_batch(processed_records)
-                    if self._imu_batch_count <= 3 or self._imu_batch_count % 50 == 0:
-                        self.logger.debug(f"[DEBUG] 已喂入 {len(processed_records)} 条IMU数据到data_bridge (含can_wide)")
-                finally:
-                    self._data_bridge.set_suppress_ui_signals(False)
-
-        now = time.time()
-        if not hasattr(self, '_last_imu_batch_time'):
-            self._last_imu_batch_time = 0
-        if now - self._last_imu_batch_time < 0.05:
-            return
-        self._last_imu_batch_time = now
+                QTimer.singleShot(5, lambda recs=list(processed_records): self._deferred_feed_bridge(recs))
 
         if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
+            imu_records = []
             for sensor_data in processed_records:
                 if not isinstance(sensor_data, dict):
                     continue
@@ -1235,10 +1230,36 @@ class RightContentPanel(QWidget):
                         sensor_data['t'] = sensor_data['timestamp']
                     if 'timestamp' not in sensor_data and 't' in sensor_data:
                         sensor_data['timestamp'] = sensor_data['t']
+                    imu_records.append(sensor_data)
+            if len(imu_records) <= 500:
+                for sensor_data in imu_records:
                     self.imu_visualization_tab.receive_imu_data(sensor_data)
+            else:
+                if not self._imu_viz_queue:
+                    self._imu_viz_queue = imu_records
+                    self._imu_viz_idx = 0
+                    QTimer.singleShot(0, self._process_imu_viz_chunk)
 
         if self._imu_batch_count <= 3 or self._imu_batch_count % 50 == 0:
             self.logger.debug(f"IMU batch #{self._imu_batch_count}: {len(batch)}条, IMU={imu_count}条")
+
+    def _deferred_feed_bridge(self, recs):
+        self._data_bridge.set_suppress_ui_signals(True)
+        try:
+            self._data_bridge.feed_parsed_batch(recs)
+        finally:
+            self._data_bridge.set_suppress_ui_signals(False)
+
+    def _process_imu_viz_chunk(self):
+        chunk = 50
+        end = min(self._imu_viz_idx + chunk, len(self._imu_viz_queue))
+        for i in range(self._imu_viz_idx, end):
+            self.imu_visualization_tab.receive_imu_data(self._imu_viz_queue[i])
+        self._imu_viz_idx = end
+        if self._imu_viz_idx < len(self._imu_viz_queue):
+            QTimer.singleShot(5, self._process_imu_viz_chunk)
+        else:
+            self._imu_viz_queue = []
 
     def _on_imu_sensor_data(self, sensor_data):
         if not hasattr(self, 'imu_visualization_tab') or not self.imu_visualization_tab:

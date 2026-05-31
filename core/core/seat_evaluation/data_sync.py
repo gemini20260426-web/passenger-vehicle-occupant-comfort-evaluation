@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 class MultiChannelDataSynchronizer:
     """多通道数据同步器"""
     
-    def __init__(self, target_sample_rate: float = 100.0):
+    def __init__(self, target_sample_rate: float = 100.0, retention_size: int = 5000):
         self.target_sample_rate = target_sample_rate
+        self.retention_size = retention_size
         self.channel_buffers: Dict[str, List[Tuple[float, Any]]] = {}
         self.last_synced_time = 0.0
     
@@ -35,8 +36,8 @@ class MultiChannelDataSynchronizer:
         self.channel_buffers[channel_id].append((timestamp, data))
         
         # 保持缓冲区大小合理
-        if len(self.channel_buffers[channel_id]) > 10000:
-            self.channel_buffers[channel_id] = self.channel_buffers[channel_id][-1000:]
+        if len(self.channel_buffers[channel_id]) > self.retention_size * 2:
+            self.channel_buffers[channel_id] = self.channel_buffers[channel_id][-self.retention_size:]
     
     def sync_and_align(self, channel_ids: Optional[List[str]] = None, 
                       start_time: Optional[float] = None,
@@ -106,17 +107,23 @@ class MultiChannelDataSynchronizer:
                         for i in range(len(values[0])):
                             f = interpolate.interp1d(
                                 times, values[:, i], 
-                                kind='linear', fill_value='extrapolate'
+                                kind='linear', bounds_error=False, fill_value=np.nan
                             )
-                            aligned_array.append(f(target_times))
+                            result = f(target_times)
+                            valid_mask = (target_times >= times[0]) & (target_times <= times[-1])
+                            result = np.where(valid_mask, result, np.nan)
+                            aligned_array.append(result)
                         aligned_data[ch_id] = np.array(aligned_array).T
                     else:
                         # 标量类型
                         f = interpolate.interp1d(
                             times, values, 
-                            kind='linear', fill_value='extrapolate'
+                            kind='linear', bounds_error=False, fill_value=np.nan
                         )
-                        aligned_data[ch_id] = f(target_times)
+                        result = f(target_times)
+                        valid_mask = (target_times >= times[0]) & (target_times <= times[-1])
+                        result = np.where(valid_mask, result, np.nan)
+                        aligned_data[ch_id] = result
             
             aligned_data['timestamps'] = target_times
             self.last_synced_time = end_time
@@ -216,9 +223,12 @@ class TimeAligner:
             for i in range(source_values.shape[1]):
                 f = interpolate.interp1d(
                     source_times, source_values[:, i],
-                    kind='linear', fill_value='extrapolate'
+                    kind='linear', bounds_error=False, fill_value=np.nan
                 )
-                aligned_values.append(f(target_timestamps))
+                result = f(target_timestamps)
+                valid_mask = (target_timestamps >= source_times[0]) & (target_timestamps <= source_times[-1])
+                result = np.where(valid_mask, result, np.nan)
+                aligned_values.append(result)
             
             aligned[key] = np.array(aligned_values).T
         

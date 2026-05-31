@@ -5,10 +5,12 @@ import asyncio
 from typing import Dict, Any, Optional
 import time
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 _IMU_FIELD_RANGES = {
-    'ax': (-16.0, 16.0), 'ay': (-16.0, 16.0), 'az': (-16.0, 16.0),
+    'ax': (-100.0, 100.0), 'ay': (-100.0, 100.0), 'az': (-100.0, 100.0),
     'gx': (-2000.0, 2000.0), 'gy': (-2000.0, 2000.0), 'gz': (-2000.0, 2000.0),
     'speed': (0.0, 300.0), 'wheel': (-720.0, 720.0),
 }
@@ -17,12 +19,20 @@ _IMU_FIELD_RANGES = {
 class ParallelDataProcessor:
     """并行数据处理器 — 委托已有解析器与验证器"""
 
-    def __init__(self, max_workers: int = 8):
+    def __init__(self, max_workers: int = 8, max_data_size: int = 10000,
+                 clip_enabled: bool = True, evaluation_mode: bool = False,
+                 truncation_strategy: str = 'tail'):
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.processing_queue = Queue(maxsize=1000)
         self.result_queue = Queue(maxsize=1000)
         self.processing_tasks = {}
-        self.max_data_size = 1000
+        self.max_data_size = max_data_size
+        self.truncation_strategy = truncation_strategy
+        if evaluation_mode:
+            clip_enabled = False
+        self.clip_enabled = clip_enabled
+        self.evaluation_mode = evaluation_mode
+        self.outlier_flags = {}
 
         self._imu_parser = None
         self._validator = None
@@ -74,8 +84,15 @@ class ParallelDataProcessor:
             validated_data = await self._validate_data(parsed_data)
 
             if isinstance(validated_data, list) and len(validated_data) > self.max_data_size:
-                validated_data = validated_data[:self.max_data_size]
-                logger.info("数据大小受限: 限制为 %d 项", self.max_data_size)
+                if self.truncation_strategy == 'tail':
+                    validated_data = validated_data[-self.max_data_size:]
+                elif self.truncation_strategy == 'head':
+                    validated_data = validated_data[:self.max_data_size]
+                elif self.truncation_strategy == 'sample':
+                    rng = np.random.default_rng(42)
+                    indices = rng.choice(len(validated_data), size=self.max_data_size, replace=False)
+                    validated_data = [validated_data[i] for i in np.sort(indices)]
+                logger.info("数据大小受限: 限制为 %d 项 (策略: %s)", self.max_data_size, self.truncation_strategy)
 
             return {
                 'source_id': source_id,
@@ -135,7 +152,18 @@ class ParallelDataProcessor:
                 logger.warning("数据验证异常: %s", e)
         return data
 
-    @staticmethod
-    def _clip_outliers(value: float, field_name: str) -> float:
+    def set_evaluation_mode(self, enabled: bool = True):
+        if enabled:
+            self.clip_enabled = False
+            logger.info("评测模式: 异常值裁剪已关闭")
+
+    def _clip_outliers(self, value: float, field_name: str) -> float:
         lo, hi = _IMU_FIELD_RANGES.get(field_name, (float('-inf'), float('inf')))
-        return max(lo, min(hi, value))
+        if value < lo or value > hi:
+            self.outlier_flags[field_name] = {
+                'value': value, 'range': (lo, hi),
+                'field': field_name
+            }
+            if self.clip_enabled:
+                return max(lo, min(hi, value))
+        return value

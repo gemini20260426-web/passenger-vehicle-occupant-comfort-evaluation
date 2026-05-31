@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from PySide6.QtCore import QObject, Signal
 
-from .engine import SeatEvaluationEngine
+from .engine_v2 import MultiChannelSeatEvaluationEngine
 from ..analysis.core_types import (
     ComparativeEvaluationTrigger, ComparativeEvaluationResult, TestGroupReport
 )
@@ -31,7 +31,7 @@ class ComparativeEvaluationEngine(QObject):
         self.data_storage = data_storage
         
         # 初始化座椅评测引擎
-        self.evaluation_engine = SeatEvaluationEngine(config_manager, data_storage)
+        self.evaluation_engine = MultiChannelSeatEvaluationEngine(config_manager, data_storage)
         
         # 历史结果缓存
         self.results_cache: Dict[str, Dict[str, Any]] = {}
@@ -144,11 +144,11 @@ class ComparativeEvaluationEngine(QObject):
                 exp_val = exp_metrics[metric_id]
                 ctrl_val = ctrl_metrics[metric_id]
                 
-                # 计算相对差异
+                # 计算相对差异 (正数=改进，与AttenuationOperator一致)
                 if ctrl_val != 0:
-                    relative_diff = ((exp_val - ctrl_val) / ctrl_val) * 100.0
+                    relative_diff = ((ctrl_val - exp_val) / ctrl_val) * 100.0
                 else:
-                    relative_diff = 0.0 if exp_val == 0 else 100.0
+                    relative_diff = 0.0 if exp_val == 0 else -100.0
                 
                 # 判断改进方向 (假设指标越小越好)
                 improved = exp_val < ctrl_val
@@ -238,10 +238,9 @@ class ComparativeEvaluationEngine(QObject):
         
         for metric_id, data in comparison_metrics.items():
             weight = weights.get(metric_id, 1.0 / len(comparison_metrics))
-            
-            # relative_diff: 负数表示改进 (实验组 < 对照组)
-            # 转换为正数表示改进的分数
-            improvement = -data.get('relative_diff', 0.0)  # 反转符号
+
+            # relative_diff: 正数表示改进 (实验组 < 对照组)
+            improvement = data.get('relative_diff', 0.0)
             weighted_improvement += improvement * weight
             total_weight += weight
         
@@ -282,7 +281,12 @@ class ComparativeEvaluationEngine(QObject):
             if metric_id in comparison_metrics:
                 data = comparison_metrics[metric_id]
                 rel_diff = data.get('relative_diff', 0.0)
-                arrow = "↓" if rel_diff < 0 else "↑" if rel_diff > 0 else "="
+                if abs(rel_diff) < 1.0:
+                    arrow = "→"
+                elif rel_diff > 0:
+                    arrow = "↑"
+                else:
+                    arrow = "↓"
                 summary += f"  {metric_id}: {rel_diff:+.1f}% {arrow}\n"
         
         return summary

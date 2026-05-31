@@ -43,15 +43,22 @@ class UnifiedErrorHandler:
         })
     
     def _retry_strategy(self, details: Dict[str, Any]):
-        """重试策略"""
         retry_count = details.get('retry_count', 3)
+        retry_delay = details.get('retry_delay', 0.5)
+        retry_backoff = details.get('retry_backoff', 2.0)
+        retry_callback = details.get('callback')
+        if retry_callback is None:
+            return {'success': False, 'reason': '重试回调函数未提供'}
         for attempt in range(retry_count):
             try:
-                # 假设重试操作
-                return {'success': True, 'attempt': attempt + 1}
-            except:
-                pass
-        return {'success': False, 'reason': '重试失败'}
+                result = retry_callback()
+                return {'success': True, 'attempt': attempt + 1, 'result': result}
+            except Exception as e:
+                logger.warning(f"重试第 {attempt + 1}/{retry_count} 次失败: {e}")
+                if attempt < retry_count - 1:
+                    delay = retry_delay * (retry_backoff ** attempt)
+                    time.sleep(delay)
+        return {'success': False, 'reason': f'{retry_count}次重试全部失败'}
     
     def _fallback_strategy(self, details: Dict[str, Any]):
         """回退策略"""

@@ -264,7 +264,7 @@ class MetadataManagementTab(QWidget):
             fair = t.get('fair', '')
             poor = t.get('poor', float('inf'))
 
-            direction = meta.evaluation_direction if meta else EvaluationDirection.LOWER_BETTER
+            direction = meta.direction if meta else EvaluationDirection.LOWER_BETTER
             dir_str = '越低越好' if direction == EvaluationDirection.LOWER_BETTER else '越高越好'
 
             def fmt_val(v):
@@ -708,7 +708,7 @@ class MetadataManagementTab(QWidget):
                 name = meta.display_name_cn if meta else ind_code
                 locations = ', '.join(meta.applicable_locations[:3]) if meta else ''
                 pipeline = ' → '.join(meta.operator_pipeline[:4]) if meta and meta.operator_pipeline else (
-                    detail.operator_pipeline_detail.split('\n')[0] if detail else '')
+                    detail.get('operator_pipeline', ('',))[0].split('\n')[0] if detail else '')
                 child = QTreeWidgetItem([ind_code, name, pipeline, locations])
                 module_item.addChild(child)
 
@@ -729,7 +729,7 @@ class MetadataManagementTab(QWidget):
 
         self.ddl_text = QTextEdit()
         self.ddl_text.setReadOnly(True)
-        self.ddl_text.setPlainText(self._registry.generate_result_schema())
+        self.ddl_text.setPlainText(json.dumps(self._registry.generate_result_schema(), ensure_ascii=False, indent=2))
         ddl_layout.addWidget(self.ddl_text)
 
         btn_copy = QPushButton("复制 DDL 到剪贴板")
@@ -784,4 +784,4 @@ class MetadataManagementTab(QWidget):
         self._populate_field_table()
         self._populate_op_table()
         self._populate_indicator_detail_tree()
-        self.ddl_text.setPlainText(self._registry.generate_result_schema())
+        self.ddl_text.setPlainText(json.dumps(self._registry.generate_result_schema(), ensure_ascii=False, indent=2))
