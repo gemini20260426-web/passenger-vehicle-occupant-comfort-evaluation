@@ -1,0 +1,1789 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高级救护车驾驶监控与行为分析系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js"></script>
+    
+    <!-- Qt5风格配置 -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        qt: {
+                            primary: '#2A76BE',      // Qt主色调
+                            secondary: '#3DAEE9',    // Qt次要色调
+                            dark: '#1D1D1F',         // 深色背景
+                            light: '#F5F5F7',        // 浅色背景
+                            panel: '#E4E4E4',        // 面板背景
+                            border: '#BABABA',       // 边框颜色
+                            text: '#333333',         // 文本颜色
+                            textLight: '#666666',    // 次要文本
+                            success: '#52C41A',      // 成功色
+                            warning: '#FAAD14',      // 警告色
+                            danger: '#FF4D4F',       // 危险色
+                            critical: '#D93025',     // 紧急危险色
+                            info: '#40A9FF'          // 信息色
+                        }
+                    },
+                    fontFamily: {
+                        qt: ['Segoe UI', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
+                    },
+                    boxShadow: {
+                        'qt': '0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 1px rgba(0, 0, 0, 0.1)',
+                        'qt-hover': '0 3px 6px rgba(0, 0, 0, 0.25), 0 2px 2px rgba(0, 0, 0, 0.15)',
+                        'qt-inset': 'inset 0 1px 3px rgba(0, 0, 0, 0.2)'
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .qt-button {
+                @apply bg-qt-primary text-white border border-qt-primary rounded px-3 py-1.5 text-sm font-medium 
+                       hover:bg-qt-secondary transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-qt-primary
+                       active:bg-qt-dark active:shadow-qt-inset;
+            }
+            .qt-button-secondary {
+                @apply bg-qt-panel text-qt-text border border-qt-border rounded px-3 py-1.5 text-sm font-medium 
+                       hover:bg-gray-300 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-qt-primary
+                       active:bg-gray-400 active:shadow-qt-inset;
+            }
+            .qt-button-danger {
+                @apply bg-qt-danger text-white border border-qt-danger rounded px-3 py-1.5 text-sm font-medium 
+                       hover:bg-qt-critical transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-qt-danger
+                       active:bg-qt-dark active:shadow-qt-inset;
+            }
+            .qt-panel {
+                @apply bg-qt-panel border border-qt-border rounded-md shadow-qt overflow-hidden;
+            }
+            .qt-panel-header {
+                @apply bg-gradient-to-r from-qt-primary/90 to-qt-primary text-white px-4 py-2 font-medium flex 
+                       justify-between items-center border-b border-qt-border;
+            }
+            .qt-panel-content {
+                @apply p-4;
+            }
+            .qt-group-box {
+                @apply border border-qt-border rounded-md p-3;
+            }
+            .qt-group-title {
+                @apply text-sm font-medium text-qt-textLight bg-qt-panel px-2 -mt-7 inline-block;
+            }
+            .qt-splitter {
+                @apply border-t border-qt-border my-3;
+            }
+            .qt-table {
+                @apply w-full border-collapse;
+            }
+            .qt-table th {
+                @apply bg-gray-200 border border-qt-border px-3 py-2 text-left text-sm font-medium text-qt-text;
+            }
+            .qt-table td {
+                @apply border border-qt-border px-3 py-2 text-sm text-qt-text;
+            }
+            .qt-table tr:nth-child(even) {
+                @apply bg-white;
+            }
+            .qt-table tr:nth-child(odd) {
+                @apply bg-gray-50;
+            }
+            .qt-table tr:hover {
+                @apply bg-gray-100;
+            }
+            .gauge-container {
+                @apply relative w-full aspect-square max-w-[180px] mx-auto;
+            }
+            .indicator-light {
+                @apply w-3 h-3 rounded-full inline-block mr-1.5;
+            }
+            .parameter-bar {
+                @apply h-2 rounded-full overflow-hidden bg-gray-200;
+            }
+            .parameter-fill {
+                @apply h-full transition-all duration-500 ease-out;
+            }
+            .tab-container {
+                @apply border-b border-qt-border;
+            }
+            .tab-button {
+                @apply px-4 py-2 text-sm font-medium border-b-2 border-transparent hover:text-qt-primary;
+            }
+            .tab-button.active {
+                @apply border-qt-primary text-qt-primary;
+            }
+        }
+    </style>
+</head>
+
+<body class="font-qt bg-qt-light text-qt-text min-h-screen flex flex-col">
+    <!-- 顶部菜单栏 -->
+    <header class="bg-qt-dark text-white py-2 px-4 shadow-md z-10">
+        <div class="container mx-auto flex items-center justify-between">
+            <div class="flex items-center">
+                <i class="fa fa-ambulance text-2xl mr-3"></i>
+                <h1 class="text-xl font-bold">高级救护车驾驶监控与行为分析系统</h1>
+            </div>
+            
+            <div class="flex items-center space-x-4">
+                <div class="hidden md:flex items-center space-x-6">
+                    <a href="fleetpulse_pro.html" class="text-white hover:text-qt-secondary transition-colors">
+                        <i class="fa fa-home mr-1"></i> 系统主页
+                    </a>
+                    <a href="#" class="text-qt-secondary border-b-2 border-qt-secondary pb-1">
+                        <i class="fa fa-dashboard mr-1"></i> 实时监控
+                    </a>
+                    <a href="historical_analysis.html" class="text-white hover:text-qt-secondary transition-colors">
+                        <i class="fa fa-history mr-1"></i> 历史数据分析
+                    </a>
+                    <a href="driver_evaluation.html" class="text-white hover:text-qt-secondary transition-colors">
+                        <i class="fa fa-user-md mr-1"></i> 驾驶员评估
+                    </a>
+                    <a href="system_config.html" class="text-white hover:text-qt-secondary transition-colors">
+                        <i class="fa fa-cog mr-1"></i> 系统设置
+                    </a>
+                </div>
+                
+                <div class="flex items-center">
+                    <span class="hidden md:inline mr-3">急救中心 - 车辆ID: AMB-724</span>
+                    <div class="w-8 h-8 rounded-full bg-qt-primary flex items-center justify-center">
+                        <i class="fa fa-user"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- 任务状态通知栏 -->
+    <div class="bg-qt-info/10 border border-qt-info/30 text-qt-primary px-4 py-1.5 text-sm">
+        <div class="container mx-auto flex items-center justify-between">
+            <div class="flex items-center">
+                <i class="fa fa-bell mr-2"></i>
+                <span>紧急任务执行中 - 优先级: 最高 | 患者状况: 危急(心脏病)</span>
+            </div>
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center">
+                    <span class="indicator-light bg-qt-success"></span>
+                    <span>GPS信号正常</span>
+                </div>
+                <div class="flex items-center">
+                    <span class="indicator-light bg-qt-success"></span>
+                    <span>传感器数据同步中</span>
+                </div>
+                <button class="qt-button-secondary text-xs p-1 h-auto">
+                    <i class="fa fa-times mr-1"></i> 关闭提示
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主要内容区 -->
+    <main class="flex-1 container mx-auto p-4">
+        <!-- 车辆与任务基本信息 -->
+        <div class="qt-panel mb-4">
+            <div class="qt-panel-header">
+                <h2>车辆与任务信息</h2>
+                <div class="flex items-center space-x-2">
+                    <span class="text-xs bg-qt-success/20 text-white px-2 py-0.5 rounded-full">
+                        <i class="fa fa-signal mr-1"></i> 在线
+                    </span>
+                    <span class="text-xs bg-qt-primary/20 text-white px-2 py-0.5 rounded-full">
+                        <i class="fa fa-clock-o mr-1"></i> 任务时长: 17分钟
+                    </span>
+                    <button class="qt-button-secondary text-xs p-1 h-auto">
+                        <i class="fa fa-refresh mr-1"></i> 刷新
+                    </button>
+                </div>
+            </div>
+            <div class="qt-panel-content grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <!-- 车辆信息 -->
+                <div class="qt-group-box">
+                    <span class="qt-group-title">车辆信息</span>
+                    <div class="grid grid-cols-1 gap-3 mt-3">
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">车辆编号</span>
+                            <span class="font-medium">AMB-724</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">车型</span>
+                            <span class="font-medium">奔驰 Sprinter 319 CDI</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">牌照</span>
+                            <span class="font-medium">京A·EM1209</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">车辆状态</span>
+                            <span class="font-medium text-qt-success">正常运行中</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">传感器状态</span>
+                            <span class="font-medium text-qt-success">全部在线 (12/12)</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 任务信息 -->
+                <div class="qt-group-box">
+                    <span class="qt-group-title">任务详情</span>
+                    <div class="grid grid-cols-1 gap-3 mt-3">
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">任务编号</span>
+                            <span class="font-medium">MISSION-20230615-078</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">任务类型</span>
+                            <span class="font-medium">紧急转运</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">患者状况</span>
+                            <span class="font-medium text-qt-danger">心脏病 - 危急</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">出发地</span>
+                            <span class="font-medium">东城区和平路社区</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">目的地</span>
+                            <span class="font-medium">市第一人民医院急诊</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 时间信息 -->
+                <div class="qt-group-box">
+                    <span class="qt-group-title">时间信息</span>
+                    <div class="grid grid-cols-1 gap-3 mt-3">
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">接警时间</span>
+                            <span class="font-medium">09:18:22</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">出发时间</span>
+                            <span class="font-medium">09:23:45</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">预计到达</span>
+                            <span class="font-medium">09:47:12</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">已行驶时间</span>
+                            <span class="font-medium">17分钟</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">预计剩余时间</span>
+                            <span class="font-medium">9分钟</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 驾驶员信息 -->
+                <div class="qt-group-box">
+                    <span class="qt-group-title">驾驶员信息</span>
+                    <div class="grid grid-cols-1 gap-3 mt-3">
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">驾驶员</span>
+                            <span class="font-medium">张晓明 (ID: DR-1086)</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">资质等级</span>
+                            <span class="font-medium">A级 - 急救驾驶专家</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">本月任务数</span>
+                            <span class="font-medium">18次</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">安全评分</span>
+                            <span class="font-medium text-qt-success">92.5分</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm text-qt-textLight">患者舒适度评分</span>
+                            <span class="font-medium text-qt-success">89.3分</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 核心监控区域 -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+            <!-- 左侧：驾驶评分与患者舒适度 -->
+            <div class="lg:col-span-1 space-y-4">
+                <!-- 驾驶评分 -->
+                <div class="qt-panel">
+                    <div class="qt-panel-header">
+                        <h3>实时驾驶评分</h3>
+                        <button class="qt-button-secondary text-xs p-1 h-auto" onclick="window.location.href='driving_score_details.html'">
+                            <i class="fa fa-bar-chart mr-1"></i> 详细评分
+                        </button>
+                    </div>
+                    <div class="qt-panel-content flex flex-col items-center py-6">
+                        <div class="gauge-container">
+                            <canvas id="drivingScoreGauge"></canvas>
+                            <div class="absolute inset-0 flex items-center justify-center flex-col">
+                                <span class="text-3xl font-bold" id="scoreValue">87</span>
+                                <span class="text-sm text-qt-textLight">良好</span>
+                            </div>
+                        </div>
+                        
+                        <div class="w-full mt-6 space-y-4">
+                            <div>
+                                <div class="flex justify-between text-sm mb-1">
+                                    <span>平顺性</span>
+                                    <span>82分</span>
+                                </div>
+                                <div class="parameter-bar">
+                                    <div class="parameter-fill bg-qt-primary" style="width: 82%"></div>
+                                </div>
+                                <div class="flex justify-between text-xs text-qt-textLight mt-1">
+                                    <span>可能影响患者舒适度</span>
+                                    <span>阈值: ≥75分</span>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <div class="flex justify-between text-sm mb-1">
+                                    <span>安全性</span>
+                                    <span>91分</span>
+                                </div>
+                                <div class="parameter-bar">
+                                    <div class="parameter-fill bg-qt-success" style="width: 91%"></div>
+                                </div>
+                                <div class="flex justify-between text-xs text-qt-textLight mt-1">
+                                    <span>安全驾驶表现优秀</span>
+                                    <span>阈值: ≥80分</span>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <div class="flex justify-between text-sm mb-1">
+                                    <span>时效性</span>
+                                    <span>85分</span>
+                                </div>
+                                <div class="parameter-bar">
+                                    <div class="parameter-fill bg-qt-secondary" style="width: 85%"></div>
+                                </div>
+                                <div class="flex justify-between text-xs text-qt-textLight mt-1">
+                                    <span>符合急救时间要求</span>
+                                    <span>阈值: ≥80分</span>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <div class="flex justify-between text-sm mb-1">
+                                    <span>操作规范性</span>
+                                    <span>89分</span>
+                                </div>
+                                <div class="parameter-bar">
+                                    <div class="parameter-fill bg-qt-info" style="width: 89%"></div>
+                                </div>
+                                <div class="flex justify-between text-xs text-qt-textLight mt-1">
+                                    <span>操作符合急救规范</span>
+                                    <span>阈值: ≥85分</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 患者舒适度评估 -->
+                <div class="qt-panel">
+                    <div class="qt-panel-header">
+                        <h3>患者舒适度与医疗影响评估</h3>
+                    </div>
+                    <div class="qt-panel-content">
+                        <div class="flex justify-center py-4">
+                            <div class="text-center">
+                                <div class="inline-flex items-center justify-center w-24 h-24 rounded-full bg-qt-warning/20 text-qt-warning text-2xl font-bold">
+                                    中等
+                                </div>
+                                <p class="mt-3 text-sm">患者可能感受到明显颠簸</p>
+                                <p class="text-xs text-qt-textLight mt-1">最后评估: 45秒前</p>
+                            </div>
+                        </div>
+                        
+                        <div class="qt-splitter"></div>
+                        
+                        <div class="space-y-4">
+                            <div>
+                                <div class="flex justify-between items-center text-sm mb-1">
+                                    <span>振动等级</span>
+                                    <span class="px-2 py-0.5 rounded-full text-xs bg-qt-warning/20 text-qt-warning">
+                                        中等 (可能影响)
+                                    </span>
+                                </div>
+                                <div class="parameter-bar">
+                                    <div class="parameter-fill bg-qt-warning" style="width: 65%"></div>
+                                </div>
+                                <div class="text-xs text-qt-textLight mt-1">
+                                    对心脏病患者影响: 心率波动可能增加10-15次/分钟
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <div class="flex justify-between items-center text-sm mb-1">
+                                    <span>噪音水平</span>
+                                    <span class="px-2 py-0.5 rounded-full text-xs bg-qt-success/20 text-qt-success">
+                                        正常
+                                    </span>
+                                </div>
+                                <div class="parameter-bar">
+                                    <div class="parameter-fill bg-qt-success" style="width: 30%"></div>
+                                </div>
+                                <div class="text-xs text-qt-textLight mt-1">
+                                    环境噪音: 62 dB (正常范围: 55-70 dB)
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <div class="flex justify-between items-center text-sm mb-1">
+                                    <span>加速度感受</span>
+                                    <span class="px-2 py-0.5 rounded-full text-xs bg-qt-warning/20 text-qt-warning">
+                                        轻微不适
+                                    </span>
+                                </div>
+                                <div class="parameter-bar">
+                                    <div class="parameter-fill bg-qt-warning" style="width: 60%"></div>
+                                </div>
+                                <div class="text-xs text-qt-textLight mt-1">
+                                    建议: 减少急加速，保持平稳驾驶
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <div class="flex justify-between items-center text-sm mb-1">
+                                    <span>车身倾斜度</span>
+                                    <span class="px-2 py-0.5 rounded-full text-xs bg-qt-success/20 text-qt-success">
+                                        正常
+                                    </span>
+                                </div>
+                                <div class="parameter-bar">
+                                    <div class="parameter-fill bg-qt-success" style="width: 25%"></div>
+                                </div>
+                                <div class="text-xs text-qt-textLight mt-1">
+                                    最大倾斜角: 3.2° (安全范围: ≤8°)
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <button class="qt-button w-full mt-4" onclick="window.location.href='patient_comfort_analysis.html'">
+                            <i class="fa fa-heartbeat mr-1"></i> 医疗影响详细分析
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 右侧：运动力学监控 -->
+            <div class="lg:col-span-2">
+                <div class="qt-panel h-full">
+                    <div class="qt-panel-header">
+                        <h3>车辆运动力学实时监控</h3>
+                        <div class="flex items-center space-x-2">
+                            <select id="timeRangeSelector" class="bg-white border border-qt-border rounded text-sm px-2 py-1 focus:outline-none focus:ring-1 focus:ring-qt-primary">
+                                <option value="5">最近5分钟</option>
+                                <option value="15">最近15分钟</option>
+                                <option value="30">最近30分钟</option>
+                                <option value="all">全程</option>
+                            </select>
+                            <button class="qt-button" onclick="window.location.href='kinematics_advanced_analysis.html'">
+                                <i class="fa fa-line-chart mr-1"></i> 高级运动力学分析
+                            </button>
+                        </div>
+                    </div>
+                    <div class="qt-panel-content">
+                        <div class="tab-container mb-4">
+                            <button class="tab-button active" onclick="switchKinematicTab('overview')">概览</button>
+                            <button class="tab-button" onclick="switchKinematicTab('accelerations')">加速度分析</button>
+                            <button class="tab-button" onclick="switchKinematicTab('vibrations')">振动分析</button>
+                            <button class="tab-button" onclick="switchKinematicTab('comparison')">与阈值对比</button>
+                        </div>
+                        
+                        <div id="overviewTab" class="kinematic-tab">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                <div class="qt-group-box">
+                                    <span class="qt-group-title">当前运动状态</span>
+                                    <div class="grid grid-cols-2 gap-3 mt-3">
+                                        <div>
+                                            <p class="text-xs text-qt-textLight">速度</p>
+                                            <p class="text-lg font-medium" id="currentSpeed">58 km/h</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-xs text-qt-textLight">纵向加速度</p>
+                                            <p class="text-lg font-medium" id="longitudinalAccel">0.8 m/s²</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-xs text-qt-textLight">横向加速度</p>
+                                            <p class="text-lg font-medium" id="lateralAccel">0.3 m/s²</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-xs text-qt-textLight">垂直振动</p>
+                                            <p class="text-lg font-medium" id="verticalVibration">0.12 g</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-xs text-qt-textLight">行驶方向</p>
+                                            <p class="text-lg font-medium">东北偏东 (65°)</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-xs text-qt-textLight">发动机转速</p>
+                                            <p class="text-lg font-medium">2350 RPM</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-xs text-qt-textLight">制动频率</p>
+                                            <p class="text-lg font-medium">12 次/小时</p>
+                                        </div>
+                                        <div>
+                                            <p class="text-xs text-qt-textLight">转向频率</p>
+                                            <p class="text-lg font-medium">8 次/小时</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="qt-group-box">
+                                    <span class="qt-group-title">患者安全阈值参数</span>
+                                    <div class="space-y-3 mt-3">
+                                        <div>
+                                            <div class="flex justify-between text-sm mb-1">
+                                                <span>最大安全速度</span>
+                                                <span class="font-medium">70 km/h</span>
+                                            </div>
+                                            <div class="parameter-bar">
+                                                <div class="parameter-fill bg-qt-primary" style="width: 83%"></div>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div class="flex justify-between text-sm mb-1">
+                                                <span>最大纵向加速度</span>
+                                                <span class="font-medium">1.5 m/s²</span>
+                                            </div>
+                                            <div class="parameter-bar">
+                                                <div class="parameter-fill bg-qt-primary" style="width: 53%"></div>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div class="flex justify-between text-sm mb-1">
+                                                <span>最大横向加速度</span>
+                                                <span class="font-medium">0.8 m/s²</span>
+                                            </div>
+                                            <div class="parameter-bar">
+                                                <div class="parameter-fill bg-qt-success" style="width: 38%"></div>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div class="flex justify-between text-sm mb-1">
+                                                <span>最大可接受振动</span>
+                                                <span class="font-medium">0.2 g</span>
+                                            </div>
+                                            <div class="parameter-bar">
+                                                <div class="parameter-fill bg-qt-success" style="width: 60%"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="h-[300px]">
+                                <canvas id="kinematicsChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div id="accelerationsTab" class="kinematic-tab hidden">
+                            <div class="h-[300px]">
+                                <canvas id="accelerationsChart"></canvas>
+                            </div>
+                            <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div class="qt-group-box">
+                                    <span class="qt-group-title">纵向加速度分析</span>
+                                    <div class="mt-3 space-y-2 text-sm">
+                                        <p>平均加速度: 0.62 m/s²</p>
+                                        <p>最大加速度: 2.7 m/s² (09:32:15)</p>
+                                        <p>最大减速度: -2.3 m/s² (09:28:47)</p>
+                                        <p class="text-qt-warning">急加速事件: 3次 (超出安全阈值)</p>
+                                        <p class="text-qt-danger">急刹车事件: 2次 (需关注)</p>
+                                    </div>
+                                </div>
+                                <div class="qt-group-box">
+                                    <span class="qt-group-title">横向加速度分析</span>
+                                    <div class="mt-3 space-y-2 text-sm">
+                                        <p>平均横向加速度: 0.28 m/s²</p>
+                                        <p>最大横向加速度: 0.72 m/s² (09:35:02)</p>
+                                        <p>90%分位值: 0.45 m/s²</p>
+                                        <p>标准差: 0.18 m/s²</p>
+                                        <p class="text-qt-success">急转弯事件: 0次</p>
+                                    </div>
+                                </div>
+                                <div class="qt-group-box">
+                                    <span class="qt-group-title">加速度变化率</span>
+                                    <div class="mt-3 space-y-2 text-sm">
+                                        <p>纵向变化率峰值: 1.2 m/s³</p>
+                                        <p>横向变化率峰值: 0.9 m/s³</p>
+                                        <p>Jerk指数平均值: 0.45 m/s³</p>
+                                        <p>Jerk指数最大值: 1.8 m/s³</p>
+                                        <p class="text-qt-textLight">注: Jerk指数反映加速度变化快慢</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div id="vibrationsTab" class="kinematic-tab hidden">
+                            <div class="h-[300px]">
+                                <canvas id="vibrationsChart"></canvas>
+                            </div>
+                            <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="qt-group-box">
+                                    <span class="qt-group-title">振动频谱分析</span>
+                                    <div class="mt-3 space-y-2 text-sm">
+                                        <p>主要振动频率: 1.2 Hz (路面不平引起)</p>
+                                        <p>次振动频率: 4.5 Hz (悬挂系统响应)</p>
+                                        <p>振动总能量: 0.018 g²/Hz</p>
+                                        <p>低频振动占比: 68% (可能引起晕动症)</p>
+                                        <p>高频振动占比: 32% (影响较小)</p>
+                                    </div>
+                                </div>
+                                <div class="qt-group-box">
+                                    <span class="qt-group-title">振动对患者影响</span>
+                                    <div class="mt-3 space-y-2 text-sm">
+                                        <p>加权振动剂量值: 0.85 m/s^(1.75)</p>
+                                        <p>预计患者不适感: 中等</p>
+                                        <p>对心电监测干扰: 轻微 (3%)</p>
+                                        <p>对输液稳定性影响: 较小</p>
+                                        <p class="text-qt-warning">建议: 避开前方500米处的路面颠簸区</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div id="comparisonTab" class="kinematic-tab hidden">
+                            <div class="h-[300px]">
+                                <canvas id="thresholdComparisonChart"></canvas>
+                            </div>
+                            <div class="mt-4 qt-group-box">
+                                <span class="qt-group-title">阈值超标分析</span>
+                                <div class="mt-3 space-y-3">
+                                    <div class="p-2 border border-qt-warning/30 bg-qt-warning/10 rounded">
+                                        <div class="font-medium text-sm">纵向加速度超标事件 (3次)</div>
+                                        <p class="text-xs text-qt-textLight mt-1">
+                                            平均超标值: 0.42 m/s² · 最长持续时间: 1.8秒 · 主要发生在: 绿灯起步阶段
+                                        </p>
+                                    </div>
+                                    <div class="p-2 border border-qt-danger/30 bg-qt-danger/10 rounded">
+                                        <div class="font-medium text-sm">急刹车事件 (2次)</div>
+                                        <p class="text-xs text-qt-textLight mt-1">
+                                            平均超标值: 0.55 m/s² · 最长持续时间: 2.3秒 · 主要原因: 避让行人
+                                        </p>
+                                    </div>
+                                    <div class="p-2 border border-qt-warning/30 bg-qt-warning/10 rounded">
+                                        <div class="font-medium text-sm">垂直振动超标事件 (1次)</div>
+                                        <p class="text-xs text-qt-textLight mt-1">
+                                            超标值: 0.03 g · 持续时间: 4.2秒 · 位置: 东湖大桥路段
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 驾驶行为分析和事件记录 -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <!-- 驾驶行为分析 -->
+            <div class="lg:col-span-2">
+                <div class="qt-panel">
+                    <div class="qt-panel-header">
+                        <h3>驾驶行为深度分析</h3>
+                        <div class="flex items-center space-x-2">
+                            <select class="bg-white border border-qt-border rounded text-sm px-2 py-1 focus:outline-none focus:ring-1 focus:ring-qt-primary">
+                                <option>按事件类型</option>
+                                <option>按严重程度</option>
+                                <option>按时间段</option>
+                                <option>按位置区域</option>
+                            </select>
+                            <button class="qt-button" onclick="window.location.href='driving_behavior_advanced.html'">
+                                <i class="fa fa-list-alt mr-1"></i> 详细行为报告
+                            </button>
+                        </div>
+                    </div>
+                    <div class="qt-panel-content">
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                            <div class="qt-group-box">
+                                <span class="qt-group-title">急加速事件</span>
+                                <div class="flex flex-col items-center justify-center py-4">
+                                    <span class="text-3xl font-bold text-qt-warning">3</span>
+                                    <span class="text-xs text-qt-textLight mt-1">次/本次任务</span>
+                                </div>
+                                <div class="space-y-1 text-xs text-center">
+                                    <div>阈值: >2.5 m/s²</div>
+                                    <div class="text-qt-warning">对心脏病患者有风险</div>
+                                </div>
+                            </div>
+                            
+                            <div class="qt-group-box">
+                                <span class="qt-group-title">急刹车事件</span>
+                                <div class="flex flex-col items-center justify-center py-4">
+                                    <span class="text-3xl font-bold text-qt-danger">2</span>
+                                    <span class="text-xs text-qt-textLight mt-1">次/本次任务</span>
+                                </div>
+                                <div class="space-y-1 text-xs text-center">
+                                    <div>阈值: < -2.0 m/s²</div>
+                                    <div class="text-qt-danger">可能导致患者二次伤害</div>
+                                </div>
+                            </div>
+                            
+                            <div class="qt-group-box">
+                                <span class="qt-group-title">急转弯事件</span>
+                                <div class="flex flex-col items-center justify-center py-4">
+                                    <span class="text-3xl font-bold text-qt-success">0</span>
+                                    <span class="text-xs text-qt-textLight mt-1">次/本次任务</span>
+                                </div>
+                                <div class="space-y-1 text-xs text-center">
+                                    <div>阈值: >0.8 m/s²横向</div>
+                                    <div class="text-qt-success">表现优秀</div>
+                                </div>
+                            </div>
+                            
+                            <div class="qt-group-box">
+                                <span class="qt-group-title">车道偏离</span>
+                                <div class="flex flex-col items-center justify-center py-4">
+                                    <span class="text-3xl font-bold text-qt-warning">1</span>
+                                    <span class="text-xs text-qt-textLight mt-1">次/本次任务</span>
+                                </div>
+                                <div class="space-y-1 text-xs text-center">
+                                    <div>持续时间: 2.3秒</div>
+                                    <div class="text-qt-warning">需注意安全</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="tab-container mb-4">
+                            <button class="tab-button active" onclick="switchBehaviorTab('distribution')">行为分布</button>
+                            <button class="tab-button" onclick="switchBehaviorTab('timeline')">时间线分析</button>
+                            <button class="tab-button" onclick="switchBehaviorTab('comparison')">与历史对比</button>
+                            <button class="tab-button" onclick="switchBehaviorTab('recommendations')">驾驶建议</button>
+                        </div>
+                        
+                        <div id="distributionTab" class="behavior-tab">
+                            <div class="h-[200px]">
+                                <canvas id="behaviorDistributionChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div id="timelineTab" class="behavior-tab hidden">
+                            <div class="h-[200px]">
+                                <canvas id="behaviorTimelineChart"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div id="comparisonTab" class="behavior-tab hidden">
+                            <div class="h-[200px]">
+                                <canvas id="behaviorComparisonChart"></canvas>
+                            </div>
+                            <div class="mt-3 text-sm">
+                                <p><span class="font-medium">与驾驶员历史平均对比:</span> 急加速减少17%，急刹车增加5%，整体评分提高3.2分</p>
+                                <p><span class="font-medium">与同级别驾驶员对比:</span> 优于平均水平12.5%，急刹车事件高于平均水平</p>
+                            </div>
+                        </div>
+                        
+                        <div id="recommendationsTab" class="behavior-tab hidden">
+                            <div class="space-y-3">
+                                <div class="p-3 border border-qt-info/30 bg-qt-info/10 rounded">
+                                    <div class="font-medium text-sm flex items-center">
+                                        <i class="fa fa-lightbulb-o text-qt-info mr-2"></i>
+                                        起步建议
+                                    </div>
+                                    <p class="text-xs text-qt-textLight mt-1">
+                                        观察到您在绿灯起步时倾向于急加速，建议将加速度控制在1.5 m/s²以下，可减少患者不适感达40%
+                                    </p>
+                                </div>
+                                
+                                <div class="p-3 border border-qt-info/30 bg-qt-info/10 rounded">
+                                    <div class="font-medium text-sm flex items-center">
+                                        <i class="fa fa-lightbulb-o text-qt-info mr-2"></i>
+                                        刹车建议
+                                    </div>
+                                    <p class="text-xs text-qt-textLight mt-1">
+                                        两次急刹车事件均由行人横穿引起，建议在经过居民区时提前减速至40km/h以下，保持更高警惕
+                                    </p>
+                                </div>
+                                
+                                <div class="p-3 border border-qt-info/30 bg-qt-info/10 rounded">
+                                    <div class="font-medium text-sm flex items-center">
+                                        <i class="fa fa-lightbulb-o text-qt-info mr-2"></i>
+                                        路线优化
+                                    </div>
+                                    <p class="text-xs text-qt-textLight mt-1">
+                                        前方1.2公里处有施工路段，预计会有明显颠簸，系统已自动规划备选路线，可减少35%的垂直振动
+                                    </p>
+                                </div>
+                                
+                                <div class="p-3 border border-qt-success/30 bg-qt-success/10 rounded">
+                                    <div class="font-medium text-sm flex items-center">
+                                        <i class="fa fa-thumbs-up text-qt-success mr-2"></i>
+                                        优秀表现
+                                    </div>
+                                    <p class="text-xs text-qt-textLight mt-1">
+                                        转弯操作平稳，横向加速度控制良好，均在安全阈值范围内，这对保持患者舒适非常重要
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 事件记录与地图 -->
+            <div class="space-y-4">
+                <!-- 事件记录 -->
+                <div class="qt-panel">
+                    <div class="qt-panel-header">
+                        <h3>关键事件记录</h3>
+                        <button class="qt-button-secondary text-xs p-1 h-auto" onclick="window.location.href='event_log_detailed.html'">
+                            <i class="fa fa-history mr-1"></i> 查看全部
+                        </button>
+                    </div>
+                    <div class="qt-panel-content">
+                        <div class="space-y-3 max-h-[300px] overflow-y-auto pr-1">
+                            <div class="border border-qt-warning/30 bg-qt-warning/10 rounded p-2">
+                                <div class="flex justify-between items-start">
+                                    <div class="font-medium text-sm">急加速事件</div>
+                                    <div class="text-xs text-qt-textLight">09:32:15</div>
+                                </div>
+                                <p class="text-xs text-qt-textLight mt-1">
+                                    加速度: 2.7 m/s² · 位置: 健康街中段
+                                </p>
+                                <div class="flex justify-between items-center mt-1">
+                                    <p class="text-xs text-qt-warning">
+                                        可能导致患者心率升高
+                                    </p>
+                                    <button class="text-qt-primary text-xs" onclick="showEventDetails('accel-1')">
+                                        详情 <i class="fa fa-angle-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div class="border border-qt-danger/30 bg-qt-danger/10 rounded p-2">
+                                <div class="flex justify-between items-start">
+                                    <div class="font-medium text-sm">急刹车事件</div>
+                                    <div class="text-xs text-qt-textLight">09:28:47</div>
+                                </div>
+                                <p class="text-xs text-qt-textLight mt-1">
+                                    减速度: -2.3 m/s² · 位置: 和平路路口
+                                </p>
+                                <div class="flex justify-between items-center mt-1">
+                                    <p class="text-xs text-qt-danger">
+                                        可能对患者造成风险
+                                    </p>
+                                    <button class="text-qt-primary text-xs" onclick="showEventDetails('brake-1')">
+                                        详情 <i class="fa fa-angle-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div class="border border-qt-warning/30 bg-qt-warning/10 rounded p-2">
+                                <div class="flex justify-between items-start">
+                                    <div class="font-medium text-sm">振动超标</div>
+                                    <div class="text-xs text-qt-textLight">09:26:12</div>
+                                </div>
+                                <p class="text-xs text-qt-textLight mt-1">
+                                    振动值: 0.23 g · 位置: 东湖大桥
+                                </p>
+                                <div class="flex justify-between items-center mt-1">
+                                    <p class="text-xs text-qt-warning">
+                                        可能引起患者不适
+                                    </p>
+                                    <button class="text-qt-primary text-xs" onclick="showEventDetails('vibration-1')">
+                                        详情 <i class="fa fa-angle-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div class="border border-qt-warning/30 bg-qt-warning/10 rounded p-2">
+                                <div class="flex justify-between items-start">
+                                    <div class="font-medium text-sm">车道偏离</div>
+                                    <div class="text-xs text-qt-textLight">09:25:08</div>
+                                </div>
+                                <p class="text-xs text-qt-textLight mt-1">
+                                    偏离时间: 2.3秒 · 位置: 健康街与和平路交叉口
+                                </p>
+                                <div class="flex justify-between items-center mt-1">
+                                    <p class="text-xs text-qt-warning">
+                                        需注意安全驾驶
+                                    </p>
+                                    <button class="text-qt-primary text-xs" onclick="showEventDetails('lane-1')">
+                                        详情 <i class="fa fa-angle-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div class="border border-qt-border rounded p-2">
+                                <div class="flex justify-between items-start">
+                                    <div class="font-medium text-sm">任务开始</div>
+                                    <div class="text-xs text-qt-textLight">09:23:45</div>
+                                </div>
+                                <p class="text-xs text-qt-textLight mt-1">
+                                    出发地: 市急救中心
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 实时位置地图 -->
+                <div class="qt-panel">
+                    <div class="qt-panel-header">
+                        <h3>实时位置与路线</h3>
+                        <button class="qt-button-secondary text-xs p-1 h-auto" onclick="window.location.href='route_map.html'">
+                            <i class="fa fa-map-o mr-1"></i> 全屏地图
+                        </button>
+                    </div>
+                    <div class="qt-panel-content p-0">
+                        <div class="relative w-full h-[200px] bg-gray-200">
+                            <!-- 简化的地图表示 -->
+                            <img src="https://picsum.photos/id/1015/800/400" alt="救护车实时位置地图" class="w-full h-full object-cover">
+                            <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
+                                <div class="w-6 h-6 bg-qt-danger rounded-full flex items-center justify-center animate-pulse">
+                                    <i class="fa fa-ambulance text-white text-xs"></i>
+                                </div>
+                            </div>
+                            <div class="absolute bottom-2 left-2 bg-white/80 px-2 py-1 rounded text-xs">
+                                东城区和平路与健康街交叉口
+                            </div>
+                        </div>
+                        <div class="p-3 grid grid-cols-2 gap-2 text-sm">
+                            <div>
+                                <p class="text-xs text-qt-textLight">已行驶距离</p>
+                                <p class="font-medium">8.7 公里</p>
+                            </div>
+                            <div>
+                                <p class="text-xs text-qt-textLight">剩余距离</p>
+                                <p class="font-medium">3.2 公里</p>
+                            </div>
+                            <div>
+                                <p class="text-xs text-qt-textLight">平均速度</p>
+                                <p class="font-medium">42.5 km/h</p>
+                            </div>
+                            <div>
+                                <p class="text-xs text-qt-textLight">预计到达时间</p>
+                                <p class="font-medium">09:47:12</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- 状态栏 -->
+    <footer class="bg-qt-dark text-white py-1 px-4 text-xs">
+        <div class="container mx-auto flex flex-col md:flex-row justify-between items-center">
+            <div class="mb-1 md:mb-0">
+                <span class="mr-4"><i class="fa fa-clock-o mr-1"></i> 系统时间: <span id="systemTime">2023-06-15 09:40:22</span></span>
+                <span><i class="fa fa-database mr-1"></i> 数据更新: <span id="dataUpdateTime">5秒前</span></span>
+            </div>
+            <div class="flex flex-wrap justify-center gap-x-4">
+                <span><i class="fa fa-signal mr-1"></i> 数据传输速率: 128 Kbps</span>
+                <span><i class="fa fa-shield mr-1"></i> 系统状态: 正常</span>
+                <span>救护车驾驶监控系统 v3.2.0</span>
+                <span>© 2023 急救中心指挥系统</span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- 事件详情模态框 -->
+    <div id="eventModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 hidden">
+        <div class="bg-qt-panel border border-qt-border rounded-md shadow-qt w-full max-w-md mx-4">
+            <div class="qt-panel-header">
+                <h3 id="modalTitle">事件详情</h3>
+                <button class="qt-button-secondary text-xs p-1 h-auto" onclick="closeEventModal()">
+                    <i class="fa fa-times"></i>
+                </button>
+            </div>
+            <div class="qt-panel-content" id="modalContent">
+                <!-- 内容将通过JavaScript动态填充 -->
+            </div>
+            <div class="px-4 pb-4 flex justify-end">
+                <button class="qt-button-secondary mr-2" onclick="closeEventModal()">关闭</button>
+                <button class="qt-button" onclick="showEventVideo()">查看视频回放</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 初始化驾驶评分仪表盘
+        const scoreCtx = document.getElementById('drivingScoreGauge').getContext('2d');
+        const drivingScoreGauge = new Chart(scoreCtx, {
+            type: 'doughnut',
+            data: {
+                datasets: [{
+                    data: [87, 13],
+                    backgroundColor: [
+                        createGradient(scoreCtx, ['#3DAEE9', '#2A76BE']),
+                        '#E4E4E4'
+                    ],
+                    borderWidth: 0,
+                    cutout: '80%'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                rotation: -90,
+                circumference: 180,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        enabled: false
+                    }
+                }
+            }
+        });
+        
+        // 初始化运动力学图表
+        const kinematicsCtx = document.getElementById('kinematicsChart').getContext('2d');
+        const kinematicsChart = new Chart(kinematicsCtx, {
+            type: 'line',
+            data: {
+                labels: ['09:35', '09:36', '09:37', '09:38', '09:39', '09:40', '09:41', '09:42', '09:43', '09:44', '09:45'],
+                datasets: [
+                    {
+                        label: '速度 (km/h)',
+                        data: [45, 52, 58, 62, 55, 48, 50, 55, 58, 52, 58],
+                        borderColor: '#2A76BE',
+                        backgroundColor: 'rgba(42, 118, 190, 0.1)',
+                        tension: 0.4,
+                        fill: false,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: '纵向加速度 (m/s²)',
+                        data: [1.2, 0.8, 0.5, 0.3, -0.6, -2.3, 0.2, 0.5, 0.8, 0.3, 0.8],
+                        borderColor: '#FAAD14',
+                        backgroundColor: 'transparent',
+                        tension: 0.4,
+                        borderDash: [5, 5],
+                        yAxisID: 'y1'
+                    },
+                    {
+                        label: '垂直振动 (g)',
+                        data: [0.08, 0.12, 0.15, 0.10, 0.09, 0.23, 0.18, 0.12, 0.10, 0.08, 0.12],
+                        borderColor: '#52C41A',
+                        backgroundColor: 'transparent',
+                        tension: 0.4,
+                        yAxisID: 'y2'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: {
+                            boxWidth: 10,
+                            usePointStyle: true,
+                            pointStyle: 'line'
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(29, 29, 31, 0.9)',
+                        padding: 8,
+                        titleFont: {
+                            size: 12
+                        },
+                        bodyFont: {
+                            size: 11
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            display: false
+                        }
+                    },
+                    y: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: '速度 (km/h)',
+                            font: {
+                                size: 10
+                            }
+                        },
+                        min: 0,
+                        max: 100,
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    },
+                    y1: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: '纵向加速度 (m/s²)',
+                            font: {
+                                size: 10
+                            }
+                        },
+                        min: -3,
+                        max: 3,
+                        grid: {
+                            drawOnChartArea: false
+                        }
+                    },
+                    y2: {
+                        type: 'linear',
+                        display: false,
+                        min: 0,
+                        max: 0.5
+                    }
+                }
+            }
+        });
+        
+        // 初始化加速度分析图表
+        const accelerationsCtx = document.getElementById('accelerationsChart').getContext('2d');
+        const accelerationsChart = new Chart(accelerationsCtx, {
+            type: 'line',
+            data: {
+                labels: ['09:35', '09:36', '09:37', '09:38', '09:39', '09:40', '09:41', '09:42', '09:43', '09:44', '09:45'],
+                datasets: [
+                    {
+                        label: '纵向加速度 (m/s²)',
+                        data: [1.2, 0.8, 0.5, 0.3, -0.6, -2.3, 0.2, 0.5, 0.8, 0.3, 0.8],
+                        borderColor: '#FAAD14',
+                        backgroundColor: 'transparent',
+                        tension: 0.4,
+                        yAxisID: 'y'
+                    },
+                    {
+                    {
+                        label: '横向加速度 (m/s²)',
+                        data: [0.2, 0.3, 0.4, 0.5, 0.3, 0.2, 0.1, 0.2, 0.3, 0.4, 0.3],
+                        borderColor: '#FF4D4F',
+                        backgroundColor: 'transparent',
+                        tension: 0.4,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Jerk指数 (m/s³)',
+                        data: [0.8, 0.6, 0.4, 0.3, 0.9, 1.8, 0.7, 0.4, 0.5, 0.3, 0.4],
+                        borderColor: '#40A9FF',
+                        backgroundColor: 'transparent',
+                        tension: 0.4,
+                        borderDash: [5, 5],
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top'
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            display: false
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: '加速度 (m/s²)'
+                        },
+                        min: -3,
+                        max: 3
+                    },
+                    y1: {
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: 'Jerk指数 (m/s³)'
+                        },
+                        min: 0,
+                        max: 2,
+                        grid: {
+                            drawOnChartArea: false
+                        }
+                    }
+                }
+            }
+        });
+        
+        // 初始化振动分析图表
+        const vibrationsCtx = document.getElementById('vibrationsChart').getContext('2d');
+        const vibrationsChart = new Chart(vibrationsCtx, {
+            type: 'line',
+            data: {
+                labels: ['09:35', '09:36', '09:37', '09:38', '09:39', '09:40', '09:41', '09:42', '09:43', '09:44', '09:45'],
+                datasets: [
+                    {
+                        label: '垂直振动 (g)',
+                        data: [0.08, 0.12, 0.15, 0.10, 0.09, 0.23, 0.18, 0.12, 0.10, 0.08, 0.12],
+                        borderColor: '#52C41A',
+                        backgroundColor: 'rgba(82, 196, 26, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    },
+                    {
+                        label: '水平振动 (g)',
+                        data: [0.05, 0.07, 0.09, 0.06, 0.08, 0.15, 0.12, 0.08, 0.07, 0.05, 0.08],
+                        borderColor: '#2A76BE',
+                        backgroundColor: 'transparent',
+                        tension: 0.4
+                    },
+                    {
+                        label: '振动阈值 (g)',
+                        data: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2],
+                        borderColor: '#FF4D4F',
+                        borderDash: [5, 5],
+                        backgroundColor: 'transparent',
+                        pointRadius: 0,
+                        tension: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top'
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            display: false
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: '振动加速度 (g)'
+                        },
+                        min: 0,
+                        max: 0.3
+                    }
+                }
+            }
+        });
+        
+        // 初始化阈值对比图表
+        const thresholdCtx = document.getElementById('thresholdComparisonChart').getContext('2d');
+        const thresholdChart = new Chart(thresholdCtx, {
+            type: 'bar',
+            data: {
+                labels: ['速度', '纵向加速度', '横向加速度', '垂直振动'],
+                datasets: [
+                    {
+                        label: '平均值',
+                        data: [52, 0.62, 0.28, 0.12],
+                        backgroundColor: '#2A76BE'
+                    },
+                    {
+                        label: '最大值',
+                        data: [62, 2.7, 0.72, 0.23],
+                        backgroundColor: '#FAAD14'
+                    },
+                    {
+                        label: '安全阈值',
+                        data: [70, 1.5, 0.8, 0.2],
+                        backgroundColor: '#FF4D4F',
+                        type: 'line',
+                        fill: false,
+                        borderWidth: 2,
+                        pointRadius: 4
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top'
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            display: false
+                        }
+                    },
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+        
+        // 初始化驾驶行为分布图表
+        const behaviorCtx = document.getElementById('behaviorDistributionChart').getContext('2d');
+        const behaviorChart = new Chart(behaviorCtx, {
+            type: 'bar',
+            data: {
+                labels: ['平稳驾驶', '轻微急加速', '急加速', '轻微急刹车', '急刹车', '平稳转弯', '车道偏离'],
+                datasets: [{
+                    label: '事件次数',
+                    data: [42, 8, 3, 12, 2, 15, 1],
+                    backgroundColor: [
+                        '#52C41A',
+                        '#9CCC65',
+                        '#FAAD14',
+                        '#9CCC65',
+                        '#FF4D4F',
+                        '#52C41A',
+                        '#FAAD14'
+                    ],
+                    borderRadius: 3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            font: {
+                                size: 10
+                            }
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        },
+                        ticks: {
+                            precision: 0
+                        }
+                    }
+                }
+            }
+        });
+        
+        // 初始化行为时间线图表
+        const timelineCtx = document.getElementById('behaviorTimelineChart').getContext('2d');
+        const timelineChart = new Chart(timelineCtx, {
+            type: 'scatter',
+            data: {
+                datasets: [
+                    {
+                        label: '急加速',
+                        data: [
+                            { x: '09:24:15', y: 1 },
+                            { x: '09:29:33', y: 1 },
+                            { x: '09:32:15', y: 1 }
+                        ],
+                        backgroundColor: '#FAAD14',
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    },
+                    {
+                        label: '急刹车',
+                        data: [
+                            { x: '09:27:11', y: 2 },
+                            { x: '09:28:47', y: 2 }
+                        ],
+                        backgroundColor: '#FF4D4F',
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    },
+                    {
+                        label: '车道偏离',
+                        data: [
+                            { x: '09:25:08', y: 3 }
+                        ],
+                        backgroundColor: '#FAAD14',
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    },
+                    {
+                        label: '振动超标',
+                        data: [
+                            { x: '09:26:12', y: 4 }
+                        ],
+                        backgroundColor: '#FAAD14',
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'top'
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'minute',
+                            displayFormats: {
+                                minute: 'HH:mm'
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: '时间'
+                        }
+                    },
+                    y: {
+                        type: 'category',
+                        position: 'right',
+                        ticks: {
+                            display: false
+                        },
+                        grid: {
+                            display: false
+                        }
+                    }
+                }
+            }
+        });
+        
+        // 初始化行为对比图表
+        const comparisonCtx = document.getElementById('behaviorComparisonChart').getContext('2d');
+        const comparisonChart = new Chart(comparisonCtx, {
+            type: 'radar',
+            data: {
+                labels: ['平稳性', '安全性', '时效性', '操作规范', '路线选择', '预判能力'],
+                datasets: [
+                    {
+                        label: '本次任务',
+                        data: [82, 91, 85, 89, 87, 84],
+                        backgroundColor: 'rgba(42, 118, 190, 0.2)',
+                        borderColor: '#2A76BE',
+                        pointBackgroundColor: '#2A76BE'
+                    },
+                    {
+                        label: '驾驶员历史平均',
+                        data: [79, 88, 82, 86, 84, 81],
+                        backgroundColor: 'rgba(82, 196, 26, 0.2)',
+                        borderColor: '#52C41A',
+                        pointBackgroundColor: '#52C41A'
+                    },
+                    {
+                        label: '同级别平均',
+                        data: [75, 80, 78, 76, 79, 77],
+                        backgroundColor: 'rgba(250, 173, 20, 0.2)',
+                        borderColor: '#FAAD14',
+                        pointBackgroundColor: '#FAAD14'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    r: {
+                        min: 50,
+                        max: 100,
+                        ticks: {
+                            stepSize: 10
+                        }
+                    }
+                }
+            }
+        });
+        
+        // 创建渐变颜色辅助函数
+        function createGradient(ctx, colors) {
+            const gradient = ctx.createLinearGradient(0, 0, 170, 0);
+            colors.forEach((color, index) => {
+                gradient.addColorStop(index / (colors.length - 1), color);
+            });
+            return gradient;
+        }
+        
+        // 切换运动力学标签页
+        function switchKinematicTab(tabName) {
+            // 隐藏所有标签页
+            document.querySelectorAll('.kinematic-tab').forEach(tab => {
+                tab.classList.add('hidden');
+            });
+            
+            // 移除所有标签按钮的活跃状态
+            document.querySelectorAll('.tab-button').forEach(button => {
+                button.classList.remove('active');
+            });
+            
+            // 显示选中的标签页
+            document.getElementById(`${tabName}Tab`).classList.remove('hidden');
+            
+            // 激活当前标签按钮
+            event.currentTarget.classList.add('active');
+        }
+        
+        // 切换驾驶行为标签页
+        function switchBehaviorTab(tabName) {
+            // 隐藏所有标签页
+            document.querySelectorAll('.behavior-tab').forEach(tab => {
+                tab.classList.add('hidden');
+            });
+            
+            // 移除所有标签按钮的活跃状态
+            document.querySelectorAll('.tab-button').forEach(button => {
+                button.classList.remove('active');
+            });
+            
+            // 显示选中的标签页
+            document.getElementById(`${tabName}Tab`).classList.remove('hidden');
+            
+            // 激活当前标签按钮
+            event.currentTarget.classList.add('active');
+        }
+        
+        // 显示事件详情
+        function showEventDetails(eventId) {
+            const modal = document.getElementById('eventModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalContent = document.getElementById('modalContent');
+            
+            // 根据事件ID填充不同内容
+            let content = '';
+            let title = '';
+            
+            switch(eventId) {
+                case 'accel-1':
+                    title = '急加速事件详情 - 09:32:15';
+                    content = `
+                        <div class="space-y-3">
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">位置</span>
+                                <span class="font-medium">健康街中段，靠近和平路交叉口</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">最大加速度</span>
+                                <span class="font-medium text-qt-warning">2.7 m/s²</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">持续时间</span>
+                                <span class="font-medium">1.8秒</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">原因分析</span>
+                                <span class="font-medium">绿灯起步，快速通过路口</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">当时速度</span>
+                                <span class="font-medium">从25 km/h加速至58 km/h</span>
+                            </div>
+                            <div class="qt-splitter"></div>
+                            <div>
+                                <span class="text-sm text-qt-textLight">对患者影响评估</span>
+                                <p class="text-sm mt-1">可能导致患者心率暂时性升高15-20次/分钟，血压轻微上升。对于心脏病患者，此类加速应尽量避免。</p>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'brake-1':
+                    title = '急刹车事件详情 - 09:28:47';
+                    content = `
+                        <div class="space-y-3">
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">位置</span>
+                                <span class="font-medium">和平路路口，靠近东湖公园东门</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">最大减速度</span>
+                                <span class="font-medium text-qt-danger">-2.3 m/s²</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">持续时间</span>
+                                <span class="font-medium">2.3秒</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">原因分析</span>
+                                <span class="font-medium">行人闯红灯横穿马路</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">当时速度</span>
+                                <span class="font-medium">从55 km/h降至18 km/h</span>
+                            </div>
+                            <div class="qt-splitter"></div>
+                            <div>
+                                <span class="text-sm text-qt-textLight">对患者影响评估</span>
+                                <p class="text-sm mt-1">急刹车可能导致患者身体前倾，对于心脏病患者可能引起胸闷、心悸等症状加重。建议后续通过此区域时提前减速。</p>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'vibration-1':
+                    title = '振动超标事件详情 - 09:26:12';
+                    content = `
+                        <div class="space-y-3">
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">位置</span>
+                                <span class="font-medium">东湖大桥中段</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">最大振动值</span>
+                                <span class="font-medium text-qt-warning">0.23 g</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">持续时间</span>
+                                <span class="font-medium">4.2秒</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">原因分析</span>
+                                <span class="font-medium">桥面存在连续坑洼路段</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">当时速度</span>
+                                <span class="font-medium">48 km/h</span>
+                            </div>
+                            <div class="qt-splitter"></div>
+                            <div>
+                                <span class="text-sm text-qt-textLight">对患者影响评估</span>
+                                <p class="text-sm mt-1">持续振动可能导致患者不适，对于心脏病患者可能加剧胸部不适。建议下次通过此路段时减速至30km/h以下。</p>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                case 'lane-1':
+                    title = '车道偏离事件详情 - 09:25:08';
+                    content = `
+                        <div class="space-y-3">
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">位置</span>
+                                <span class="font-medium">健康街与和平路交叉口</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">偏离幅度</span>
+                                <span class="font-medium">0.8米</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">持续时间</span>
+                                <span class="font-medium">2.3秒</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">原因分析</span>
+                                <span class="font-medium">注意力短暂分散，可能因查看导航</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-qt-textLight">当时速度</span>
+                                <span class="font-medium">42 km/h</span>
+                            </div>
+                            <div class="qt-splitter"></div>
+                            <div>
+                                <span class="text-sm text-qt-textLight">安全评估</span>
+                                <p class="text-sm mt-1">未造成安全隐患，但在急救任务中应保持更高专注度。建议使用语音导航减少视觉干扰。</p>
+                            </div>
+                        </div>
+                    `;
+                    break;
+            }
+            
+            modalTitle.textContent = title;
+            modalContent.innerHTML = content;
+            modal.classList.remove('hidden');
+        }
+        
+        // 关闭事件详情模态框
+        function closeEventModal() {
+            document.getElementById('eventModal').classList.add('hidden');
+        }
+        
+        // 查看事件视频回放
+        function showEventVideo() {
+            alert('正在加载事件视频回放...\n此功能将在详细分析页面中提供高清视频与数据同步播放');
+            closeEventModal();
+        }
+        
+        // 模拟实时数据更新
+        setInterval(() => {
+            // 更新系统时间
+            const now = new Date();
+            const formattedTime = now.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            }).replace(',', '');
+            document.getElementById('systemTime').textContent = formattedTime;
+            
+            // 更新数据更新时间
+            const updateSeconds = Math.floor(Math.random() * 10) + 1;
+            document.getElementById('dataUpdateTime').textContent = `${updateSeconds}秒前`;
+            
+            // 更新速度数据
+            const lastSpeed = kinematicsChart.data.datasets[0].data.pop();
+            const newSpeed = Math.max(40, Math.min(70, lastSpeed + (Math.random() * 10 - 5)));
+            kinematicsChart.data.datasets[0].data.push(newSpeed);
+            
+            // 更新加速度数据
+            const lastAccel = kinematicsChart.data.datasets[1].data.pop();
+            const newAccel = Math.max(-2, Math.min(2, lastAccel + (Math.random() * 0.6 - 0.3)));
+            kinematicsChart.data.datasets[1].data.push(newAccel);
+            
+            // 更新振动数据
+            const lastVibration = kinematicsChart.data.datasets[2].data.pop();
+            const newVibration = Math.max(0.05, Math.min(0.3, lastVibration + (Math.random() * 0.04 - 0.02)));
+            kinematicsChart.data.datasets[2].data.push(newVibration);
+            
+            // 更新时间标签
+            const timeLabel = now.toLocaleTimeString('zh-CN', {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            kinematicsChart.data.labels.pop();
+            kinematicsChart.data.labels.push(timeLabel);
+            
+            // 更新图表
+            kinematicsChart.update();
+            
+            // 更新当前状态显示
+            document.getElementById('currentSpeed').textContent = `${newSpeed.toFixed(0)} km/h`;
+            document.getElementById('longitudinalAccel').textContent = `${newAccel.toFixed(1)} m/s²`;
+            document.getElementById('verticalVibration').textContent = `${newVibration.toFixed(2)} g`;
+            
+        }, 5000);
+        
+        // 时间范围选择器变化事件
+        document.getElementById('timeRangeSelector').addEventListener('change', function() {
+            // 在实际应用中，这里会根据选择的时间范围加载不同的数据
+            alert(`已选择查看最近${this.value === 'all' ? '全程' : this.value + '分钟'}的数据`);
+        });
+    </script>
+</body>
+</html>
+    

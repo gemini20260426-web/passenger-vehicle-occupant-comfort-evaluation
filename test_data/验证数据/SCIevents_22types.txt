@@ -1,0 +1,15 @@
+event_id	event_type	event_name	t_start	t_end	duration_s	confidence	feat_speed_mean	feat_speed_std	feat_accel_max	feat_speed_delta	feat_zero_crossings	feat_wheel_range	feat_wheel_mean	feat_accel_mean	feat_accel_min	feat_speed_from	feat_speed_to	feat_speed_max
+0	cruising	恒速行驶	0.944	8.555	7.612	0.85	56.2392	13.3236										
+1	aggressive_accel	激进加速	0.955	3.942	2.987	0.85			5.9261	38								
+2	slalom	蛇形驾驶	1.543	3.043	1.5	0.75	40.582				2	9						
+3	left_turn	左转	1.746	2.166	0.42	0.85	36.3024						-4.1429					
+4	corner_accel	弯道加速	1.806	2.116	0.309	0.75				4			-4.5502					
+5	right_turn	右转	2.906	3.296	0.39	0.85	50.6513						3.5897					
+6	normal_accel	正常加速	3.094	5.139	2.045	0.8				14				1.9526				
+7	constant_speed	匀速直行	3.926	5.266	1.34	0.85	62.9366											
+8	left_turn	左转	6.066	6.725	0.659	0.85	65.8513						-3					
+9	normal_accel	正常加速	6.854	7.659	0.805	0.8				2				0.5891				
+10	aggressive_decel	激进减速	8.438	10.573	2.135	0.85				-64					-12.7043			
+11	hard_brake	急刹车	8.458	10.493	2.035	0.9									-12.7043	68	6	
+12	right_turn	右转	9.367	9.815	0.448	0.85	32.625						2.9554					
+13	parked	驻车	10.684	12.769	2.085	0.95												1

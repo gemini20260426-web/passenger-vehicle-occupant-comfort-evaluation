@@ -1,0 +1,72 @@
+{
+    "system": {
+        "name": "Core UI System",
+        "version": "2.0.0",
+        "description": "以core_ui_2.py为主程序的系统配置",
+        "launch_mode": "controller",
+        "log_level": "INFO",
+        "log_file": "logs/core_ui_system.log"
+    },
+    "ui": {
+        "theme": "Light",
+        "language": "zh",
+        "window_size": {
+            "width": 1400,
+            "height": 900
+        },
+        "auto_save": true,
+        "auto_optimize": true,
+        "real_time_monitoring": true,
+        "error_recovery": true
+    },
+    "data_sources": {
+        "default_sources": ["imu", "cnap"],
+        "max_data_points": 1000,
+        "update_frequency": 1000,
+        "cache_enabled": true,
+        "cache_size": 1000,
+        "cache_ttl": 300
+    },
+    "analysis": {
+        "default_level": "basic",
+        "auto_optimization": true,
+        "optimization_interval": 30000,
+        "performance_thresholds": {
+            "cpu_warning": 80,
+            "memory_warning": 85,
+            "disk_warning": 90
+        }
+    },
+    "communication": {
+        "mqtt": {
+            "enabled": true,
+            "auto_connect": true,
+            "reconnect_attempts": 5,
+            "reconnect_interval": 10000
+        },
+        "serial": {
+            "enabled": true,
+            "default_port": "COM3",
+            "default_baud": 9600
+        }
+    },
+    "performance": {
+        "monitoring_enabled": true,
+        "monitoring_interval": 5000,
+        "health_score_weights": {
+            "cpu": 0.25,
+            "memory": 0.25,
+            "disk": 0.15,
+            "data_quality": 0.20,
+            "connection": 0.10,
+            "analysis": 0.05
+        }
+    },
+    "error_handling": {
+        "global_exception_handling": true,
+        "error_recovery": true,
+        "error_detection_threshold": 3,
+        "max_reconnect_attempts": 5,
+        "error_monitoring_interval": 10000
+    }
+}

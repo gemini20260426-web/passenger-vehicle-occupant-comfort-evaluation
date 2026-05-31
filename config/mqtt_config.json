@@ -1,0 +1,10 @@
+{
+    "server": "localhost",
+    "port": 1883,
+    "topic": "sensor/data",
+    "username": "",
+    "password": "",
+    "keepalive": 60,
+    "clean_session": true,
+    "auto_reconnect": true
+}

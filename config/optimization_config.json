@@ -1,0 +1,35 @@
+{
+  "file_processing": {
+    "chunk_size": 1048576,
+    "max_buffer_size": 1000,
+    "gc_threshold": 10000,
+    "progress_update_interval": 2.0,
+    "cpu_yield_interval": 5,
+    "cpu_yield_duration": 0.01
+  },
+  "memory_management": {
+    "enable_garbage_collection": true,
+    "gc_interval": 20,
+    "buffer_flush_threshold": 1000,
+    "max_memory_usage": "512MB"
+  },
+  "performance_tuning": {
+    "enable_chunk_processing": true,
+    "enable_async_reading": true,
+    "enable_progress_optimization": true,
+    "enable_cpu_yield": true,
+    "enable_memory_optimization": true
+  },
+  "logging": {
+    "log_level": "INFO",
+    "log_performance_metrics": true,
+    "log_memory_usage": true,
+    "log_processing_rate": true
+  },
+  "data_parser": {
+    "enable_batch_processing": true,
+    "batch_size": 100,
+    "enable_pattern_caching": true,
+    "enable_error_recovery": true
+  }
+}

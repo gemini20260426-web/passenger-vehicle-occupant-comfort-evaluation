@@ -1,0 +1,53 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.spec
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 巨型原始数据
+260508_0939/
+260511_0859/
+徐宁数据/
+
+# 数据库服务器
+influxdb/
+influxdb_server/
+
+# 缓存与输出
+data_output/
+logs/
+test_output/
+.archive/
+.backup/
+.doc/
+.trae/
+
+# 分析临时目录
+Analyze the random forest training model/
+
+# 大文件
+*.zip
+*.7z
+*.rar

@@ -1,0 +1,1893 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FleetPulse Pro - 专业车辆监控系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#165DFF',
+                        secondary: '#36CFC9',
+                        success: '#52C41A',
+                        warning: '#FAAD14',
+                        danger: '#FF4D4F',
+                        dark: '#1D2129',
+                        'gray-light': '#F2F3F5',
+                        'gray-medium': '#C9CDD4'
+                    },
+                    fontFamily: {
+                        inter: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .card-hover {
+                @apply transition-all duration-300 hover:shadow-lg hover:-translate-y-1;
+            }
+            .stat-card {
+                @apply bg-white rounded-xl shadow p-5 card-hover border-l-4;
+            }
+            .section-divider {
+                @apply w-16 h-1 bg-primary my-6;
+            }
+            .nav-item {
+                @apply flex items-center space-x-3 px-4 py-3 text-gray-600 hover:bg-primary/5 hover:text-primary rounded-lg transition-all duration-200 cursor-pointer;
+            }
+            .nav-item.active {
+                @apply bg-primary/10 text-primary font-medium;
+            }
+            .tab-button {
+                @apply px-4 py-2 rounded-md text-sm font-medium transition-all duration-200;
+            }
+            .tab-button.active {
+                @apply bg-primary text-white;
+            }
+            .tab-button.inactive {
+                @apply bg-gray-light text-dark hover:bg-gray-medium;
+            }
+            .module-card {
+                @apply bg-white rounded-lg shadow-md p-5 transition-all duration-300 hover:shadow-lg;
+            }
+            .section-title {
+                @apply text-2xl font-bold text-dark mb-6 pb-2 border-b-2 border-primary;
+            }
+            .card-title {
+                @apply text-lg font-semibold mb-3 text-primary flex items-center;
+            }
+        }
+    </style>
+</head>
+
+<body class="font-inter bg-gray-light text-dark min-h-screen flex flex-col">
+    <!-- 顶部导航栏 -->
+    <header class="bg-white shadow-sm sticky top-0 z-50 transition-all duration-300" id="main-header">
+        <div class="container mx-auto px-4">
+            <div class="flex items-center justify-between h-16">
+                <!-- 品牌标识 -->
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
+                        <i class="fa fa-car text-white text-xl"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-bold">FleetPulse Pro</h1>
+                        <p class="text-xs text-gray-500">专业车辆监控系统 v3.2.1</p>
+                    </div>
+                </div>
+                
+                <!-- 主导航 -->
+                <nav class="hidden md:flex items-center space-x-1">
+                    <a href="#overview" class="tab-button active">总览</a>
+                    <a href="#monitoring" class="tab-button inactive">实时监控</a>
+                    <a href="#analysis" class="tab-button inactive">数据分析</a>
+                    <a href="#reports" class="tab-button inactive">报表中心</a>
+                    <a href="#system" class="tab-button inactive">系统管理</a>
+                </nav>
+                
+                <!-- 右侧功能区 -->
+                <div class="flex items-center space-x-4">
+                    <div class="relative">
+                        <button class="w-10 h-10 rounded-full bg-gray-light flex items-center justify-center relative hover:bg-gray-medium transition-colors">
+                            <i class="fa fa-bell-o"></i>
+                            <span class="absolute top-1 right-1 w-2 h-2 bg-danger rounded-full"></span>
+                        </button>
+                    </div>
+                    
+                    <div class="relative">
+                        <button class="w-10 h-10 rounded-full bg-gray-light flex items-center justify-center hover:bg-gray-medium transition-colors">
+                            <i class="fa fa-cog"></i>
+                        </button>
+                    </div>
+                    
+                    <div class="border-l pl-4">
+                        <div class="flex items-center space-x-3">
+                            <img src="https://picsum.photos/id/1005/40/40" alt="用户头像" class="w-8 h-8 rounded-full object-cover border-2 border-transparent hover:border-primary transition-all cursor-pointer">
+                            <div class="hidden md:block">
+                                <div class="text-sm font-medium">管理员</div>
+                                <div class="text-xs text-gray-500">高级账户</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- 移动端菜单 -->
+    <div class="md:hidden hidden bg-white shadow-md absolute w-full z-40 transition-all duration-300" id="mobile-menu">
+        <div class="container mx-auto px-4 py-2 flex flex-col space-y-1">
+            <a href="#overview" class="nav-item active py-3">
+                <i class="fa fa-dashboard w-5 text-center"></i>
+                <span>总览</span>
+            </a>
+            <a href="#monitoring" class="nav-item py-3">
+                <i class="fa fa-map-marker w-5 text-center"></i>
+                <span>实时监控</span>
+            </a>
+            <a href="#analysis" class="nav-item py-3">
+                <i class="fa fa-bar-chart w-5 text-center"></i>
+                <span>数据分析</span>
+            </a>
+            <a href="#reports" class="nav-item py-3">
+                <i class="fa fa-file-text w-5 text-center"></i>
+                <span>报表中心</span>
+            </a>
+            <a href="#system" class="nav-item py-3">
+                <i class="fa fa-cogs w-5 text-center"></i>
+                <span>系统管理</span>
+            </a>
+        </div>
+    </div>
+
+    <!-- 主要内容区 -->
+    <main class="flex-1 container mx-auto px-4 py-6">
+        <!-- 系统概览与用户切换 -->
+        <div class="flex flex-col md:flex-row md:items-center justify-between mb-8">
+            <div>
+                <h2 class="text-2xl font-bold">系统总览仪表盘</h2>
+                <p class="text-gray-500 mt-1">实时监控车队运营状态与关键指标</p>
+            </div>
+            
+            <!-- 视角切换器 - 核心功能：满足不同角色需求 -->
+            <div class="mt-4 md:mt-0 bg-white p-2 rounded-lg shadow-sm inline-flex">
+                <button class="tab-button active" id="manager-view">
+                    <i class="fa fa-line-chart mr-1"></i>管理者视角
+                </button>
+                <button class="tab-button inactive" id="driver-view">
+                    <i class="fa fa-user mr-1"></i>司机视角
+                </button>
+                <button class="tab-button inactive" id="tech-view">
+                    <i class="fa fa-code mr-1"></i>技术视角
+                </button>
+            </div>
+        </div>
+        
+        <!-- 核心统计指标 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <div class="stat-card border-l-primary">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-gray-500 text-sm uppercase font-medium">总车辆数</p>
+                        <h3 class="text-3xl font-bold mt-1">126</h3>
+                        <div class="flex items-center mt-2 text-sm">
+                            <span class="text-success flex items-center">
+                                <i class="fa fa-arrow-up mr-1"></i> 4.2%
+                            </span>
+                            <span class="text-gray-500 ml-2">较上月</span>
+                        </div>
+                    </div>
+                    <div class="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
+                        <i class="fa fa-truck text-primary text-xl"></i>
+                    </div>
+                </div>
+                <div class="mt-4 pt-4 border-t border-gray-100">
+                    <div class="flex justify-between text-sm">
+                        <div>
+                            <span class="text-gray-500">在线率</span>
+                            <span class="font-medium ml-1">92.3%</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">利用率</span>
+                            <span class="font-medium ml-1">78.6%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card border-l-success">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-gray-500 text-sm uppercase font-medium">今日行驶里程</p>
+                        <h3 class="text-3xl font-bold mt-1">4,826</h3>
+                        <div class="flex items-center mt-2 text-sm">
+                            <span class="text-success flex items-center">
+                                <i class="fa fa-arrow-up mr-1"></i> 12.8%
+                            </span>
+                            <span class="text-gray-500 ml-2">较昨日</span>
+                        </div>
+                    </div>
+                    <div class="w-12 h-12 rounded-full bg-success/10 flex items-center justify-center">
+                        <i class="fa fa-road text-success text-xl"></i>
+                    </div>
+                </div>
+                <div class="mt-4 pt-4 border-t border-gray-100">
+                    <div class="flex justify-between text-sm">
+                        <div>
+                            <span class="text-gray-500">平均油耗</span>
+                            <span class="font-medium ml-1">8.2 L/100km</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">CO₂排放</span>
+                            <span class="font-medium ml-1">9.8 t</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card border-l-warning">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-gray-500 text-sm uppercase font-medium">今日报警</p>
+                        <h3 class="text-3xl font-bold mt-1">27</h3>
+                        <div class="flex items-center mt-2 text-sm">
+                            <span class="text-danger flex items-center">
+                                <i class="fa fa-arrow-up mr-1"></i> 3.8%
+                            </span>
+                            <span class="text-gray-500 ml-2">较昨日</span>
+                        </div>
+                    </div>
+                    <div class="w-12 h-12 rounded-full bg-warning/10 flex items-center justify-center">
+                        <i class="fa fa-exclamation-triangle text-warning text-xl"></i>
+                    </div>
+                </div>
+                <div class="mt-4 pt-4 border-t border-gray-100">
+                    <div class="flex justify-between text-sm">
+                        <div>
+                            <span class="text-gray-500">紧急报警</span>
+                            <span class="font-medium ml-1 text-danger">5</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">已处理</span>
+                            <span class="font-medium ml-1">19</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stat-card border-l-secondary">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <p class="text-gray-500 text-sm uppercase font-medium">驾驶评分</p>
+                        <h3 class="text-3xl font-bold mt-1">86.4</h3>
+                        <div class="flex items-center mt-2 text-sm">
+                            <span class="text-success flex items-center">
+                                <i class="fa fa-arrow-up mr-1"></i> 2.3
+                            </span>
+                            <span class="text-gray-500 ml-2">较上周</span>
+                        </div>
+                    </div>
+                    <div class="w-12 h-12 rounded-full bg-secondary/10 flex items-center justify-center">
+                        <i class="fa fa-star text-secondary text-xl"></i>
+                    </div>
+                </div>
+                <div class="mt-4 pt-4 border-t border-gray-100">
+                    <div class="flex justify-between text-sm">
+                        <div>
+                            <span class="text-gray-500">优秀司机</span>
+                            <span class="font-medium ml-1">32</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">需培训</span>
+                            <span class="font-medium ml-1">7</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 管理者视角核心区域 -->
+        <div id="manager-dashboard" class="space-y-8">
+            <!-- 地图监控与报警信息 -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- 实时监控地图 -->
+                <div class="bg-white rounded-xl shadow p-5 lg:col-span-2">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-semibold text-lg">车队实时位置监控</h3>
+                        <div class="flex items-center space-x-2">
+                            <div class="relative">
+                                <select class="appearance-none bg-gray-light text-sm rounded-md px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-primary/30">
+                                    <option>全部车辆</option>
+                                    <option>货运车辆</option>
+                                    <option>客运车辆</option>
+                                    <option>特殊车辆</option>
+                                </select>
+                                <i class="fa fa-chevron-down absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-gray-500 pointer-events-none"></i>
+                            </div>
+                            <button class="w-8 h-8 rounded-md bg-gray-light flex items-center justify-center hover:bg-gray-medium transition-colors">
+                                <i class="fa fa-refresh text-sm"></i>
+                            </button>
+                            <button class="w-8 h-8 rounded-md bg-gray-light flex items-center justify-center hover:bg-gray-medium transition-colors">
+                                <i class="fa fa-expand text-sm"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="relative w-full h-[400px] bg-gray-100 rounded-lg overflow-hidden">
+                        <!-- 地图背景 -->
+                        <img src="https://picsum.photos/id/1016/1200/800" alt="地图背景" class="w-full h-full object-cover">
+                        
+                        <!-- 地图控制 -->
+                        <div class="absolute right-4 bottom-4 flex flex-col space-y-2">
+                            <button class="w-8 h-8 bg-white rounded shadow-md flex items-center justify-center hover:bg-gray-100 transition-colors">
+                                <i class="fa fa-plus text-sm"></i>
+                            </button>
+                            <button class="w-8 h-8 bg-white rounded shadow-md flex items-center justify-center hover:bg-gray-100 transition-colors">
+                                <i class="fa fa-minus text-sm"></i>
+                            </button>
+                            <button class="w-8 h-8 bg-white rounded shadow-md flex items-center justify-center hover:bg-gray-100 transition-colors">
+                                <i class="fa fa-location-arrow text-sm"></i>
+                            </button>
+                        </div>
+                        
+                        <!-- 车辆标记 - 正常 -->
+                        <div class="absolute top-[30%] left-[25%] group cursor-pointer">
+                            <div class="w-6 h-6 bg-success rounded-full border-2 border-white flex items-center justify-center animate-pulse">
+                                <i class="fa fa-truck text-white text-xs"></i>
+                            </div>
+                            <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-white rounded-lg shadow-lg p-2 w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                                <div class="font-medium text-sm">货运-042</div>
+                                <div class="text-xs text-gray-500 mt-1 space-y-1">
+                                    <p>状态: 正常行驶中</p>
+                                    <p>速度: 68 km/h</p>
+                                    <p>驾驶员: 张明</p>
+                                    <p>负载率: 75%</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 车辆标记 - 报警 -->
+                        <div class="absolute top-[45%] left-[60%] group cursor-pointer">
+                            <div class="w-6 h-6 bg-danger rounded-full border-2 border-white flex items-center justify-center animate-ping">
+                                <i class="fa fa-bus text-white text-xs"></i>
+                            </div>
+                            <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-white rounded-lg shadow-lg p-2 w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                                <div class="font-medium text-sm">客运-108</div>
+                                <div class="text-xs text-gray-500 mt-1 space-y-1">
+                                    <p>状态: <span class="text-danger">超速报警</span></p>
+                                    <p>速度: 92 km/h (限速60)</p>
+                                    <p>驾驶员: 李强</p>
+                                    <p>乘客数: 24</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 车辆标记 - 怠速 -->
+                        <div class="absolute top-[60%] left-[35%] group cursor-pointer">
+                            <div class="w-6 h-6 bg-warning rounded-full border-2 border-white flex items-center justify-center">
+                                <i class="fa fa-truck text-white text-xs"></i>
+                            </div>
+                            <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-white rounded-lg shadow-lg p-2 w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                                <div class="font-medium text-sm">货运-073</div>
+                                <div class="text-xs text-gray-500 mt-1 space-y-1">
+                                    <p>状态: 怠速中 (12分钟)</p>
+                                    <p>速度: 0 km/h</p>
+                                    <p>驾驶员: 王刚</p>
+                                    <p>位置: 物流园区A区</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 车辆标记 - 离线 -->
+                        <div class="absolute top-[25%] left-[70%] group cursor-pointer">
+                            <div class="w-6 h-6 bg-gray-400 rounded-full border-2 border-white flex items-center justify-center">
+                                <i class="fa fa-ambulance text-white text-xs"></i>
+                            </div>
+                            <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-white rounded-lg shadow-lg p-2 w-56 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                                <div class="font-medium text-sm">特殊-012</div>
+                                <div class="text-xs text-gray-500 mt-1 space-y-1">
+                                    <p>状态: <span class="text-gray-400">离线</span></p>
+                                    <p>最后在线: 14:23</p>
+                                    <p>驾驶员: 刘洋</p>
+                                    <p>最后位置: 市中心医院</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 实时报警信息 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-semibold text-lg">实时报警信息</h3>
+                        <div class="flex items-center">
+                            <span class="text-xs text-gray-500 mr-2">3条未处理</span>
+                            <a href="#" class="text-primary text-sm hover:underline">查看全部</a>
+                        </div>
+                    </div>
+                    
+                    <div class="space-y-4 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
+                        <!-- 紧急报警 -->
+                        <div class="p-3 border border-danger/20 bg-danger/5 rounded-lg">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <div class="font-medium text-danger">严重超速报警</div>
+                                    <div class="text-xs text-gray-500 mt-1">客运-108 · 李强 · 5分钟前</div>
+                                </div>
+                                <span class="bg-danger/20 text-danger text-xs px-2 py-0.5 rounded-full">紧急</span>
+                            </div>
+                            <div class="mt-2 text-sm text-gray-700 space-y-1">
+                                <p>当前速度: 92 km/h (限速60 km/h)</p>
+                                <p>位置: 城东快速路K12+300米处</p>
+                                <p>持续时间: 已超过3分钟</p>
+                            </div>
+                            <div class="mt-3 flex justify-end space-x-2">
+                                <button class="text-xs px-3 py-1 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">
+                                    忽略
+                                </button>
+                                <button class="text-xs px-3 py-1 bg-primary text-white rounded hover:bg-primary/90 transition-colors">
+                                    处理 <i class="fa fa-arrow-right ml-1"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- 普通报警 -->
+                        <div class="p-3 border border-warning/20 bg-warning/5 rounded-lg">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <div class="font-medium text-warning">长时间怠速报警</div>
+                                    <div class="text-xs text-gray-500 mt-1">货运-073 · 王刚 · 12分钟前</div>
+                                </div>
+                                <span class="bg-warning/20 text-warning text-xs px-2 py-0.5 rounded-full">警告</span>
+                            </div>
+                            <div class="mt-2 text-sm text-gray-700 space-y-1">
+                                <p>怠速时间: 12分钟 (阈值: 5分钟)</p>
+                                <p>位置: 物流园区A区卸货点</p>
+                                <p>发动机状态: 运行中</p>
+                            </div>
+                            <div class="mt-3 flex justify-end space-x-2">
+                                <button class="text-xs px-3 py-1 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">
+                                    忽略
+                                </button>
+                                <button class="text-xs px-3 py-1 bg-primary text-white rounded hover:bg-primary/90 transition-colors">
+                                    处理 <i class="fa fa-arrow-right ml-1"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- 普通报警 -->
+                        <div class="p-3 border border-gray-200 rounded-lg">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <div class="font-medium">急加速行为</div>
+                                    <div class="text-xs text-gray-500 mt-1">货运-015 · 张伟 · 28分钟前</div>
+                                </div>
+                                <span class="bg-gray-200 text-gray-700 text-xs px-2 py-0.5 rounded-full">一般</span>
+                            </div>
+                            <div class="mt-2 text-sm text-gray-700 space-y-1">
+                                <p>加速度: 6.8 m/s² (阈值: 5 m/s²)</p>
+                                <p>位置: 工业大道与科技路交叉口</p>
+                                <p>当前速度: 52 km/h</p>
+                            </div>
+                            <div class="mt-3 flex justify-end space-x-2">
+                                <button class="text-xs px-3 py-1 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors">
+                                    忽略
+                                </button>
+                                <button class="text-xs px-3 py-1 bg-primary text-white rounded hover:bg-primary/90 transition-colors">
+                                    处理 <i class="fa fa-arrow-right ml-1"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- 已处理报警 -->
+                        <div class="p-3 border border-gray-200 rounded-lg opacity-70">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <div class="font-medium">急转弯行为</div>
+                                    <div class="text-xs text-gray-500 mt-1">客运-056 · 赵刚 · 1小时前</div>
+                                </div>
+                                <span class="bg-gray-200 text-gray-700 text-xs px-2 py-0.5 rounded-full">已处理</span>
+                            </div>
+                            <div class="mt-2 text-sm text-gray-700 space-y-1">
+                                <p>转向角速度: 145°/s (阈值: 120°/s)</p>
+                                <p>位置: 西湖路弯道处</p>
+                                <p>处理人: 王经理</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 运营分析图表 -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- 里程与油耗趋势 -->
+                <div class="bg-white rounded-xl shadow p-5 lg:col-span-2">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="font-semibold text-lg">车队运营趋势分析</h3>
+                        <div class="flex items-center space-x-2">
+                            <button class="tab-button active text-xs px-3 py-1">周</button>
+                            <button class="tab-button inactive text-xs px-3 py-1">月</button>
+                            <button class="tab-button inactive text-xs px-3 py-1">季</button>
+                        </div>
+                    </div>
+                    <div class="h-[300px]">
+                        <canvas id="operationTrendChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- 驾驶行为分析 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="font-semibold text-lg">驾驶行为分布</h3>
+                        <button class="text-primary text-sm hover:underline">详细分析</button>
+                    </div>
+                    <div class="h-[200px]">
+                        <canvas id="behaviorDistributionChart"></canvas>
+                    </div>
+                    
+                    <div class="mt-6 space-y-3">
+                        <div>
+                            <div class="flex justify-between text-sm mb-1">
+                                <span>优秀驾驶</span>
+                                <span class="font-medium">42%</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div class="bg-success h-2 rounded-full" style="width: 42%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-sm mb-1">
+                                <span>良好驾驶</span>
+                                <span class="font-medium">35%</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div class="bg-secondary h-2 rounded-full" style="width: 35%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-sm mb-1">
+                                <span>一般驾驶</span>
+                                <span class="font-medium">15%</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div class="bg-warning h-2 rounded-full" style="width: 15%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-sm mb-1">
+                                <span>危险驾驶</span>
+                                <span class="font-medium">8%</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                <div class="bg-danger h-2 rounded-full" style="width: 8%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 系统模块状态 -->
+            <section id="system" class="mb-8">
+                <h3 class="font-semibold text-xl mb-6">系统模块状态</h3>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- 配置管理模块 -->
+                    <div class="module-card">
+                        <h3 class="card-title">
+                            <i class="fa fa-cog mr-2"></i>配置管理模块
+                        </h3>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-sm text-gray-600">运行状态</span>
+                            <span class="px-2 py-0.5 text-xs font-medium bg-success/10 text-success rounded-full">正常</span>
+                        </div>
+                        <div class="mb-3">
+                            <span class="text-sm font-medium text-gray-600">主要功能：</span>
+                            <ul class="text-sm text-gray-700 mt-1 pl-5 list-disc">
+                                <li>系统参数配置</li>
+                                <li>设备参数管理</li>
+                                <li>UI状态配置</li>
+                            </ul>
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            <p>最后更新：今天 08:30</p>
+                            <p>版本：v2.1.0</p>
+                        </div>
+                    </div>
+
+                    <!-- 数据库处理模块 -->
+                    <div class="module-card">
+                        <h3 class="card-title">
+                            <i class="fa fa-database mr-2"></i>数据库处理模块
+                        </h3>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-sm text-gray-600">运行状态</span>
+                            <span class="px-2 py-0.5 text-xs font-medium bg-success/10 text-success rounded-full">正常</span>
+                        </div>
+                        <div class="mb-3">
+                            <span class="text-sm font-medium text-gray-600">主要功能：</span>
+                            <ul class="text-sm text-gray-700 mt-1 pl-5 list-disc">
+                                <li>数据存储与查询</li>
+                                <li>数据备份与恢复</li>
+                                <li>数据索引管理</li>
+                            </ul>
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            <p>最后更新：昨天 16:45</p>
+                            <p>版本：v3.0.2</p>
+                        </div>
+                    </div>
+
+                    <!-- 通信模块 -->
+                    <div class="module-card">
+                        <h3 class="card-title">
+                            <i class="fa fa-exchange mr-2"></i>通信模块
+                        </h3>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-sm text-gray-600">运行状态</span>
+                            <span class="px-2 py-0.5 text-xs font-medium bg-warning/10 text-warning rounded-full">需注意</span>
+                        </div>
+                        <div class="mb-3">
+                            <span class="text-sm font-medium text-gray-600">主要功能：</span>
+                            <ul class="text-sm text-gray-700 mt-1 pl-5 list-disc">
+                                <li>设备数据接收</li>
+                                <li>MQTT消息处理</li>
+                                <li>通信状态监控</li>
+                            </ul>
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            <p>最后更新：10分钟前</p>
+                            <p>版本：v1.8.5</p>
+                            <p class="text-warning mt-1">提示：部分设备连接不稳定</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- 车辆状态表格 -->
+            <div class="bg-white rounded-xl shadow overflow-hidden">
+                <div class="p-5 border-b border-gray-100">
+                    <div class="flex flex-col md:flex-row md:items-center justify-between">
+                        <h3 class="font-semibold text-lg">车辆状态列表</h3>
+                        <div class="flex items-center space-x-3 mt-4 md:mt-0">
+                            <div class="relative">
+                                <input type="text" placeholder="搜索车辆/司机..." class="pl-9 pr-3 py-1.5 rounded-md bg-gray-light text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 w-full md:w-64">
+                                <i class="fa fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm"></i>
+                            </div>
+                            <div class="relative">
+                                <select class="appearance-none bg-gray-light text-sm rounded-md px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-primary/30">
+                                    <option>全部状态</option>
+                                    <option>正常行驶</option>
+                                    <option>怠速中</option>
+                                    <option>停止</option>
+                                    <option>报警中</option>
+                                    <option>离线</option>
+                                </select>
+                                <i class="fa fa-chevron-down absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-gray-500 pointer-events-none"></i>
+                            </div>
+                            <button class="bg-primary text-white text-sm px-4 py-1.5 rounded-md hover:bg-primary/90 transition-colors">
+                                <i class="fa fa-download mr-1"></i> 导出数据
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">车辆编号</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">类型</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">司机</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">速度</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">今日里程</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">驾驶评分</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">最后更新</th>
+                                <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr class="hover:bg-gray-50 transition-colors">
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8 bg-primary/10 rounded-full flex items-center justify-center">
+                                            <i class="fa fa-bus text-primary"></i>
+                                        </div>
+                                        <div class="ml-3">
+                                            <div class="text-sm font-medium">客运-108</div>
+                                            <div class="text-xs text-gray-500">京A·88765</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="text-sm">大型客车</span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="text-sm">李强</div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-2 py-1 text-xs font-medium bg-danger/10 text-danger rounded-full">
+                                        超速报警
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">92 km/h</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">186.3 km</td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <span class="text-sm font-medium mr-2">68</span>
+                                        <div class="w-16 bg-gray-200 rounded-full h-1.5">
+                                            <div class="bg-warning h-1.5 rounded-full" style="width: 68%"></div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    1分钟前
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                    <a href="#" class="text-primary hover:text-primary/80 mr-3">详情</a>
+                                    <a href="#" class="text-gray-500 hover:text-gray-700">历史</a>
+                                </td>
+                            </tr>
+                            <tr class="hover:bg-gray-50 transition-colors">
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8 bg-primary/10 rounded-full flex items-center justify-center">
+                                            <i class="fa fa-truck text-primary"></i>
+                                        </div>
+                                        <div class="ml-3">
+                                            <div class="text-sm font-medium">货运-042</div>
+                                            <div class="text-xs text-gray-500">沪B·23456</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="text-sm">重型货车</span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="text-sm">张明</div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-2 py-1 text-xs font-medium bg-success/10 text-success rounded-full">
+                                        正常行驶
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">68 km/h</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">218.7 km</td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <span class="text-sm font-medium mr-2">92</span>
+                                        <div class="w-16 bg-gray-200 rounded-full h-1.5">
+                                            <div class="bg-success h-1.5 rounded-full" style="width: 92%"></div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    3分钟前
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                    <a href="#" class="text-primary hover:text-primary/80 mr-3">详情</a>
+                                    <a href="#" class="text-gray-500 hover:text-gray-700">历史</a>
+                                </td>
+                            </tr>
+                            <tr class="hover:bg-gray-50 transition-colors">
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8 bg-primary/10 rounded-full flex items-center justify-center">
+                                            <i class="fa fa-truck text-primary"></i>
+                                        </div>
+                                        <div class="ml-3">
+                                            <div class="text-sm font-medium">货运-073</div>
+                                            <div class="text-xs text-gray-500">粤C·56789</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="text-sm">中型货车</span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="text-sm">王刚</div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-2 py-1 text-xs font-medium bg-warning/10 text-warning rounded-full">
+                                        怠速中
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">0 km/h</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">156.2 km</td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <span class="text-sm font-medium mr-2">76</span>
+                                        <div class="w-16 bg-gray-200 rounded-full h-1.5">
+                                            <div class="bg-secondary h-1.5 rounded-full" style="width: 76%"></div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    5分钟前
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                    <a href="#" class="text-primary hover:text-primary/80 mr-3">详情</a>
+                                    <a href="#" class="text-gray-500 hover:text-gray-700">历史</a>
+                                </td>
+                            </tr>
+                            <tr class="hover:bg-gray-50 transition-colors">
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8 bg-primary/10 rounded-full flex items-center justify-center">
+                                            <i class="fa fa-ambulance text-primary"></i>
+                                        </div>
+                                        <div class="ml-3">
+                                            <div class="text-sm font-medium">特殊-012</div>
+                                            <div class="text-xs text-gray-500">苏D·12345</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="text-sm">急救车辆</span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="text-sm">刘洋</div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-2 py-1 text-xs font-medium bg-gray-200 text-gray-700 rounded-full">
+                                        离线
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">-</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm">98.5 km</td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <span class="text-sm font-medium mr-2">88</span>
+                                        <div class="w-16 bg-gray-200 rounded-full h-1.5">
+                                            <div class="bg-success h-1.5 rounded-full" style="width: 88%"></div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    2小时前
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                    <a href="#" class="text-primary hover:text-primary/80 mr-3">详情</a>
+                                    <a href="#" class="text-gray-500 hover:text-gray-700">历史</a>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+                    <div class="text-sm text-gray-500">
+                        显示 <span class="font-medium">1</span> 到 <span class="font-medium">4</span> 条，共 <span class="font-medium">126</span> 条记录
+                    </div>
+                    <div class="flex items-center space-x-1">
+                        <button class="w-8 h-8 flex items-center justify-center rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                            <i class="fa fa-chevron-left text-xs"></i>
+                        </button>
+                        <button class="w-8 h-8 flex items-center justify-center rounded bg-primary text-white">1</button>
+                        <button class="w-8 h-8 flex items-center justify-center rounded border border-gray-300 hover:bg-gray-50">2</button>
+                        <button class="w-8 h-8 flex items-center justify-center rounded border border-gray-300 hover:bg-gray-50">3</button>
+                        <button class="w-8 h-8 flex items-center justify-center rounded border border-gray-300 hover:bg-gray-50">...</button>
+                        <button class="w-8 h-8 flex items-center justify-center rounded border border-gray-300 hover:bg-gray-50">32</button>
+                        <button class="w-8 h-8 flex items-center justify-center rounded border border-gray-300 text-gray-700 hover:bg-gray-50">
+                            <i class="fa fa-chevron-right text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 司机视角面板 (默认隐藏) -->
+        <div id="driver-dashboard" class="space-y-8 hidden">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- 司机信息与评分 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <div class="flex flex-col items-center text-center">
+                        <img src="https://picsum.photos/id/1012/100/100" alt="司机头像" class="w-24 h-24 rounded-full object-cover border-4 border-primary/10">
+                        <h3 class="text-xl font-bold mt-4">李强</h3>
+                        <p class="text-gray-500">客运司机 · 驾龄8年</p>
+                        
+                        <div class="mt-6 flex items-center justify-center">
+                            <div class="text-3xl font-bold text-primary">86.4</div>
+                            <div class="ml-3 text-left">
+                                <div class="text-sm font-medium">综合评分</div>
+                                <div class="text-xs text-success">较上月 +2.3</div>
+                            </div>
+                        </div>
+                        
+                        <div class="w-full mt-6 pt-6 border-t border-gray-100">
+                            <div class="grid grid-cols-3 gap-2 text-center">
+                                <div>
+                                    <div class="text-lg font-bold">186.3 km</div>
+                                    <div class="text-xs text-gray-500 mt-1">今日里程</div>
+                                </div>
+                                <div>
+                                    <div class="text-lg font-bold">6.2 h</div>
+                                    <div class="text-xs text-gray-500 mt-1">驾驶时长</div>
+                                </div>
+                                <div>
+                                    <div class="text-lg font-bold">2</div>
+                                    <div class="text-xs text-gray-500 mt-1">今日报警</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 今日驾驶表现 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <h3 class="font-semibold text-lg mb-6">今日驾驶表现</h3>
+                    
+                    <div class="space-y-5">
+                        <div>
+                            <div class="flex justify-between text-sm mb-1">
+                                <span>安全驾驶</span>
+                                <span class="font-medium">88分</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                <div class="bg-success h-2.5 rounded-full" style="width: 88%"></div>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <div class="flex justify-between text-sm mb-1">
+                                <span>平稳驾驶</span>
+                                <span class="font-medium">76分</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                <div class="bg-secondary h-2.5 rounded-full" style="width: 76%"></div>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <div class="flex justify-between text-sm mb-1">
+                                <span>速度控制</span>
+                                <span class="font-medium text-danger">62分</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                <div class="bg-danger h-2.5 rounded-full" style="width: 62%"></div>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <div class="flex justify-between text-sm mb-1">
+                                <span>油耗控制</span>
+                                <span class="font-medium">91分</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                <div class="bg-success h-2.5 rounded-full" style="width: 91%"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-6 p-3 bg-warning/10 rounded-lg border border-warning/20">
+                        <div class="flex items-start">
+                            <i class="fa fa-lightbulb-o text-warning mt-0.5 mr-2"></i>
+                            <div>
+                                <div class="font-medium text-sm">驾驶建议</div>
+                                <p class="text-xs text-gray-600 mt-1">您今日有2次超速记录，建议在城东快速路段注意控制车速，以提高您的安全评分。</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 当前任务信息 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <h3 class="font-semibold text-lg mb-4">当前任务</h3>
+                    
+                    <div class="border-l-4 border-primary pl-4 py-1 mb-6">
+                        <div class="font-medium">城东线路往返</div>
+                        <div class="text-sm text-gray-500 mt-1">任务编号: T20230615087</div>
+                        <div class="text-sm text-gray-500">状态: 执行中 (65%)</div>
+                    </div>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <div class="text-xs text-gray-500">出发时间</div>
+                            <div class="text-sm font-medium mt-0.5">08:30 今天</div>
+                        </div>
+                        
+                        <div>
+                            <div class="text-xs text-gray-500">预计返回时间</div>
+                            <div class="text-sm font-medium mt-0.5">18:45 今天</div>
+                        </div>
+                        
+                        <div>
+                            <div class="text-xs text-gray-500">当前乘客</div>
+                            <div class="text-sm font-medium mt-0.5">24人 (满员率80%)</div>
+                        </div>
+                        
+                        <div>
+                            <div class="text-xs text-gray-500">已完成站点</div>
+                            <div class="text-sm font-medium mt-0.5">8/12 个</div>
+                        </div>
+                        
+                        <div>
+                            <div class="text-xs text-gray-500">剩余里程</div>
+                            <div class="text-sm font-medium mt-0.5">68.5 km</div>
+                        </div>
+                    </div>
+                    
+                    <button class="w-full mt-6 bg-primary text-white py-2 rounded-md hover:bg-primary/90 transition-colors text-sm">
+                        查看详细任务单
+                    </button>
+                </div>
+            </div>
+            
+            <!-- 驾驶行为详情 -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- 驾驶行为分析 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="font-semibold text-lg">驾驶行为详情</h3>
+                        <div class="flex items-center space-x-2">
+                            <button class="tab-button active text-xs px-3 py-1">今日</button>
+                            <button class="tab-button inactive text-xs px-3 py-1">本周</button>
+                            <button class="tab-button inactive text-xs px-3 py-1">本月</button>
+                        </div>
+                    </div>
+                    
+                    <div class="h-[300px]">
+                        <canvas id="driverBehaviorChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- 历史违规记录 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="font-semibold text-lg">近期违规记录</h3>
+                        <button class="text-primary text-sm hover:underline">查看全部</button>
+                    </div>
+                    
+                    <div class="space-y-4 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin">
+                        <div class="flex items-start p-3 border border-danger/20 bg-danger/5 rounded-lg">
+                            <div class="w-8 h-8 rounded-full bg-danger/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i class="fa fa-tachometer text-danger"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <div class="flex justify-between">
+                                    <div class="font-medium text-danger">超速</div>
+                                    <div class="text-xs text-gray-500">15:23</div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-1">
+                                    <p>位置: 城东快速路K12+300米处</p>
+                                    <p>速度: 92 km/h (限速60 km/h) · 扣3分</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start p-3 border border-warning/20 bg-warning/5 rounded-lg">
+                            <div class="w-8 h-8 rounded-full bg-warning/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i class="fa fa-car text-warning"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <div class="flex justify-between">
+                                    <div class="font-medium text-warning">急刹车</div>
+                                    
+                                    <div class="text-xs text-gray-500">11:45</div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-1">
+                                    <p>位置: 西湖路与科技街交叉口</p>
+                                    <p>加速度: 7.8 m/s² · 扣2分</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start p-3 border border-gray-200 rounded-lg">
+                            <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i class="fa fa-rotate-right text-gray-500"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <div class="flex justify-between">
+                                    <div class="font-medium">急转弯</div>
+                                    <div class="text-xs text-gray-500">昨天 09:12</div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-1">
+                                    <p>位置: 南山路弯道</p>
+                                    <p>转向角速度: 132°/s · 扣1分</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start p-3 border border-gray-200 rounded-lg">
+                            <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i class="fa fa-bolt text-gray-500"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <div class="flex justify-between">
+                                    <div class="font-medium">急加速</div>
+                                    <div class="text-xs text-gray-500">昨天 16:38</div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-1">
+                                    <p>位置: 北站广场出口</p>
+                                    <p>加速度: 5.6 m/s² · 扣1分</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-6 p-4 bg-gray-50 rounded-lg">
+                        <div class="font-medium text-sm mb-2">本月违规累计</div>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+                            <div class="bg-white p-2 rounded shadow-sm">
+                                <div class="text-danger font-bold">8次</div>
+                                <div class="text-xs text-gray-500 mt-1">超速</div>
+                            </div>
+                            <div class="bg-white p-2 rounded shadow-sm">
+                                <div class="text-warning font-bold">5次</div>
+                                <div class="text-xs text-gray-500 mt-1">急刹车</div>
+                            </div>
+                            <div class="bg-white p-2 rounded shadow-sm">
+                                <div class="text-warning font-bold">3次</div>
+                                <div class="text-xs text-gray-500 mt-1">急加速</div>
+                            </div>
+                            <div class="bg-white p-2 rounded shadow-sm">
+                                <div class="text-primary font-bold">4次</div>
+                                <div class="text-xs text-gray-500 mt-1">急转弯</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 技术视角面板 (默认隐藏) -->
+        <div id="tech-dashboard" class="space-y-8 hidden">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div class="stat-card border-l-primary">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500 text-sm uppercase font-medium">设备在线率</p>
+                            <h3 class="text-3xl font-bold mt-1">92.3%</h3>
+                            <div class="flex items-center mt-2 text-sm">
+                                <span class="text-success flex items-center">
+                                    <i class="fa fa-arrow-up mr-1"></i> 1.2%
+                                </span>
+                                <span class="text-gray-500 ml-2">较昨日</span>
+                            </div>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
+                            <i class="fa fa-signal text-primary text-xl"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4 pt-4 border-t border-gray-100">
+                        <div class="flex justify-between text-sm">
+                            <div>
+                                <span class="text-gray-500">离线设备</span>
+                                <span class="font-medium ml-1">10</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">信号弱</span>
+                                <span class="font-medium ml-1">5</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stat-card border-l-secondary">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500 text-sm uppercase font-medium">数据传输量</p>
+                            <h3 class="text-3xl font-bold mt-1">18.6 GB</h3>
+                            <div class="flex items-center mt-2 text-sm">
+                                <span class="text-success flex items-center">
+                                    <i class="fa fa-arrow-up mr-1"></i> 8.5%
+                                </span>
+                                <span class="text-gray-500 ml-2">今日累计</span>
+                            </div>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-secondary/10 flex items-center justify-center">
+                            <i class="fa fa-exchange text-secondary text-xl"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4 pt-4 border-t border-gray-100">
+                        <div class="flex justify-between text-sm">
+                            <div>
+                                <span class="text-gray-500">实时数据流</span>
+                                <span class="font-medium ml-1">2.4 MB/s</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">峰值</span>
+                                <span class="font-medium ml-1">5.8 MB/s</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stat-card border-l-warning">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500 text-sm uppercase font-medium">API请求</p>
+                            <h3 class="text-3xl font-bold mt-1">128,547</h3>
+                            <div class="flex items-center mt-2 text-sm">
+                                <span class="text-success flex items-center">
+                                    <i class="fa fa-arrow-up mr-1"></i> 12.3%
+                                </span>
+                                <span class="text-gray-500 ml-2">今日累计</span>
+                            </div>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-warning/10 flex items-center justify-center">
+                            <i class="fa fa-plug text-warning text-xl"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4 pt-4 border-t border-gray-100">
+                        <div class="flex justify-between text-sm">
+                            <div>
+                                <span class="text-gray-500">失败率</span>
+                                <span class="font-medium ml-1">0.8%</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">平均响应</span>
+                                <span class="font-medium ml-1">186ms</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stat-card border-l-success">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500 text-sm uppercase font-medium">系统状态</p>
+                            <h3 class="text-3xl font-bold mt-1">正常</h3>
+                            <div class="flex items-center mt-2 text-sm">
+                                <span class="text-success flex items-center">
+                                    <i class="fa fa-check-circle mr-1"></i> 无故障
+                                </span>
+                                
+                                <span class="text-gray-500 ml-2">已运行32天</span>
+                            </div>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-success/10 flex items-center justify-center">
+                            <i class="fa fa-server text-success text-xl"></i>
+                        </div>
+                    </div>
+                    <div class="mt-4 pt-4 border-t border-gray-100">
+                        <div class="flex justify-between text-sm">
+                            <div>
+                                <span class="text-gray-500">CPU使用率</span>
+                                <span class="font-medium ml-1">42%</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">内存使用率</span>
+                                <span class="font-medium ml-1">68%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 技术监控详情 -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- 设备连接状态 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="font-semibold text-lg">设备连接状态</h3>
+                        <div class="relative">
+                            <select class="appearance-none bg-gray-light text-sm rounded-md px-3 py-1.5 pr-8 focus:outline-none focus:ring-2 focus:ring-primary/30">
+                                <option>全部设备类型</option>
+                                <option>车载终端V2.1</option>
+                                <option>车载终端V3.0</option>
+                                <option>手持终端</option>
+                            </select>
+                            <i class="fa fa-chevron-down absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-gray-500 pointer-events-none"></i>
+                        </div>
+                    </div>
+                    
+                    <div class="h-[300px]">
+                        <canvas id="deviceStatusChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- 数据传输监控 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="font-semibold text-lg">数据传输监控</h3>
+                        <div class="flex items-center space-x-2">
+                            <button class="tab-button active text-xs px-3 py-1">实时</button>
+                            <button class="tab-button inactive text-xs px-3 py-1">今日</button>
+                            <button class="tab-button inactive text-xs px-3 py-1">本周</button>
+                        </div>
+                    </div>
+                    
+                    <div class="h-[300px]">
+                        <canvas id="dataTransferChart"></canvas>
+                    </div>
+                </div>
+                
+                <!-- 系统告警 -->
+                <div class="bg-white rounded-xl shadow p-5">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="font-semibold text-lg">系统告警</h3>
+                        <button class="text-primary text-sm hover:underline">查看全部</button>
+                    </div>
+                    
+                    <div class="space-y-4 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin">
+                        <div class="flex items-start p-3 border border-warning/20 bg-warning/5 rounded-lg">
+                            <div class="w-8 h-8 rounded-full bg-warning/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i class="fa fa-wifi text-warning"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <div class="flex justify-between">
+                                    <div class="font-medium text-warning">设备连接不稳定</div>
+                                    <div class="text-xs text-gray-500">10分钟前</div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-1">
+                                    <p>设备ID: VTU202304587</p>
+                                    <p>位置: 偏远山区信号弱区域</p>
+                                    <p>状态: 已自动切换备用网络</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start p-3 border border-warning/20 bg-warning/5 rounded-lg">
+                            <div class="w-8 h-8 rounded-full bg-warning/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i class="fa fa-database text-warning"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <div class="flex justify-between">
+                                    <div class="font-medium text-warning">数据库连接池紧张</div>
+                                    <div class="text-xs text-gray-500">1小时前</div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-1">
+                                    <p>连接池使用率: 92%</p>
+                                    <p>已自动扩容连接池</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start p-3 border border-gray-200 rounded-lg">
+                            <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i class="fa fa-exclamation-circle text-gray-500"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <div class="flex justify-between">
+                                    <div class="font-medium">设备固件更新提醒</div>
+                                    <div class="text-xs text-gray-500">昨天</div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-1">
+                                    <p>有12台设备需要更新至最新固件V3.2.5</p>
+                                    <p>建议在非高峰时段进行更新</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start p-3 border border-gray-200 rounded-lg">
+                            <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <i class="fa fa-hdd-o text-gray-500"></i>
+                            </div>
+                            <div class="ml-3 flex-1">
+                                <div class="flex justify-between">
+                                    <div class="font-medium">存储空间预警</div>
+                                    <div class="text-xs text-gray-500">2天前</div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-1">
+                                    <p>主存储使用率: 78%</p>
+                                    <p>建议清理历史冗余数据</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 系统模块状态 -->
+            <section class="mb-8">
+                <h3 class="font-semibold text-xl mb-6">系统模块健康状态</h3>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- 配置管理模块 -->
+                    <div class="module-card">
+                        <h3 class="card-title">
+                            <i class="fa fa-cog mr-2"></i>配置管理模块
+                        </h3>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-sm text-gray-600">运行状态</span>
+                            <span class="px-2 py-0.5 text-xs font-medium bg-success/10 text-success rounded-full">正常</span>
+                        </div>
+                        <div class="mb-3">
+                            <span class="text-sm font-medium text-gray-600">主要组件：</span>
+                            <ul class="text-sm text-gray-700 mt-1 pl-5 list-disc">
+                                <li>config_manager.py</li>
+                                <li>config_handler.py</li>
+                                <li>config_processor.py</li>
+                            </ul>
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            <p>CPU占用：2.3%</p>
+                            <p>内存占用：18.6 MB</p>
+                        </div>
+                    </div>
+
+                    <!-- 数据库处理模块 -->
+                    <div class="module-card">
+                        <h3 class="card-title">
+                            <i class="fa fa-database mr-2"></i>数据库处理模块
+                        </h3>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-sm text-gray-600">运行状态</span>
+                            <span class="px-2 py-0.5 text-xs font-medium bg-success/10 text-success rounded-full">正常</span>
+                        </div>
+                        <div class="mb-3">
+                            <span class="text-sm font-medium text-gray-600">主要组件：</span>
+                            <ul class="text-sm text-gray-700 mt-1 pl-5 list-disc">
+                                <li>db_handler.py</li>
+                                <li>data_handler.py</li>
+                                <li>DataStorage.py</li>
+                            </ul>
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            <p>CPU占用：8.7%</p>
+                            <p>内存占用：124.3 MB</p>
+                        </div>
+                    </div>
+
+                    <!-- 通信模块 -->
+                    <div class="module-card">
+                        <h3 class="card-title">
+                            <i class="fa fa-exchange mr-2"></i>通信模块
+                        </h3>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-sm text-gray-600">运行状态</span>
+                            <span class="px-2 py-0.5 text-xs font-medium bg-warning/10 text-warning rounded-full">需注意</span>
+                        </div>
+                        <div class="mb-3">
+                            <span class="text-sm font-medium text-gray-600">主要组件：</span>
+                            <ul class="text-sm text-gray-700 mt-1 pl-5 list-disc">
+                                <li>serial_handler.py</li>
+                                <li>mqtt_handler.py</li>
+                                <li>redis_manager.py</li>
+                            </ul>
+                        </div>
+                        <div class="text-xs text-gray-500">
+                            <p>CPU占用：12.5%</p>
+                            <p>内存占用：96.8 MB</p>
+                            <p class="text-warning mt-1">提示：部分设备连接不稳定</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- 页脚 -->
+    <footer class="bg-dark text-white py-6 mt-12">
+        <div class="container mx-auto px-4">
+            <div class="flex flex-col md:flex-row justify-between items-center">
+                <div class="mb-4 md:mb-0">
+                    <div class="flex items-center">
+                        <div class="w-8 h-8 rounded-lg bg-primary flex items-center justify-center mr-2">
+                            <i class="fa fa-car text-white"></i>
+                        </div>
+                        <span class="font-bold">FleetPulse Pro</span>
+                    </div>
+                    <p class="text-gray-400 text-sm mt-1">专业级车辆监控与管理解决方案</p>
+                </div>
+                
+                <div class="flex flex-wrap justify-center gap-x-8 gap-y-2 text-sm text-gray-400">
+                    <a href="#" class="hover:text-white transition-colors">关于我们</a>
+                    <a href="#" class="hover:text-white transition-colors">产品文档</a>
+                    <a href="#" class="hover:text-white transition-colors">技术支持</a>
+                    <a href="#" class="hover:text-white transition-colors">服务条款</a>
+                    <a href="#" class="hover:text-white transition-colors">隐私政策</a>
+                </div>
+            </div>
+            
+            <div class="border-t border-gray-800 mt-6 pt-6 text-center text-gray-400 text-sm">
+                &copy; 2023 FleetPulse Technologies. 保留所有权利.
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // 视角切换功能
+        document.getElementById('manager-view').addEventListener('click', function() {
+            switchView('manager');
+        });
+        
+        document.getElementById('driver-view').addEventListener('click', function() {
+            switchView('driver');
+        });
+        
+        document.getElementById('tech-view').addEventListener('click', function() {
+            switchView('tech');
+        });
+        
+        function switchView(viewType) {
+            // 隐藏所有视图
+            document.getElementById('manager-dashboard').classList.add('hidden');
+            document.getElementById('driver-dashboard').classList.add('hidden');
+            document.getElementById('tech-dashboard').classList.add('hidden');
+            
+            // 重置所有按钮状态
+            document.getElementById('manager-view').classList.remove('active');
+            document.getElementById('driver-view').classList.remove('active');
+            document.getElementById('tech-view').classList.remove('active');
+            document.getElementById('manager-view').classList.add('inactive');
+            document.getElementById('driver-view').classList.add('inactive');
+            document.getElementById('tech-view').classList.add('inactive');
+            
+            // 显示选中的视图并激活按钮
+            document.getElementById(`${viewType}-dashboard`).classList.remove('hidden');
+            document.getElementById(`${viewType}-view`).classList.remove('inactive');
+            document.getElementById(`${viewType}-view`).classList.add('active');
+            
+            // 如果是首次加载对应视图的图表，初始化它们
+            if (viewType === 'manager' && typeof window.operationTrendChart === 'undefined') {
+                initManagerCharts();
+            } else if (viewType === 'driver' && typeof window.driverBehaviorChart === 'undefined') {
+                initDriverCharts();
+            } else if (viewType === 'tech' && typeof window.deviceStatusChart === 'undefined') {
+                initTechCharts();
+            }
+        }
+        
+        // 初始化管理者视角图表
+        function initManagerCharts() {
+            // 运营趋势图表
+            const operationCtx = document.getElementById('operationTrendChart').getContext('2d');
+            window.operationTrendChart = new Chart(operationCtx, {
+                type: 'line',
+                data: {
+                    labels: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
+                    datasets: [
+                        {
+                            label: '总里程 (km)',
+                            data: [4256, 3892, 4125, 5268, 4987, 3254, 2865],
+                            borderColor: '#165DFF',
+                            backgroundColor: 'rgba(22, 93, 255, 0.1)',
+                            tension: 0.4,
+                            fill: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: '平均油耗 (L/100km)',
+                            data: [8.6, 8.4, 8.2, 8.7, 8.5, 8.3, 8.1],
+                            borderColor: '#FF4D4F',
+                            backgroundColor: 'transparent',
+                            tension: 0.4,
+                            borderDash: [5, 5],
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                boxWidth: 12,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: 'rgba(29, 33, 41, 0.9)',
+                            padding: 10,
+                            titleFont: {
+                                size: 13,
+                                family: 'Inter'
+                            },
+                            bodyFont: {
+                                size: 12,
+                                family: 'Inter'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: {
+                                display: true,
+                                text: '里程 (km)'
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: '油耗 (L/100km)'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // 行为分布图表
+            const behaviorCtx = document.getElementById('behaviorDistributionChart').getContext('2d');
+            window.behaviorDistributionChart = new Chart(behaviorCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['优秀驾驶', '良好驾驶', '一般驾驶', '危险驾驶'],
+                    datasets: [{
+                        data: [42, 35, 15, 8],
+                        backgroundColor: [
+                            '#52C41A',
+                            '#36CFC9',
+                            '#FAAD14',
+                            '#FF4D4F'
+                        ],
+                        borderWidth: 0,
+                        hoverOffset: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '70%',
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            backgroundColor: 'rgba(29, 33, 41, 0.9)',
+                            padding: 10,
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.label}: ${context.raw}%`;
+                                }
+                            }
+                        }
+                    },
+                    animation: {
+                        animateRotate: true,
+                        animateScale: true
+                    }
+                }
+            });
+        }
+        
+        // 初始化司机视角图表
+        function initDriverCharts() {
+            // 司机行为图表
+            const driverCtx = document.getElementById('driverBehaviorChart').getContext('2d');
+            window.driverBehaviorChart = new Chart(driverCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['08:00', '10:00', '12:00', '14:00', '16:00', '当前'],
+                    datasets: [
+                        {
+                            label: '安全评分',
+                            data: [92, 88, 90, 85, 78, 86],
+                            backgroundColor: '#52C41A',
+                            borderRadius: 4
+                        },
+                        {
+                            label: '速度控制',
+                            data: [85, 76, 82, 70, 65, 62],
+                            backgroundColor: '#FF4D4F',
+                            borderRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                boxWidth: 12,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '分';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // 初始化技术视角图表
+        function initTechCharts() {
+            // 设备状态图表
+            const deviceCtx = document.getElementById('deviceStatusChart').getContext('2d');
+            window.deviceStatusChart = new Chart(deviceCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['车载终端V2.1', '车载终端V3.0', '手持终端', '其他设备'],
+                    datasets: [
+                        {
+                            label: '在线',
+                            data: [42, 58, 12, 4],
+                            backgroundColor: '#52C41A',
+                            borderRadius: 4
+                        },
+                        {
+                            label: '离线',
+                            data: [5, 3, 1, 1],
+                            backgroundColor: '#FF4D4F',
+                            borderRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                boxWidth: 12,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            },
+                            title: {
+                                display: true,
+                                text: '设备数量'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // 数据传输图表
+            const dataCtx = document.getElementById('dataTransferChart').getContext('2d');
+            window.dataTransferChart = new Chart(dataCtx, {
+                type: 'line',
+                data: {
+                    labels: ['15:00', '15:10', '15:20', '15:30', '15:40', '15:50', '现在'],
+                    datasets: [{
+                        label: '数据传输速率 (MB/s)',
+                        data: [1.8, 2.1, 2.5, 2.3, 2.7, 2.4, 2.6],
+                        borderColor: '#165DFF',
+                        backgroundColor: 'rgba(22, 93, 255, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                boxWidth: 12,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // 移动端菜单切换
+        const menuToggle = document.createElement('button');
+        menuToggle.className = 'md:hidden text-primary text-xl absolute right-4 top-4 z-50';
+        menuToggle.innerHTML = '<i class="fa fa-bars"></i>';
+        menuToggle.addEventListener('click', function() {
+            const mobileMenu = document.getElementById('mobile-menu');
+            mobileMenu.classList.toggle('hidden');
+        });
+        document.body.appendChild(menuToggle);
+        
+        // 导航链接激活状态切换
+        document.querySelectorAll('.tab-button').forEach(link => {
+            link.addEventListener('click', function() {
+                const href = this.getAttribute('href');
+                if (href && href.startsWith('#')) {
+                    document.querySelectorAll('.tab-button').forEach(item => {
+                        item.classList.remove('active');
+                        item.classList.add('inactive');
+                    });
+                    this.classList.remove('inactive');
+                    this.classList.add('active');
+                    
+                    // 平滑滚动到目标位置
+                    document.querySelector(href).scrollIntoView({
+                        behavior: 'smooth'
+                    });
+                }
+            });
+        });
+        
+        // 页面滚动时改变导航栏样式
+        window.addEventListener('scroll', function() {
+            const header = document.getElementById('main-header');
+            if (window.scrollY > 10) {
+                header.classList.add('shadow');
+                header.classList.remove('shadow-sm');
+            } else {
+                header.classList.remove('shadow');
+                header.classList.add('shadow-sm');
+            }
+        });
+        
+        // 为卡片添加微交互效果
+        document.querySelectorAll('.stat-card, .bg-white.rounded-xl.shadow, .module-card').forEach(card => {
+            card.addEventListener('mouseenter', function() {
+                this.style.transform = 'translateY(-3px)';
+                this.style.boxShadow = '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)';
+            });
+            
+            card.addEventListener('mouseleave', function() {
+                this.style.transform = 'translateY(0)';
+                this.style.boxShadow = '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)';
+            });
+        });
+        
+        // 页面加载完成后初始化默认图表
+        window.addEventListener('load', function() {
+            initManagerCharts();
+        });
+    </script>
+</body>
+</html>

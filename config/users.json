@@ -1,0 +1,49 @@
+{
+  "users": {
+    "admin": {
+      "username": "admin",
+      "full_name": "系统管理员",
+      "email": "admin@example.com",
+      "phone": "",
+      "department": "IT部门",
+      "position": "系统管理员",
+      "created_at": "2025-08-13T16:04:41.274446",
+      "last_active": null,
+      "status": "active",
+      "avatar": "",
+      "notes": "系统默认管理员账户"
+    },
+    "user1": {
+      "username": "user1",
+      "full_name": "测试用户1",
+      "email": "user1@example.com",
+      "phone": "13800138001",
+      "department": "测试部门",
+      "position": "测试工程师",
+      "created_at": "2025-08-13T16:04:41.274446",
+      "last_active": null,
+      "status": "active",
+      "avatar": "",
+      "notes": "测试用户账户"
+    }
+  },
+  "preferences": {
+    "admin": {
+      "theme": "dark",
+      "language": "zh_CN",
+      "font_size": "12",
+      "auto_save": true,
+      "notifications": true,
+      "timezone": "Asia/Shanghai"
+    },
+    "user1": {
+      "theme": "light",
+      "language": "zh_CN",
+      "font_size": "14",
+      "auto_save": false,
+      "notifications": false,
+      "timezone": "Asia/Shanghai"
+    }
+  },
+  "activities": {}
+}

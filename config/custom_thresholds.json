@@ -1,0 +1,6 @@
+{
+  "cpu_threshold": 80,
+  "memory_threshold": 85,
+  "sync_rate_threshold": 100,
+  "timestamp": "2026-05-03 05:56:18"
+}

@@ -1,0 +1,42 @@
+{
+    "exclude_patterns": [
+        "*.pyc",
+        "__pycache__",
+        "*.log",
+        "*.tmp",
+        "*.cache",
+        ".git",
+        ".vscode",
+        "node_modules",
+        "venv",
+        "env",
+        ".env",
+        "*.bak",
+        "backups/*",
+        "temp/*",
+        "logs/*"
+    ],
+    "include_patterns": [
+        "*.py",
+        "*.md",
+        "*.txt",
+        "*.json",
+        "*.xml",
+        "*.yaml",
+        "*.yml",
+        "*.ini",
+        "*.cfg",
+        "*.conf",
+        "*.html",
+        "*.css",
+        "*.js",
+        "*.png",
+        "*.jpg",
+        "*.jpeg",
+        "*.gif",
+        "*.svg"
+    ],
+    "compression": true,
+    "encryption": false,
+    "retention_days": 30
+}
