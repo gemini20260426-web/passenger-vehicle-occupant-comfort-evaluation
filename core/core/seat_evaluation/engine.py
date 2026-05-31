@@ -233,9 +233,17 @@ class SeatEvaluationEngine(QObject):
             total_accel = ops.vector.synthesize(ax, ay, az)
             if len(total_accel) > 0:
                 dt = 1.0 / sr
-                n_15 = int(0.015 / dt)  # 15ms (修正)
+                n_15 = max(1, int(sr * 0.015))
                 if n_15 < 2:
                     return 0.0
+
+                if sr < 200:
+                    old_n = len(total_accel)
+                    new_n = max(old_n, int(old_n * 200.0 / sr))
+                    t_old = np.linspace(0, (old_n - 1) / sr, old_n)
+                    t_new = np.linspace(0, t_old[-1], new_n)
+                    total_accel = np.interp(t_new, t_old, total_accel)
+                    n_15 = max(1, int((new_n / t_old[-1]) * 0.015)) if t_old[-1] > 0 else 1
                 max_hic = 0.0
                 
                 for i in range(len(total_accel) - n_15 + 1):

@@ -88,7 +88,7 @@ class CSDOperator:
             n = min(len(x), len(y))
             if n < 4:
                 return {'freq': np.array([]), 'H': np.array([]), 'coherence': np.array([])}
-            nperseg = min(nperseg, n, 256)
+            nperseg = min(nperseg, n)
             f, pxy = signal.csd(x[:n], y[:n], fs=sample_rate, nperseg=nperseg)
             _, pxx = signal.welch(x[:n], fs=sample_rate, nperseg=nperseg)
             _, pyy = signal.welch(y[:n], fs=sample_rate, nperseg=nperseg)
@@ -128,7 +128,9 @@ class WeightingOperator:
     Wk: Z轴振动加权 (座椅表面垂直方向)
     Wd: XY轴振动加权 (座椅表面水平方向)
 
-    实现参见 ISO 2631-1:1997 Annex A / Table 3, Table 4
+    频域实现: FFT → Wk(f)/Wd(f) → IFFT (精确，推荐)
+    时域实现: 级联Butterworth近似 (兼容回退)
+    参见 ISO 2631-1:1997 Annex A / Table 3, Table 4
     """
 
     def __init__(self):
@@ -136,19 +138,18 @@ class WeightingOperator:
 
     def apply_weighting_z(self, data: np.ndarray, sample_rate: float) -> np.ndarray:
         try:
+            return self.apply_weighting_z_via_freq(data, sample_rate)
+        except Exception:
             return self._apply_iso_weighting_time(data, sample_rate, axis='z')
-        except Exception as e:
-            logger.error(f"Z轴加权滤波失败: {e}")
-            return data
 
     def apply_weighting_xy(self, data: np.ndarray, sample_rate: float) -> np.ndarray:
         try:
+            return self.apply_weighting_xy_via_freq(data, sample_rate)
+        except Exception:
             return self._apply_iso_weighting_time(data, sample_rate, axis='xy')
-        except Exception as e:
-            logger.error(f"XY轴加权滤波失败: {e}")
-            return data
 
     def _apply_iso_weighting_time(self, data: np.ndarray, sample_rate: float, axis: str = 'z') -> np.ndarray:
+        """时域Wk/Wd加权 (级联Butterworth近似 — 频域实现更精确，仅作回退)"""
         if len(data) < 4:
             return data
 
@@ -597,7 +598,7 @@ class RainflowOperator:
                     i += 1
 
             for j in range(len(remaining) - 1):
-                amplitude = abs(remaining[j+1] - remaining[j]) / 4.0
+                amplitude = abs(remaining[j+1] - remaining[j]) / 2.0
                 mean = (remaining[j] + remaining[j+1]) / 2.0
                 if amplitude > 1e-9:
                     cycles.append({'amplitude': float(amplitude), 'mean': float(mean)})
@@ -627,11 +628,16 @@ class FDSOperator:
 
     S-N曲线: N = k × S^(-b)
     Miner累积: D = Σ (n_i / N_i)
+
+    加速度-应力转换: 对于线性弹性系统，应力 σ ∝ 加速度 a
+    转换因子 c_stress = m_eff / A_eff，其中 m_eff 为有效质量，A_eff 为有效截面积
+    默认 c_stress=1.0 保留相对比较能力，如需绝对损伤值请设置实际转换因子
     """
 
-    def __init__(self, b: float = 8.0, k: float = 1.0):
+    def __init__(self, b: float = 8.0, k: float = 1.0, c_stress: float = 1.0):
         self.b = b
         self.k = k
+        self.c_stress = c_stress
 
     def compute(self, rainflow_result: Dict[str, Any],
                 frequencies: Optional[np.ndarray] = None) -> Dict[str, Any]:
@@ -645,7 +651,8 @@ class FDSOperator:
             for cycle in cycles:
                 amplitude = cycle['amplitude']
                 if amplitude > 1e-9:
-                    Ni = self.k * (amplitude ** (-self.b))
+                    stress_amplitude = self.c_stress * amplitude
+                    Ni = self.k * (stress_amplitude ** (-self.b))
                     total_damage += 1.0 / (Ni + 1e-12)
 
             remaining_life = max(0.0, 1.0 - total_damage)
@@ -706,8 +713,14 @@ class StatisticalOperator:
         
         # 降采样避免数据量过大导致的统计膨胀
         ds_factor = max(1, len(e_valid) // 1000)
-        e_down = e_valid[::ds_factor]
-        c_down = c_valid[::ds_factor]
+        if ds_factor > 1:
+            rng = np.random.default_rng(42)
+            indices = rng.choice(len(e_valid), size=min(1000, len(e_valid)), replace=False)
+            e_down = e_valid[indices]
+            c_down = c_valid[indices]
+        else:
+            e_down = e_valid
+            c_down = c_valid
         
         t_stat, p_val = stats.ttest_rel(e_down, c_down)
         
@@ -866,8 +879,10 @@ class ISO2631_5_Operator:
             zeta_val = 0.23 * np.sqrt(self.weight_kg / 75.0)
 
             sys_h = signal.lti([0.0, 1.0], [1.0, 31.4, 400.0])
-            _, a_lx, _ = signal.lsim(sys_h, U=ax_h, T=timestamps)
-            _, a_ly, _ = signal.lsim(sys_h, U=ay_h, T=timestamps)
+            sys_h_d = signal.cont2discrete((sys_h.num, sys_h.den), dt, method='bilinear')
+            sys_h_d = signal.dlti(*sys_h_d[:2], dt=dt)
+            _, a_lx, _ = signal.dlsim(sys_h_d, ax_h)
+            _, a_ly, _ = signal.dlsim(sys_h_d, ay_h)
 
             a_lz = np.zeros(n)
             disp, vel = 0.0, 0.0

@@ -140,15 +140,15 @@ class SignalQuality:
 @dataclass
 class ProcessedFrame:
     timestamp: float
-    ax: float = 0.0           # IMU X轴加速度 (m/s²) — 含重力分量/振动/倾角
-    ay: float = 0.0           # IMU Y轴加速度 (m/s²)
-    az: float = 0.0           # IMU Z轴加速度 (m/s²)
+    ax: float = 0.0           # IMU惯性加速度 X轴 (m/s²) — 含重力分量, 传感器坐标系
+    ay: float = 0.0           # IMU惯性加速度 Y轴 (m/s²) — 含重力分量, 传感器坐标系
+    az: float = 0.0           # IMU惯性加速度 Z轴 (m/s²) — 含重力分量, 传感器坐标系
     gx: float = 0.0           # IMU X轴角速度 (rad/s)
     gy: float = 0.0           # IMU Y轴角速度 (rad/s)
     gz: float = 0.0           # IMU Z轴角速度 (rad/s)
-    speed: float = 0.0        # CAN车速 (km/h)
-    wheel: float = 0.0        # CAN方向盘角 (deg)
-    vehicle_accel: float = 0.0  # 车辆纵向加速度 (m/s²), 来自SpeedPreprocessor
+    speed: float = 0.0        # CAN车速 (km/h), 来自CAN总线
+    wheel: float = 0.0        # CAN方向盘角 (deg), 来自CAN总线
+    vehicle_accel: float = 0.0  # CAN车速微分加速度 (m/s²), 来自SpeedPreprocessor. 注意: 与IMU ax/ay/az物理意义不同(CAN为车速变化率, IMU为惯性加速度)
     steer_rate: float = 0.0   # 方向盘角速率绝对值 (deg/s), 来自SpeedPreprocessor
     loc1: float = 0.0
     loc2: float = 0.0
@@ -1115,9 +1115,9 @@ DIAGNOSIS_THRESHOLDS = {
     'SEAT_XY': {'pass': 0.80, 'warn': 1.00, 'desc': '座椅水平传递率', 'loc': 'seat_r'},
     'HIC15':   {'pass': 700,  'warn': 1000, 'desc': '头部损伤准则', 'loc': 'head'},
     'SRS_MRS': {'pass': 15.0, 'warn': 30.0, 'desc': '冲击响应谱峰值', 'loc': 'head'},
-    'SRS_Q':   {'pass': 10.0, 'warn': 15.0, 'desc': '品质因数', 'loc': 'head'},
+    'SRS_Q':   {'pass': 10.0, 'warn': 15.0, 'desc': '品质因数(固定参数)', 'loc': 'head', 'fixed': True},
     'SRS_PV':  {'pass': 5.0,  'warn': 10.0, 'desc': '峰值速度[m/s]', 'loc': 'head'},
-    'SRS_ATT': {'pass': 0.10, 'warn': 0.20, 'desc': '衰减时间[s]', 'loc': 'head'},
+    'SRS_ATT': {'pass': 0.10, 'warn': 0.20, 'desc': '衰减时间(固定参数)', 'loc': 'head', 'fixed': True},
     'ACC_H_PEAK': {'pass': 5.0, 'warn': 10.0, 'desc': '头部峰值加速度', 'loc': 'head'},
     'JERK_H':  {'pass': 5.0, 'warn': 15.0, 'desc': '头部冲击急动度', 'loc': 'head'},
     'FDS_D':   {'pass': 0.30, 'warn': 0.70, 'desc': '疲劳累积损伤', 'loc': 'seat_r'},
@@ -1294,6 +1294,8 @@ def generate_single_group_diagnosis(
         items = []
         for mid in metric_ids:
             td = DIAGNOSIS_THRESHOLDS[mid]
+            if td.get('fixed', False):
+                continue
             val = _get_metric(td['loc'], mid)
             state = _diagnosis_state(val, td)
             comment = _diagnosis_comment(mid, val, state, td)
