@@ -233,29 +233,61 @@ class ExtremaDownsampler:
             return data.copy()
 
         result = []
-        window_size = len(data) / target_points
+        window_size = len(data) // target_points
+        if window_size < 1:
+            window_size = 1
+
+        # 第一个点保留（确保曲线从起点开始）
+        result.append(data[0])
 
         for i in range(target_points):
-            start = int(i * window_size)
-            end = min(int((i + 1) * window_size), len(data) - 1)
-
+            start = i * window_size
             if start >= len(data):
                 break
+            end = min((i + 1) * window_size, len(data) - 1)
 
             window = data[start:end + 1]
             min_val = min(window, key=lambda x: x.v)
             max_val = max(window, key=lambda x: x.v)
 
-            if min_val.t < max_val.t:
-                result.append(min_val)
-                if min_val != max_val:
-                    result.append(max_val)
+            # 按时间顺序添加，确保严格递增
+            points_to_add = []
+            if min_val != max_val:
+                if min_val.t < max_val.t:
+                    points_to_add.append(min_val)
+                    points_to_add.append(max_val)
+                else:
+                    points_to_add.append(max_val)
+                    points_to_add.append(min_val)
             else:
-                result.append(max_val)
-                if min_val != max_val:
-                    result.append(min_val)
+                points_to_add.append(min_val)
+            
+            # 避免与前一个点重复
+            for p in points_to_add:
+                if not result or (abs(p.t - result[-1].t) > 1e-9 and p != result[-1]):
+                    result.append(p)
 
-        return result
+        # 最后一个点保留
+        if result[-1].t != data[-1].t:
+            result.append(data[-1])
+
+        # 确保严格按时间排序
+        result = sorted(result, key=lambda x: x.t)
+        
+        # 去重（时间太接近的点）
+        unique_result = []
+        last_t = None
+        for p in result:
+            if last_t is None or (p.t - last_t) > 1e-9:
+                unique_result.append(p)
+                last_t = p.t
+
+        # 确保不超过目标点数量太多（但保留峰谷）
+        if len(unique_result) > target_points * 3:
+            # 如果点太多，做二次降采样
+            return ExtremaDownsampler._downsample_max_points(unique_result, target_points * 2)
+
+        return unique_result
 
     @staticmethod
     def _downsample_average(data: List[DataPoint], target_points: int) -> List[DataPoint]:
@@ -1003,32 +1035,47 @@ class IMUWaveformChannel(QWidget):
             color = QColor(cfg.get('color', CLR_TEXT))
             width = cfg.get('width', self._line_width)
 
-            downsampled = ExtremaDownsampler.downsample(
-                vals, self._render_points, self._downsample_mode)
-
-            if len(downsampled) < 2:
-                continue
-
-            t_min = downsampled[0].t
-            t_max = downsampled[-1].t
-            if t_max - t_min < 1e-9:
-                t_max = t_min + 1.0
+            # 先裁剪数据到视窗范围（在降采样前裁剪，效果更好）
+            t_min_all = vals[0].t
+            t_max_all = vals[-1].t
+            desired_t_min = t_min_all
+            desired_t_max = t_max_all
 
             # 视图跳转：若设置了 view_start，从该时间开始渲染
             if view_start is not None:
                 if self._time_window is not None and self._time_window > 0:
                     view_end = view_start + self._time_window
                 else:
-                    view_end = t_max
-                if view_start < t_max and view_end > t_min:
-                    t_min = max(t_min, view_start)
-                    t_max = min(t_max, view_end)
+                    view_end = t_max_all
+                desired_t_min = max(t_min_all, view_start)
+                desired_t_max = min(t_max_all, view_end)
+            # 视窗时长裁剪: 只显示最近 N 秒
+            elif self._time_window is not None and self._time_window > 0:
+                desired_t_min = t_max_all - self._time_window
 
-            # 视窗时长裁剪: 只显示最近 N 秒（仅在无 view_start 时生效）
-            if view_start is None and self._time_window is not None and self._time_window > 0:
-                clip_t_min = t_max - self._time_window
-                if clip_t_min > t_min:
-                    t_min = clip_t_min
+            # 裁剪数据到视窗范围
+            if desired_t_min > t_min_all or desired_t_max < t_max_all:
+                # 找到裁剪范围内的点
+                cropped_vals = []
+                for dp in vals:
+                    if desired_t_min - 0.1 <= dp.t <= desired_t_max + 0.1:
+                        cropped_vals.append(dp)
+                if len(cropped_vals) < 2:
+                    continue
+                vals = cropped_vals
+
+            # 现在降采样
+            downsampled = ExtremaDownsampler.downsample(
+                vals, self._render_points, self._downsample_mode)
+
+            if len(downsampled) < 2:
+                continue
+
+            # 更新实际时间范围
+            t_min = downsampled[0].t
+            t_max = downsampled[-1].t
+            if t_max - t_min < 1e-9:
+                t_max = t_min + 1.0
 
             # 事件高亮区间绘制（仅在第一条曲线时绘制，避免重复）
             if name == list(self._series_config.keys())[0] and self._event_range:
@@ -1046,6 +1093,10 @@ class IMUWaveformChannel(QWidget):
             peak_points = []
 
             for i, dp in enumerate(downsampled):
+                # 只绘制视窗范围内的点
+                if dp.t < t_min - 1e-6 or dp.t > t_max + 1e-6:
+                    continue
+
                 t_norm = (dp.t - t_min) / (t_max - t_min)
                 x = ml + pw * t_norm
                 y_norm = (dp.v - y_lo) / (y_hi - y_lo)
@@ -1064,9 +1115,11 @@ class IMUWaveformChannel(QWidget):
                 if self._show_peaks and (i % 20 == 0 or i == len(downsampled) - 1 or i == 0):
                     peak_points.append((x, y))
 
-            last_x = ml + pw
-            fill_path.lineTo(last_x, mt + ph)
-            fill_path.closeSubpath()
+            if not first:
+                # 只有成功绘制了至少一个点才完成填充路径
+                last_x = ml + pw
+                fill_path.lineTo(last_x, mt + ph)
+                fill_path.closeSubpath()
 
             fill_color = QColor(color)
             fill_color.setAlpha(30)

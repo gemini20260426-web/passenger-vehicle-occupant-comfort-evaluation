@@ -377,6 +377,83 @@ class SeatEvaluationEngine(QObject):
                 return float(np.max(np.abs(disp)))
             return 0.0
 
+        # ── 新增: 脊柱压缩应力 S_D (ISO 2631-5) ──
+        elif metric_id == 'S_D':
+            if len(ax) > 0 and len(ay) > 0 and len(az) > 0:
+                s_d_result = self.operator_system.iso2631_5.compute(
+                    ax * 9.81, ay * 9.81, az * 9.81, sr
+                )
+                return float(s_d_result.get('S_d_MPa', 0.0))
+            return 0.0
+
+        # ── 新增: 头部三维合成位移 DISP_HR ──
+        elif metric_id == 'DISP_HR':
+            if len(ax) > 0 and len(ay) > 0 and len(az) > 0:
+                disp_x = ops.integration.integrate_to_displacement(ax, sr)
+                disp_y = ops.integration.integrate_to_displacement(ay, sr)
+                disp_z = ops.integration.integrate_to_displacement(az, sr)
+                min_len = min(len(disp_x), len(disp_y), len(disp_z))
+                disp_3d = np.sqrt(disp_x[:min_len]**2 + disp_y[:min_len]**2 + disp_z[:min_len]**2)
+                return float(np.max(disp_3d))
+            return 0.0
+
+        # ── 新增: 全时域统计指标 (实验组 E / 对照组 C / 胸骨 S) ──
+        elif metric_id.endswith('_E') or metric_id.endswith('_C') or metric_id.endswith('_S'):
+            group = data_window.get('group', 'E')
+            data_arrays = {'Ax': ax, 'Ay': ay, 'Az': az}
+
+            for axis in ['Ax', 'Ay', 'Az']:
+                for stat in ['RMS', 'Peak', 'Crest', 'VDV', 'Skew', 'Kurt', 'MAV', 'Impf']:
+                    expected_key = f'{stat}_{axis}_{group}'
+                    if metric_id != expected_key:
+                        continue
+
+                    arr = data_arrays[axis]
+                    if len(arr) < 10:
+                        return 0.0
+
+                    if stat == 'RMS':
+                        return float(np.sqrt(np.mean(arr**2)))
+                    elif stat == 'Peak':
+                        return float(np.max(np.abs(arr)))
+                    elif stat == 'Crest':
+                        rms = np.sqrt(np.mean(arr**2))
+                        return float(np.max(np.abs(arr)) / rms) if rms > 1e-6 else 0.0
+                    elif stat == 'VDV':
+                        return float(np.power(np.sum(arr**4) / sr, 0.25))
+                    elif stat == 'Skew':
+                        from scipy import stats
+                        return float(stats.skew(arr))
+                    elif stat == 'Kurt':
+                        from scipy import stats
+                        return float(stats.kurtosis(arr, fisher=True))
+                    elif stat == 'MAV':
+                        return float(np.mean(np.abs(arr)))
+                    elif stat == 'Impf':
+                        peak = np.max(np.abs(arr))
+                        mav = np.mean(np.abs(arr))
+                        return float(peak / mav) if mav > 1e-6 else 0.0
+
+        # ── 总VDV (E_total_VDV / C_total_VDV) ──
+        elif metric_id == 'E_total_VDV':
+            total = np.sqrt(ax**2 + ay**2 + az**2)
+            return float(np.power(np.sum(total**4) / sr, 0.25))
+        elif metric_id == 'C_total_VDV':
+            total = np.sqrt(ax**2 + ay**2 + az**2)
+            return float(np.power(np.sum(total**4) / sr, 0.25))
+
+        # ── 新增: 频段衰减指标 ──
+        elif metric_id.startswith('BAND_ATT_'):
+            exp_data = data_window.get('exp_data', az)
+            ctrl_data = data_window.get('ctrl_data', None)
+            if ctrl_data is None:
+                return 0.0
+            from .operators import BandpassAttenuationOperator
+            bpf = BandpassAttenuationOperator(fs=sr)
+            results = bpf.compute_band_attenuation(exp_data, ctrl_data)
+            band_key = metric_id.replace('BAND_ATT_', '').replace('_', '-') + 'Hz'
+            return float(results.get(band_key, 0.0))
+
         logger.warning(
             "V1引擎 _calculate_single_metric 碰到未知指标 %s，返回 0.0。"
             "请检查该指标是否已在 engine_v2.py 中实现。",

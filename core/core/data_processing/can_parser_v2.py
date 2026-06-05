@@ -332,6 +332,17 @@ class CANFullParser:
         """
         records = parse_can_file(file_path)
         
+        # 找到文件中所有记录的最小时间戳，避免硬编码 rel_time <= 2.0 对非零起始数据失效
+        min_time = float('inf')
+        for key, recs in records.items():
+            if recs:
+                t = recs[0]['rel_time']
+                if t < min_time:
+                    min_time = t
+        if min_time == float('inf'):
+            min_time = 0.0
+        park_upper = min_time + park_duration_sec
+
         for ch in IMU_CHANNELS:
             active_can_ids = []
             for cid in IMU_CAN_IDS:
@@ -341,14 +352,13 @@ class CANFullParser:
             if not active_can_ids:
                 continue
 
-            # 提取前 park_duration_sec 秒的数据作为驻车数据
+            # 提取前 park_duration_sec 秒的驻车数据（基于文件实际起始时间）
             park_records = {}
             for cid in active_can_ids:
                 key = (cid, ch)
                 if key in records:
                     all_recs = records[key]
-                    # 取前 N 秒的数据
-                    park_recs = [r for r in all_recs if r['rel_time'] <= park_duration_sec]
+                    park_recs = [r for r in all_recs if r['rel_time'] <= park_upper]
                     if park_recs:
                         park_records[key] = park_recs
 

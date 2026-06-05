@@ -478,7 +478,7 @@ class DataSourceListPanel(QWidget):
         reader_statuses = {}
         reader_manager = None
         try:
-            from ..utils.data_reader_manager import get_data_reader_manager
+            from modules.ui.left_control_panel.utils.data_reader_manager import get_data_reader_manager
             reader_manager = get_data_reader_manager(self.config_manager, self.pipeline_manager)
             if reader_manager:
                 reader_statuses = reader_manager.get_all_statuses()
@@ -913,7 +913,7 @@ class DataSourceListPanel(QWidget):
                 logger.error(f"启动 DataBridge 处理失败: {e}")
 
         try:
-            from ..utils.data_reader_manager import get_data_reader_manager
+            from modules.ui.left_control_panel.utils.data_reader_manager import get_data_reader_manager
             reader_manager = get_data_reader_manager(self.config_manager, self.pipeline_manager)
             if reader_manager:
                 if self._data_bridge and hasattr(reader_manager, 'set_data_bridge'):
@@ -950,7 +950,7 @@ class DataSourceListPanel(QWidget):
         self._monitor_timer.stop()
 
         try:
-            from ..utils.data_reader_manager import get_data_reader_manager
+            from modules.ui.left_control_panel.utils.data_reader_manager import get_data_reader_manager
             reader_manager = get_data_reader_manager(self.config_manager, self.pipeline_manager)
             if reader_manager and hasattr(reader_manager, 'stop_all_readers'):
                 reader_manager.stop_all_readers()
@@ -1006,7 +1006,7 @@ class DataSourceListPanel(QWidget):
             has_data = False
 
             try:
-                from ..utils.data_reader_manager import get_data_reader_manager
+                from modules.ui.left_control_panel.utils.data_reader_manager import get_data_reader_manager
                 reader_manager = get_data_reader_manager(self.config_manager, self.pipeline_manager)
                 if reader_manager:
                     for source_id, reader in reader_manager.readers.items():

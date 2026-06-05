@@ -1,6 +1,6 @@
 """驾驶行为评估报告组件（展示详细评估结果）"""
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
                              QTableWidget, QTableWidgetItem, QHeaderView, QPushButton,
                              QGroupBox, QDateEdit, QComboBox, QMessageBox)

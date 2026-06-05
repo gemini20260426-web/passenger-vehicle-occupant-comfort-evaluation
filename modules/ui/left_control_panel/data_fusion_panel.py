@@ -24,7 +24,7 @@ from .utils import (
 
 # 导入数据读取器管理器
 try:
-    from .utils.data_reader_manager import get_data_reader_manager
+    from modules.ui.left_control_panel.utils.data_reader_manager import get_data_reader_manager
     DATA_READER_AVAILABLE = True
 except ImportError:
     DATA_READER_AVAILABLE = False

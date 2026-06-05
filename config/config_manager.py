@@ -114,7 +114,7 @@ class ConfigManager(QObject):
             "host": "localhost",
             "port": 3306,
             "user": "root",
-            "password": "62215587",
+            "password": os.environ.get("MYSQL_PASSWORD", ""),
             "database": "driving_data",
             "connect_timeout": 5,
             "pool_size": 5,
@@ -161,7 +161,7 @@ class ConfigManager(QObject):
         },
         "InfluxDBConfig": {
             "url": "http://localhost:8086",
-            "token": "5dOXj9__rRfZ0PSkKCbwyOdXxF_AdGS5iwAJMHTW0HaYJvrkSxxU9fsklEpuw6MPX-RT_gXOKHJhns2-ZlDTbw==",
+            "token": os.environ.get("INFLUXDB_TOKEN", ""),
             "org": "my-org",
             "bucket": "imu-data"
         },

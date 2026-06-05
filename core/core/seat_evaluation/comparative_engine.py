@@ -5,6 +5,9 @@
 支持实验组vs对照组对比分析
 """
 
+import json
+import os
+import time
 import numpy as np
 import logging
 import warnings
@@ -44,7 +47,20 @@ class ComparativeEvaluationEngine(QObject):
         # 历史结果缓存
         self.results_cache: Dict[str, Dict[str, Any]] = {}
         
+        # JSON 文件备份路径
+        self._json_backup_dir = self._resolve_backup_dir()
+        
         logger.info("对照分析引擎初始化完成")
+    
+    def _resolve_backup_dir(self) -> str:
+        """解析 JSON 备份目录"""
+        output_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))),
+            'data_output', 'comparative_reports'
+        )
+        os.makedirs(output_dir, exist_ok=True)
+        return output_dir
     
     def compare_groups(self, trigger: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -303,6 +319,11 @@ class ComparativeEvaluationEngine(QObject):
         """
         保存对比报告
         
+        保存策略:
+        1. 优先使用 data_storage (EvaluationResultStore) 持久化到 SQLite
+        2. 同时缓存到内存 results_cache
+        3. 同时备份到 JSON 文件 (兜底)
+        
         Args:
             report: 报告字典
             
@@ -311,24 +332,189 @@ class ComparativeEvaluationEngine(QObject):
         """
         try:
             comparison_id = report.get('comparison_id', '')
+            if not comparison_id:
+                comparison_id = f"cmp_{int(time.time() * 1000)}"
+                report['comparison_id'] = comparison_id
+            
+            # 写入内存缓存
             self.results_cache[comparison_id] = report
             
-            # TODO: 实际保存到数据存储
-            if self.data_storage:
-                pass
+            # 1. 持久化到 SQLite (通过 data_storage)
+            db_saved = False
+            if self.data_storage is not None:
+                try:
+                    if hasattr(self.data_storage, 'save_event'):
+                        self.data_storage.save_event(
+                            session_id=report.get('timestamp', 'default'),
+                            event_id=comparison_id,
+                            event_type='comparative_analysis',
+                            group_tag='comparison',
+                            event_label=report.get('summary', ''),
+                            event_timestamp=report.get('timestamp', time.time()),
+                            overall_score=report.get('overall_improvement'),
+                            overall_grade=self._improvement_to_grade(
+                                report.get('overall_improvement', 0.0)
+                            ),
+                            summary=report.get('summary', ''),
+                            raw_payload=report
+                        )
+                        db_saved = True
+                    elif hasattr(self.data_storage, 'save'):
+                        self.data_storage.save(comparison_id, report)
+                        db_saved = True
+                except Exception as e:
+                    logger.warning(f"SQLite 保存失败, 回退到 JSON: {e}")
             
-            logger.info(f"对比报告已保存: {comparison_id}")
+            # 2. JSON 文件备份 (兜底)
+            json_path = os.path.join(
+                self._json_backup_dir, f"{comparison_id}.json"
+            )
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(report, f, ensure_ascii=False, indent=2, default=str)
+            
+            logger.info(
+                f"对比报告已保存: {comparison_id} "
+                f"(db={db_saved}, json={json_path})"
+            )
             return True
             
         except Exception as e:
             logger.error(f"保存对比报告失败: {e}")
             return False
     
+    def load_comparison_reports(self, 
+                                 limit: int = 100,
+                                 offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        加载历史对比报告
+        
+        加载策略:
+        1. 优先从 data_storage (SQLite) 加载
+        2. 回退到内存缓存
+        3. 回退到 JSON 文件扫描
+        
+        Args:
+            limit: 最大返回数量
+            offset: 偏移量
+            
+        Returns:
+            报告列表
+        """
+        reports = []
+        
+        # 1. 尝试从 SQLite 加载
+        if self.data_storage is not None and hasattr(self.data_storage, '_get_conn'):
+            try:
+                conn = self.data_storage._get_conn()
+                rows = conn.execute(
+                    """SELECT raw_payload FROM evaluation_events
+                       WHERE event_type = 'comparative_analysis'
+                       ORDER BY event_timestamp DESC
+                       LIMIT ? OFFSET ?""",
+                    (limit, offset)
+                ).fetchall()
+                for row in rows:
+                    try:
+                        payload = json.loads(row[0]) if row[0] else None
+                        if payload and isinstance(payload, dict):
+                            reports.append(payload)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                if reports:
+                    return reports
+            except Exception as e:
+                logger.debug(f"SQLite 加载失败: {e}")
+        
+        # 2. 内存缓存
+        if not reports:
+            cached = list(self.results_cache.values())
+            if cached:
+                cached.sort(
+                    key=lambda r: r.get('timestamp', 0.0), reverse=True
+                )
+                reports = cached[offset:offset + limit]
+        
+        # 3. JSON 文件扫描
+        if not reports and os.path.isdir(self._json_backup_dir):
+            json_files = sorted(
+                [f for f in os.listdir(self._json_backup_dir) if f.endswith('.json')],
+                reverse=True
+            )
+            loaded = 0
+            for fname in json_files:
+                if loaded >= limit:
+                    break
+                try:
+                    fpath = os.path.join(self._json_backup_dir, fname)
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        report = json.load(f)
+                    if isinstance(report, dict):
+                        reports.append(report)
+                        loaded += 1
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"JSON 加载失败 {fname}: {e}")
+        
+        return reports
+    
+    def delete_comparison_report(self, comparison_id: str) -> bool:
+        """
+        删除对比报告
+        
+        Args:
+            comparison_id: 对比报告ID
+            
+        Returns:
+            是否成功
+        """
+        try:
+            # 从内存缓存删除
+            self.results_cache.pop(comparison_id, None)
+            
+            # 从 SQLite 删除
+            if self.data_storage is not None and hasattr(self.data_storage, '_get_conn'):
+                try:
+                    conn = self.data_storage._get_conn()
+                    conn.execute(
+                        "DELETE FROM evaluation_events WHERE event_id = ?",
+                        (comparison_id,)
+                    )
+                    conn.commit()
+                except Exception as e:
+                    logger.warning(f"SQLite 删除失败: {e}")
+            
+            # 从 JSON 文件删除
+            json_path = os.path.join(
+                self._json_backup_dir, f"{comparison_id}.json"
+            )
+            if os.path.exists(json_path):
+                os.remove(json_path)
+            
+            logger.info(f"对比报告已删除: {comparison_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"删除对比报告失败: {e}")
+            return False
+    
     def get_saved_reports(self) -> List[Dict[str, Any]]:
         """
-        获取已保存的报告列表
+        获取已保存的报告列表 (从内存缓存)
         
         Returns:
             报告列表
         """
         return list(self.results_cache.values())
+    
+    @staticmethod
+    def _improvement_to_grade(improvement: float) -> str:
+        """将改进分数转换为等级"""
+        if improvement > 10:
+            return 'A'
+        elif improvement > 5:
+            return 'B'
+        elif improvement > -5:
+            return 'C'
+        elif improvement > -10:
+            return 'D'
+        else:
+            return 'E'

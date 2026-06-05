@@ -7,6 +7,7 @@
 """
 
 import pymysql
+import os
 import logging
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ DB_CONFIG = {
     "host": "localhost",
     "port": 3306,
     "user": "root",
-    "password": "62215587",
+    "password": os.environ.get("MYSQL_PASSWORD", ""),
     "database": "driving_data"
 }
 

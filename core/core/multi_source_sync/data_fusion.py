@@ -29,8 +29,7 @@ class FusionAlgorithm(Enum):
     """融合算法枚举"""
     WEIGHTED_AVERAGE = "weighted_average"  # 加权平均
     KALMAN_FILTER = "kalman_filter"        # 卡尔曼滤波
-    NEURAL_NETWORK = "neural_network"      # 神经网络
-    ENSEMBLE = "ensemble"                   # 集成融合
+    STREAMING_KALMAN = "streaming_kalman"  # 流式卡尔曼滤波 (新增)
 
 
 @dataclass
@@ -266,30 +265,27 @@ class WeightedAverageFusion:
             return None
     
     def _extract_numeric_value(self, data: Any) -> Optional[float]:
-        """从数据中提取数值"""
-        try:
-            if isinstance(data, (int, float)):
+        """从数据中提取数值 (扁平化, 无嵌套 try/except)"""
+        if data is None:
+            return None
+        if isinstance(data, (int, float, np.integer, np.floating)):
+            return float(data)
+        if isinstance(data, str):
+            try:
                 return float(data)
-            elif isinstance(data, dict):
-                # 尝试从字典中提取数值
-                for key in ['value', 'data', 'magnitude', 'amplitude']:
-                    if key in data:
-                        val = data[key]
-                        if isinstance(val, (int, float)):
-                            return float(val)
-                        elif isinstance(val, str):
-                            try:
-                                return float(val)
-                            except ValueError:
-                                continue
-            elif isinstance(data, str):
-                try:
-                    return float(data)
-                except ValueError:
-                    return None
-            return None
-        except Exception:
-            return None
+            except (ValueError, TypeError):
+                return None
+        if isinstance(data, dict):
+            for key in ('value', 'data', 'magnitude', 'amplitude'):
+                val = data.get(key)
+                if isinstance(val, (int, float, np.integer, np.floating)):
+                    return float(val)
+                if isinstance(val, str):
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        continue
+        return None
     
     def _evaluate_fusion_quality(self, fused_data: Dict[str, Any]) -> FusionQualityMetrics:
         """评估融合质量"""
@@ -346,14 +342,60 @@ class WeightedAverageFusion:
 
 
 class KalmanFilterFusion:
-    """卡尔曼滤波融合算法"""
+    """卡尔曼滤波融合算法 (多维状态向量, 6-12维)
     
-    def __init__(self):
+    状态向量: [x, vx, ax, y, vy, ay, z, vz, az]  (9维IMU)
+    或简化: [value, velocity, acceleration]         (3维通用)
+    
+    支持:
+    - 多维状态估计
+    - 自适应噪声协方差
+    - 多传感器测量融合
+    """
+    
+    def __init__(self, state_dim: int = 3, dt: float = 0.01):
         self.name = "kalman_filter"
-        self.process_noise = 0.1
-        self.measurement_noise = 0.5
+        self.state_dim = state_dim  # 状态维度
+        self.dt = dt                # 时间步长
+        
+        # 状态向量 x
+        self.x = np.zeros(state_dim)
+        
+        # 状态协方差矩阵 P
+        self.P = np.eye(state_dim) * 1000.0
+        
+        # 状态转移矩阵 F
+        self.F = self._build_transition_matrix(state_dim, dt)
+        
+        # 过程噪声协方差 Q
+        self.Q = np.eye(state_dim) * 0.01
+        
+        # 测量矩阵 H (观测第1个状态分量)
+        self.H = np.zeros((1, state_dim))
+        self.H[0, 0] = 1.0
+        
+        # 测量噪声协方差 R
+        self.R = np.array([[0.5]])
+        
         self.performance_history = []
-        self.state_estimates = {}
+        self.state_history: List[np.ndarray] = []
+    
+    def _build_transition_matrix(self, dim: int, dt: float) -> np.ndarray:
+        """构建状态转移矩阵
+        
+        对于3维通用状态 [value, velocity, acceleration]:
+        F = [[1, dt, 0.5*dt^2],
+             [0, 1,  dt       ],
+             [0, 0,  1        ]]
+        """
+        F = np.eye(dim)
+        if dim >= 2:
+            # 速度分量
+            F[0, 1] = dt
+            if dim >= 3:
+                F[0, 2] = 0.5 * dt * dt
+                F[1, 2] = dt
+        return F
     
     def fuse(self, aligned_data: Dict[str, Any]) -> Dict[str, Any]:
         """执行卡尔曼滤波融合"""
@@ -361,41 +403,138 @@ class KalmanFilterFusion:
             if not aligned_data:
                 return {}
             
-            # 初始化状态估计
-            self._initialize_state_estimates(aligned_data)
+            # 重置状态
+            self._reset_state()
             
-            # 执行卡尔曼滤波融合
-            fused_data = self._perform_kalman_fusion(aligned_data)
+            # 执行卡尔曼滤波
+            fused_values = self._perform_kalman_fusion(aligned_data)
             
-            # 评估融合质量
-            fusion_quality = self._evaluate_fusion_quality(fused_data)
-            
-            # 记录性能
+            fusion_quality = self._evaluate_fusion_quality(
+                {'values': fused_values}
+            )
             self._record_performance(fusion_quality)
             
-            # 将融合结果和元数据合并到一个统一的结构中
-            result = {
-                'fused_data': fused_data,
+            return {
+                'fused_data': {
+                    'timestamp': time.time(),
+                    'values': fused_values,
+                    'metadata': {
+                        'fusion_algorithm': self.name,
+                        'state_dim': self.state_dim,
+                        'kalman_params': {
+                            'process_noise': np.trace(self.Q),
+                            'measurement_noise': float(self.R[0, 0]),
+                        }
+                    }
+                },
                 'metadata': {
                     'quality_metrics': fusion_quality,
                     'algorithm': self.name,
-                    'kalman_params': {
-                        'process_noise': self.process_noise,
-                        'measurement_noise': self.measurement_noise
-                    },
                     'fusion_timestamp': time.time()
                 }
             }
-            
-            return result
             
         except Exception as e:
             logger.error(f"卡尔曼滤波融合失败: {e}")
             return {}
     
     def fuse_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """融合数据（兼容性方法）"""
         return self.fuse(data)
+    
+    def fuse_numpy(self, data: np.ndarray, dt: Optional[float] = None) -> np.ndarray:
+        """直接对 numpy 数组进行卡尔曼滤波 (CSV格式支持)
+        
+        Args:
+            data: (N,) 或 (N, M) 测量值数组
+            dt: 时间步长 (默认使用初始化值)
+            
+        Returns:
+            (N,) 滤波后的值
+        """
+        if dt is not None:
+            self.dt = dt
+            self.F = self._build_transition_matrix(self.state_dim, dt)
+        
+        data = np.atleast_1d(data)
+        if data.ndim > 1:
+            data = data.ravel()
+        
+        n = len(data)
+        filtered = np.zeros(n)
+        self._reset_state()
+        
+        for i in range(n):
+            # 预测
+            self._predict()
+            # 更新
+            self._update(data[i])
+            filtered[i] = self.x[0]
+        
+        return filtered
+    
+    def fuse_numpy_batch(self, data: np.ndarray, dt: Optional[float] = None) -> Dict[str, np.ndarray]:
+        """批量 numpy 融合: 返回滤波值 + 速度 + 加速度估计
+        
+        Args:
+            data: (N,) 测量值
+            dt: 时间步长
+            
+        Returns:
+            {'filtered': (N,), 'velocity': (N,), 'acceleration': (N,)}
+        """
+        if dt is not None:
+            self.dt = dt
+            self.F = self._build_transition_matrix(self.state_dim, dt)
+        
+        data = np.atleast_1d(data).ravel()
+        n = len(data)
+        filtered = np.zeros(n)
+        velocity = np.zeros(n) if self.state_dim >= 2 else None
+        acceleration = np.zeros(n) if self.state_dim >= 3 else None
+        
+        self._reset_state()
+        
+        for i in range(n):
+            self._predict()
+            self._update(data[i])
+            filtered[i] = self.x[0]
+            if velocity is not None:
+                velocity[i] = self.x[1] if self.state_dim >= 2 else 0
+            if acceleration is not None:
+                acceleration[i] = self.x[2] if self.state_dim >= 3 else 0
+        
+        result = {'filtered': filtered}
+        if velocity is not None:
+            result['velocity'] = velocity
+        if acceleration is not None:
+            result['acceleration'] = acceleration
+        return result
+    
+    def _reset_state(self):
+        """重置状态估计"""
+        self.x = np.zeros(self.state_dim)
+        self.P = np.eye(self.state_dim) * 1000.0
+        self.state_history = []
+    
+    def _predict(self):
+        """预测步骤"""
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+    
+    def _update(self, measurement: float):
+        """更新步骤 (标量测量值)
+        
+        Args:
+            measurement: 测量值
+        """
+        innovation = measurement - self.H @ self.x
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+        
+        self.x = self.x + K @ innovation
+        self.P = (np.eye(self.state_dim) - K @ self.H) @ self.P
+        
+        self.state_history.append(self.x.copy())
     
     def adapt_to_noise(self, noisy_measurements: List[float]):
         """自适应噪声参数"""
@@ -403,75 +542,51 @@ class KalmanFilterFusion:
             if len(noisy_measurements) < 2:
                 return
             
-            # 计算测量值的方差作为噪声估计
             measurements_array = np.array(noisy_measurements)
             noise_variance = np.var(measurements_array)
+            self.R = np.array([[max(0.001, noise_variance)]])
             
-            # 调整测量噪声参数
-            self.measurement_noise = max(0.1, noise_variance)
-            
-            # 调整过程噪声参数
             if len(noisy_measurements) > 2:
-                # 计算测量值的变化率
                 diffs = np.diff(noisy_measurements)
                 process_variance = np.var(diffs)
-                self.process_noise = max(0.01, process_variance)
+                self.Q = np.eye(self.state_dim) * max(1e-6, process_variance)
             
-            logger.info(f"噪声参数已调整: measurement_noise={self.measurement_noise:.3f}, process_noise={self.process_noise:.3f}")
+            logger.info(
+                f"噪声参数已调整: R={float(self.R[0,0]):.4f}, "
+                f"Q_trace={np.trace(self.Q):.4f}"
+            )
             
         except Exception as e:
             logger.error(f"自适应噪声参数失败: {e}")
     
     @property
     def noise_params(self) -> Dict[str, float]:
-        """获取噪声参数"""
         return {
-            'process_noise': self.process_noise,
-            'measurement_noise': self.measurement_noise
+            'process_noise_trace': float(np.trace(self.Q)),
+            'measurement_noise': float(self.R[0, 0]),
         }
     
-    def _initialize_state_estimates(self, aligned_data: Dict[str, Any]):
-        """初始化状态估计"""
-        for source_id in aligned_data.keys():
-            if source_id not in self.state_estimates:
-                self.state_estimates[source_id] = {
-                    'state': 0.0,
-                    'covariance': 1.0
-                }
-    
-    def _perform_kalman_fusion(self, aligned_data: Dict[str, Any]) -> Dict[str, Any]:
-        """执行卡尔曼滤波融合"""
-        fused_data = {
-            'timestamp': time.time(),
-            'values': {},
-            'metadata': {
-                'fusion_algorithm': self.name,
-                'state_estimates': self.state_estimates.copy()
-            }
-        }
-        
-        # 获取所有时间戳
+    def _perform_kalman_fusion(self, aligned_data: Dict[str, Any]) -> Dict[float, float]:
+        """执行卡尔曼滤波融合 (多维版)"""
         all_timestamps = set()
         for source_data in aligned_data.values():
-            timestamps = source_data.get('timestamps', [])
-            all_timestamps.update(timestamps)
+            all_timestamps.update(source_data.get('timestamps', []))
         
-        all_timestamps = sorted(list(all_timestamps))
+        all_timestamps = sorted(all_timestamps)
+        fused_values = {}
         
-        # 对每个时间点进行卡尔曼滤波融合
-        for timestamp in all_timestamps:
-            fused_value = self._kalman_fuse_at_timestamp(timestamp, aligned_data)
-            if fused_value is not None:
-                fused_data['values'][timestamp] = fused_value
+        for ts in all_timestamps:
+            measurement = self._kalman_fuse_at_timestamp(ts, aligned_data)
+            if measurement is not None:
+                fused_values[ts] = measurement
         
-        return fused_data
+        return fused_values
     
     def _kalman_fuse_at_timestamp(self, timestamp: float, aligned_data: Dict[str, Any]) -> Optional[float]:
-        """在指定时间点进行卡尔曼滤波融合"""
+        """在指定时间点进行卡尔曼滤波融合 (多维版)"""
         measurements = []
         measurement_noises = []
         
-        # 收集各数据源的测量值
         for source_id, source_data in aligned_data.items():
             timestamps = source_data.get('timestamps', [])
             values = source_data.get('values', [])
@@ -481,87 +596,55 @@ class KalmanFilterFusion:
                 value = values[idx]
                 quality_score = source_data.get('quality_score', 0.5)
                 
-                # 确保value是数值类型
-                if isinstance(value, (int, float)):
-                    measurements.append(value)
-                    # 基于质量分数调整测量噪声
-                    adjusted_noise = self.measurement_noise / max(0.1, quality_score)
+                if isinstance(value, (int, float, np.integer, np.floating)):
+                    measurements.append(float(value))
+                    adjusted_noise = float(self.R[0, 0]) / max(0.1, quality_score)
                     measurement_noises.append(adjusted_noise)
                 elif isinstance(value, dict):
-                    # 如果value是字典，尝试提取数值
                     numeric_value = value.get('value', value.get('data', 0))
-                    if isinstance(numeric_value, (int, float)):
-                        measurements.append(numeric_value)
-                        adjusted_noise = self.measurement_noise / max(0.1, quality_score)
-                        measurement_noises.append(adjusted_noise)
+                    if isinstance(numeric_value, (int, float, np.integer, np.floating)):
+                        measurements.append(float(numeric_value))
+                        measurement_noises.append(float(self.R[0, 0]) / max(0.1, quality_score))
                 else:
-                    # 其他类型，尝试转换为数值
                     try:
-                        numeric_value = float(value)
-                        measurements.append(numeric_value)
-                        adjusted_noise = self.measurement_noise / max(0.1, quality_score)
-                        measurement_noises.append(adjusted_noise)
+                        measurements.append(float(value))
+                        measurement_noises.append(float(self.R[0, 0]) / max(0.1, quality_score))
                     except (ValueError, TypeError):
-                        logger.warning(f"无法转换测量值 {value} 为数值类型")
                         continue
         
         if not measurements:
             return None
         
-        # 执行卡尔曼滤波融合
-        fused_value = self._kalman_filter_step(measurements, measurement_noises)
-        return fused_value
-    
-    def _kalman_filter_step(self, measurements: List[float], measurement_noises: List[float]) -> float:
-        """卡尔曼滤波步骤"""
-        if not measurements:
-            return 0.0
+        # 预测
+        self._predict()
         
-        # 简化的卡尔曼滤波实现
-        # 预测步骤
-        predicted_state = 0.0  # 假设状态保持不变
-        predicted_covariance = 1.0 + self.process_noise
-        
-        # 更新步骤
-        fused_value = predicted_state
-        total_weight = 0
-        
+        # 使用多传感器测量更新
         for measurement, noise in zip(measurements, measurement_noises):
-            # 计算卡尔曼增益
-            kalman_gain = predicted_covariance / (predicted_covariance + noise)
-            
-            # 更新状态估计
-            fused_value += kalman_gain * (measurement - predicted_state)
-            total_weight += kalman_gain
+            self.R = np.array([[noise]])
+            self._update(measurement)
         
-        # 归一化
-        if total_weight > 0:
-            fused_value /= total_weight
-        
-        return fused_value
+        return float(self.x[0])
     
     def _evaluate_fusion_quality(self, fused_data: Dict[str, Any]) -> FusionQualityMetrics:
-        """评估融合质量"""
         metrics = FusionQualityMetrics(timestamp=time.time())
-        
         if not fused_data or 'values' not in fused_data:
             return metrics
         
-        # 计算准确性分数（基于卡尔曼滤波参数）
-        metrics.accuracy_score = max(0, 1 - self.process_noise)
+        values = fused_data['values']
+        if isinstance(values, dict):
+            data_points = len(values)
+        else:
+            data_points = len(values) if hasattr(values, '__len__') else 0
         
-        # 计算稳定性分数（基于数据点数量）
-        data_points = len(fused_data['values'])
+        metrics.accuracy_score = max(0, 1 - np.trace(self.Q) / 10)
         metrics.stability_score = min(1.0, data_points / 100)
         
-        # 计算一致性分数（基于状态估计的一致性）
-        if self.state_estimates:
-            state_values = [est['state'] for est in self.state_estimates.values()]
-            if state_values:
-                state_variance = np.var(state_values)
-                avg_state = np.mean(state_values)
-                if avg_state != 0:
-                    metrics.consistency_score = max(0, 1 - abs(state_variance / avg_state))
+        if self.state_history:
+            states = np.array([s[0] for s in self.state_history])
+            if len(states) > 1:
+                avg_state = np.mean(states)
+                if abs(avg_state) > 1e-6:
+                    metrics.consistency_score = max(0, 1 - np.std(states) / abs(avg_state))
                 else:
                     metrics.consistency_score = 0.5
             else:
@@ -569,32 +652,147 @@ class KalmanFilterFusion:
         else:
             metrics.consistency_score = 0.5
         
-        # 计算综合分数
         metrics.calculate_overall_score()
-        
         return metrics
     
     def _record_performance(self, fusion_quality: FusionQualityMetrics):
-        """记录性能"""
-        performance_record = {
+        self.performance_history.append({
             'quality': fusion_quality.overall_score,
             'timestamp': time.time()
-        }
-        
-        self.performance_history.append(performance_record)
-        
-        # 保持历史记录在合理大小
+        })
         if len(self.performance_history) > 100:
             self.performance_history.pop(0)
 
 
+class StreamingKalmanFusion:
+    """流式卡尔曼滤波融合 (逐帧处理, 支持实时在线)
+    
+    与 KalmanFilterFusion 的区别:
+    - 不需要全量时间戳, 逐帧处理
+    - 状态持续保持, 不清空
+    - 支持 numpy 数组实时输入
+    """
+    
+    def __init__(self, state_dim: int = 3, dt: float = 0.01):
+        self.name = "streaming_kalman"
+        self.state_dim = state_dim
+        self.dt = dt
+        
+        self.x = np.zeros(state_dim)
+        self.P = np.eye(state_dim) * 1000.0
+        self.F = self._build_transition_matrix(state_dim, dt)
+        self.Q = np.eye(state_dim) * 0.01
+        self.H = np.zeros((1, state_dim))
+        self.H[0, 0] = 1.0
+        self.R = np.array([[0.5]])
+        
+        self.frame_count = 0
+        self.filtered_history: List[float] = []
+    
+    def _build_transition_matrix(self, dim: int, dt: float) -> np.ndarray:
+        F = np.eye(dim)
+        if dim >= 2:
+            F[0, 1] = dt
+            if dim >= 3:
+                F[0, 2] = 0.5 * dt * dt
+                F[1, 2] = dt
+        return F
+    
+    def update(self, measurement: float) -> float:
+        """处理单帧测量值, 返回滤波后的值
+        
+        Args:
+            measurement: 当前帧测量值
+            
+        Returns:
+            滤波后的估计值
+        """
+        # 预测
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        
+        # 更新
+        innovation = measurement - self.H @ self.x
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+        
+        self.x = self.x + K @ innovation
+        self.P = (np.eye(self.state_dim) - K @ self.H) @ self.P
+        
+        self.frame_count += 1
+        filtered_value = float(self.x[0])
+        self.filtered_history.append(filtered_value)
+        
+        # 限制历史长度
+        if len(self.filtered_history) > 10000:
+            self.filtered_history = self.filtered_history[-5000:]
+        
+        return filtered_value
+    
+    def update_multi_source(self, measurements: List[float],
+                           quality_scores: Optional[List[float]] = None) -> float:
+        """多传感器流式融合
+        
+        Args:
+            measurements: 多个传感器的测量值
+            quality_scores: 对应的质量分数 (用于调整噪声)
+            
+        Returns:
+            融合后的估计值
+        """
+        if not measurements:
+            return float(self.x[0])
+        
+        # 预测
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        
+        for i, measurement in enumerate(measurements):
+            if quality_scores and i < len(quality_scores):
+                adjusted_R = np.array([[float(self.R[0, 0]) / max(0.1, quality_scores[i])]])
+            else:
+                adjusted_R = self.R
+            
+            innovation = measurement - self.H @ self.x
+            S = self.H @ self.P @ self.H.T + adjusted_R
+            K = self.P @ self.H.T @ np.linalg.inv(S)
+            
+            self.x = self.x + K @ innovation
+            self.P = (np.eye(self.state_dim) - K @ self.H) @ self.P
+        
+        self.frame_count += 1
+        return float(self.x[0])
+    
+    def get_state(self) -> Dict[str, Any]:
+        """获取当前状态估计"""
+        return {
+            'value': float(self.x[0]),
+            'velocity': float(self.x[1]) if self.state_dim >= 2 else 0.0,
+            'acceleration': float(self.x[2]) if self.state_dim >= 3 else 0.0,
+            'covariance_trace': float(np.trace(self.P)),
+            'frame_count': self.frame_count,
+        }
+    
+    def reset(self):
+        """重置状态"""
+        self.x = np.zeros(self.state_dim)
+        self.P = np.eye(self.state_dim) * 1000.0
+        self.frame_count = 0
+        self.filtered_history = []
+
+
 class AdaptiveDataFusion:
-    """自适应数据融合算法"""
+    """自适应数据融合算法 (已废弃 — 请使用 IMUDualRedundantFusion)
+    
+    Deprecated: 通用融合引擎, 从未在本项目数据上实测, 输入格式与本CSV不匹配。
+    替代方案: core.core.multi_source_sync.imu_fusion_engine.IMUDualRedundantFusion
+    """
     
     def __init__(self):
         self.fusion_algorithms = {
             FusionAlgorithm.WEIGHTED_AVERAGE: WeightedAverageFusion(),
-            FusionAlgorithm.KALMAN_FILTER: KalmanFilterFusion(),
+            FusionAlgorithm.KALMAN_FILTER: KalmanFilterFusion(state_dim=3),
+            FusionAlgorithm.STREAMING_KALMAN: StreamingKalmanFusion(state_dim=3),
         }
         
         self.algorithm_performance = {}
@@ -634,6 +832,87 @@ class AdaptiveDataFusion:
         except Exception as e:
             logger.error(f"数据融合失败: {e}")
             return {}
+    
+    def fuse_numpy(self, data: np.ndarray, dt: float = 0.01,
+                   algorithm: FusionAlgorithm = FusionAlgorithm.KALMAN_FILTER) -> np.ndarray:
+        """直接对 numpy 数组进行融合 (CSV/离线数据格式)
+        
+        Args:
+            data: (N,) 或 (N, M) 测量值数组
+            dt: 时间步长
+            algorithm: 融合算法
+            
+        Returns:
+            (N,) 融合后的值
+        """
+        if algorithm not in self.fusion_algorithms:
+            raise ValueError(f"不支持的融合算法: {algorithm}")
+        
+        algo = self.fusion_algorithms[algorithm]
+        if hasattr(algo, 'fuse_numpy'):
+            return algo.fuse_numpy(data, dt)
+        elif hasattr(algo, 'update'):
+            # StreamingKalmanFusion
+            result = np.zeros(len(data))
+            for i in range(len(data)):
+                result[i] = algo.update(float(data[i]))
+            return result
+        else:
+            raise TypeError(f"算法 {algorithm} 不支持 numpy 融合")
+    
+    def fuse_numpy_batch(self, data: np.ndarray, dt: float = 0.01,
+                         algorithm: FusionAlgorithm = FusionAlgorithm.KALMAN_FILTER) -> Dict[str, np.ndarray]:
+        """批量 numpy 融合: 返回滤波值 + 速度 + 加速度
+        
+        Args:
+            data: (N,) 测量值
+            dt: 时间步长
+            algorithm: 融合算法
+            
+        Returns:
+            {'filtered': (N,), 'velocity': (N,), 'acceleration': (N,)}
+        """
+        if algorithm not in self.fusion_algorithms:
+            raise ValueError(f"不支持的融合算法: {algorithm}")
+        
+        algo = self.fusion_algorithms[algorithm]
+        if hasattr(algo, 'fuse_numpy_batch'):
+            return algo.fuse_numpy_batch(data, dt)
+        else:
+            filtered = algo.fuse_numpy(data, dt)
+            return {'filtered': filtered}
+    
+    @staticmethod
+    def interp_align(data_a: np.ndarray, ts_a: np.ndarray,
+                     data_b: np.ndarray, ts_b: np.ndarray,
+                     target_ts: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
+        """不同采样率插值对齐
+        
+        将两个不同采样率的数据源对齐到统一时间轴。
+        
+        Args:
+            data_a: 数据源A (N,)
+            ts_a: 数据源A的时间戳 (N,)
+            data_b: 数据源B (M,)
+            ts_b: 数据源B的时间戳 (M,)
+            target_ts: 目标时间轴 (默认合并两个时间轴)
+            
+        Returns:
+            {'ts': (K,), 'data_a': (K,), 'data_b': (K,)}
+        """
+        if target_ts is None:
+            target_ts = np.union1d(ts_a, ts_b)
+        
+        target_ts = np.sort(target_ts)
+        
+        aligned_a = np.interp(target_ts, ts_a, data_a)
+        aligned_b = np.interp(target_ts, ts_b, data_b)
+        
+        return {
+            'ts': target_ts,
+            'data_a': aligned_a,
+            'data_b': aligned_b,
+        }
     
     def select_best_algorithm(self, performance_data: Dict[Any, float]) -> Any:
         """选择最佳算法"""
@@ -985,201 +1264,38 @@ if __name__ == "__main__":
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # 创建自适应数据融合引擎
+    # 模拟真实IMU数据 (1000Hz, 1秒)
+    np.random.seed(42)
+    t = np.arange(0, 1.0, 0.001)
+    # 模拟加速度信号: 正弦波 + 噪声
+    signal = 0.5 * np.sin(2 * np.pi * 5 * t) + 0.1 * np.random.randn(len(t))
+    
+    # 1. 多维卡尔曼滤波融合
+    kf = KalmanFilterFusion(state_dim=3, dt=0.001)
+    result = kf.fuse_numpy_batch(signal)
+    logger.info(f"多维KF融合: filtered均值={result['filtered'].mean():.4f}, "
+                f"velocity范围=[{result['velocity'].min():.4f}, {result['velocity'].max():.4f}]")
+    
+    # 2. 流式卡尔曼滤波
+    sf = StreamingKalmanFusion(state_dim=3, dt=0.001)
+    filtered_stream = np.array([sf.update(float(v)) for v in signal])
+    logger.info(f"流式KF融合: 均值={filtered_stream.mean():.4f}, 状态={sf.get_state()}")
+    
+    # 3. 插值对齐 (模拟不同采样率: 1000Hz vs 100Hz)
+    ts_imu = np.arange(0, 1.0, 0.001)  # 1000Hz IMU
+    ts_cnap = np.arange(0, 1.0, 0.01)  # 100Hz CNAP
+    data_imu = signal
+    data_cnap = 120.0 + 5.0 * np.sin(2 * np.pi * 0.5 * ts_cnap) + 0.5 * np.random.randn(len(ts_cnap))
+    
+    aligned = AdaptiveDataFusion.interp_align(data_imu, ts_imu, data_cnap, ts_cnap)
+    logger.info(f"插值对齐: ts={len(aligned['ts'])}点, "
+                f"IMU范围=[{aligned['data_a'].min():.2f}, {aligned['data_a'].max():.2f}], "
+                f"CNAP范围=[{aligned['data_b'].min():.2f}, {aligned['data_b'].max():.2f}]")
+    
+    # 4. 自适应融合引擎
     fusion_engine = AdaptiveDataFusion()
-    
-    # 真实数据示例（需要替换为实际数据源）
-    aligned_data = {
-        'imu_source': {
-            'id': 'imu_source',
-            'type': 'imu',
-            'timestamps': [time.time() + i * 0.01 for i in range(10)],
-            'values': [0.0] * 10,  # 真实IMU数据待实现
-            'quality_score': 0.9
-        },
-        'cnap_source': {
-            'id': 'cnap_source',
-            'type': 'cnap',
-            'timestamps': [time.time() + i * 1.0 for i in range(10)],
-            'values': [120.0] * 10,  # 真实CNAP数据待实现
-            'quality_score': 0.85
-        }
-    }
-    
-    # 执行数据融合
-    result = fusion_engine.fuse_data(aligned_data)
-    
-    # 输出结果
-    logger.info(f"融合结果: {result}")
-    
-    # 获取性能摘要
     performance = fusion_engine.get_performance_summary()
-    logger.info(f"性能摘要: {performance}")
+    logger.info(f"融合引擎: {performance['current_algorithm']}")
+    logger.info(f"可用算法: {fusion_engine.get_available_algorithms()}")
     
-    # 关闭引擎
-    fusion_engine.shutdown()
-
-    
-    def get_available_algorithms(self) -> List[str]:
-        """获取可用的融合算法"""
-        return [algorithm.value for algorithm in self.fusion_algorithms.keys()]
-    
-    def shutdown(self):
-        """关闭数据融合引擎"""
-        self.monitoring_enabled = False
-        if self.monitoring_thread:
-            self.monitoring_thread.join(timeout=1.0)
-        logger.info("数据融合引擎已关闭")
-
-
-# 使用示例
-if __name__ == "__main__":
-    # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    # 创建自适应数据融合引擎
-    fusion_engine = AdaptiveDataFusion()
-    
-    # 真实数据示例（需要替换为实际数据源）
-    aligned_data = {
-        'imu_source': {
-            'id': 'imu_source',
-            'type': 'imu',
-            'timestamps': [time.time() + i * 0.01 for i in range(10)],
-            'values': [0.0] * 10,  # 真实IMU数据待实现
-            'quality_score': 0.9
-        },
-        'cnap_source': {
-            'id': 'cnap_source',
-            'type': 'cnap',
-            'timestamps': [time.time() + i * 1.0 for i in range(10)],
-            'values': [120.0] * 10,  # 真实CNAP数据待实现
-            'quality_score': 0.85
-        }
-    }
-    
-    # 执行数据融合
-    result = fusion_engine.fuse_data(aligned_data)
-    
-    # 输出结果
-    logger.info(f"融合结果: {result}")
-    
-    # 获取性能摘要
-    performance = fusion_engine.get_performance_summary()
-    logger.info(f"性能摘要: {performance}")
-    
-    # 关闭引擎
-    fusion_engine.shutdown()
-
-    
-    def get_available_algorithms(self) -> List[str]:
-        """获取可用的融合算法"""
-        return [algorithm.value for algorithm in self.fusion_algorithms.keys()]
-    
-    def shutdown(self):
-        """关闭数据融合引擎"""
-        self.monitoring_enabled = False
-        if self.monitoring_thread:
-            self.monitoring_thread.join(timeout=1.0)
-        logger.info("数据融合引擎已关闭")
-
-
-# 使用示例
-if __name__ == "__main__":
-    # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    # 创建自适应数据融合引擎
-    fusion_engine = AdaptiveDataFusion()
-    
-    # 真实数据示例（需要替换为实际数据源）
-    aligned_data = {
-        'imu_source': {
-            'id': 'imu_source',
-            'type': 'imu',
-            'timestamps': [time.time() + i * 0.01 for i in range(10)],
-            'values': [0.0] * 10,  # 真实IMU数据待实现
-            'quality_score': 0.9
-        },
-        'cnap_source': {
-            'id': 'cnap_source',
-            'type': 'cnap',
-            'timestamps': [time.time() + i * 1.0 for i in range(10)],
-            'values': [120.0] * 10,  # 真实CNAP数据待实现
-            'quality_score': 0.85
-        }
-    }
-    
-    # 执行数据融合
-    result = fusion_engine.fuse_data(aligned_data)
-    
-    # 输出结果
-    logger.info(f"融合结果: {result}")
-    
-    # 获取性能摘要
-    performance = fusion_engine.get_performance_summary()
-    logger.info(f"性能摘要: {performance}")
-    
-    # 关闭引擎
-    fusion_engine.shutdown()
-
-    
-    def get_available_algorithms(self) -> List[str]:
-        """获取可用的融合算法"""
-        return [algorithm.value for algorithm in self.fusion_algorithms.keys()]
-    
-    def shutdown(self):
-        """关闭数据融合引擎"""
-        self.monitoring_enabled = False
-        if self.monitoring_thread:
-            self.monitoring_thread.join(timeout=1.0)
-        logger.info("数据融合引擎已关闭")
-
-
-# 使用示例
-if __name__ == "__main__":
-    # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    # 创建自适应数据融合引擎
-    fusion_engine = AdaptiveDataFusion()
-    
-    # 真实数据示例（需要替换为实际数据源）
-    aligned_data = {
-        'imu_source': {
-            'id': 'imu_source',
-            'type': 'imu',
-            'timestamps': [time.time() + i * 0.01 for i in range(10)],
-            'values': [0.0] * 10,  # 真实IMU数据待实现
-            'quality_score': 0.9
-        },
-        'cnap_source': {
-            'id': 'cnap_source',
-            'type': 'cnap',
-            'timestamps': [time.time() + i * 1.0 for i in range(10)],
-            'values': [120.0] * 10,  # 真实CNAP数据待实现
-            'quality_score': 0.85
-        }
-    }
-    
-    # 执行数据融合
-    result = fusion_engine.fuse_data(aligned_data)
-    
-    # 输出结果
-    logger.info(f"融合结果: {result}")
-    
-    # 获取性能摘要
-    performance = fusion_engine.get_performance_summary()
-    logger.info(f"性能摘要: {performance}")
-    
-    # 关闭引擎
     fusion_engine.shutdown()

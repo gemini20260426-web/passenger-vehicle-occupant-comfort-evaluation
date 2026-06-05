@@ -15,6 +15,7 @@
 
 import dataclasses
 import enum
+import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
 
 INDICATOR_DEFINITIONS = {
@@ -930,6 +931,93 @@ DIAGNOSIS_THRESHOLDS = {
     'STFT_CE': {'pass': 5.0,  'warn': 10.0, 'desc': '能量集中度', 'loc': 'torso'},
     'ACC_RMS': {'pass': 0.3, 'warn': 1.0, 'desc': '加速度均方根[g]', 'loc': 'seat_r'},
     'ACC_PEAK': {'pass': 1.0, 'warn': 4.0, 'desc': '峰值加速度[g]', 'loc': 'seat_r'},
+
+    # ═══════════════════════════════════════════════════════════
+    #  全时域统计指标诊断阈值 (87项)
+    # ═══════════════════════════════════════════════════════════
+
+    # ── 实验组 (E) 头部指标阈值 ──
+    'RMS_Ax_E': {'pass': 3.0, 'warn': 8.0, 'desc': '实验组头部纵向RMS', 'loc': 'head'},
+    'RMS_Ay_E': {'pass': 3.0, 'warn': 6.0, 'desc': '实验组头部横向RMS', 'loc': 'head'},
+    'RMS_Az_E': {'pass': 2.0, 'warn': 5.0, 'desc': '实验组头部垂向RMS', 'loc': 'head'},
+    'Peak_Ax_E': {'pass': 10.0, 'warn': 25.0, 'desc': '实验组头部纵向峰值', 'loc': 'head'},
+    'Peak_Ay_E': {'pass': 10.0, 'warn': 20.0, 'desc': '实验组头部横向峰值', 'loc': 'head'},
+    'Peak_Az_E': {'pass': 8.0, 'warn': 18.0, 'desc': '实验组头部垂向峰值', 'loc': 'head'},
+    'Crest_Ax_E': {'pass': 5.0, 'warn': 12.0, 'desc': '实验组头部纵向波峰因数', 'loc': 'head'},
+    'Crest_Ay_E': {'pass': 5.0, 'warn': 12.0, 'desc': '实验组头部横向波峰因数', 'loc': 'head'},
+    'Crest_Az_E': {'pass': 6.0, 'warn': 15.0, 'desc': '实验组头部垂向波峰因数', 'loc': 'head'},
+    'VDV_Ax_E': {'pass': 15.0, 'warn': 30.0, 'desc': '实验组头部纵向VDV', 'loc': 'head'},
+    'VDV_Ay_E': {'pass': 12.0, 'warn': 25.0, 'desc': '实验组头部横向VDV', 'loc': 'head'},
+    'VDV_Az_E': {'pass': 18.0, 'warn': 35.0, 'desc': '实验组头部垂向VDV', 'loc': 'head'},
+    'Skew_Ax_E': {'pass': 1.0, 'warn': 3.0, 'desc': '实验组 Ax 歪度', 'loc': 'head'},
+    'Skew_Ay_E': {'pass': 1.0, 'warn': 3.0, 'desc': '实验组 Ay 歪度', 'loc': 'head'},
+    'Skew_Az_E': {'pass': 1.0, 'warn': 3.0, 'desc': '实验组 Az 歪度', 'loc': 'head'},
+    'Kurt_Ax_E': {'pass': 3.0, 'warn': 8.0, 'desc': '实验组 Ax 峰度', 'loc': 'head'},
+    'Kurt_Ay_E': {'pass': 3.0, 'warn': 8.0, 'desc': '实验组 Ay 峰度', 'loc': 'head'},
+    'Kurt_Az_E': {'pass': 3.0, 'warn': 8.0, 'desc': '实验组 Az 峰度', 'loc': 'head'},
+    'MAV_Ax_E': {'pass': 1.5, 'warn': 4.0, 'desc': '实验组 Ax MAV', 'loc': 'head'},
+    'MAV_Ay_E': {'pass': 1.5, 'warn': 3.5, 'desc': '实验组 Ay MAV', 'loc': 'head'},
+    'MAV_Az_E': {'pass': 1.0, 'warn': 3.0, 'desc': '实验组 Az MAV', 'loc': 'head'},
+    'Impf_Ax_E': {'pass': 5.0, 'warn': 15.0, 'desc': '实验组 Ax 冲击因子', 'loc': 'head'},
+    'Impf_Ay_E': {'pass': 5.0, 'warn': 15.0, 'desc': '实验组 Ay 冲击因子', 'loc': 'head'},
+    'Impf_Az_E': {'pass': 6.0, 'warn': 18.0, 'desc': '实验组 Az 冲击因子', 'loc': 'head'},
+
+    # ── 对照组 (C) 头部指标阈值 ──
+    'RMS_Ax_C': {'pass': 3.5, 'warn': 9.0, 'desc': '对照组头部纵向RMS', 'loc': 'head'},
+    'RMS_Ay_C': {'pass': 4.0, 'warn': 8.0, 'desc': '对照组头部横向RMS', 'loc': 'head'},
+    'RMS_Az_C': {'pass': 3.0, 'warn': 6.0, 'desc': '对照组头部垂向RMS', 'loc': 'head'},
+    'Peak_Ax_C': {'pass': 12.0, 'warn': 28.0, 'desc': '对照组头部纵向峰值', 'loc': 'head'},
+    'Peak_Ay_C': {'pass': 12.0, 'warn': 25.0, 'desc': '对照组头部横向峰值', 'loc': 'head'},
+    'Peak_Az_C': {'pass': 10.0, 'warn': 22.0, 'desc': '对照组头部垂向峰值', 'loc': 'head'},
+    'Crest_Ax_C': {'pass': 6.0, 'warn': 14.0, 'desc': '对照组 Ax 波峰因数', 'loc': 'head'},
+    'Crest_Ay_C': {'pass': 6.0, 'warn': 14.0, 'desc': '对照组 Ay 波峰因数', 'loc': 'head'},
+    'Crest_Az_C': {'pass': 7.0, 'warn': 16.0, 'desc': '对照组 Az 波峰因数', 'loc': 'head'},
+    'VDV_Ax_C': {'pass': 12.0, 'warn': 25.0, 'desc': '对照组 Ax VDV', 'loc': 'head'},
+    'VDV_Ay_C': {'pass': 20.0, 'warn': 40.0, 'desc': '对照组 Ay VDV', 'loc': 'head'},
+    'VDV_Az_C': {'pass': 18.0, 'warn': 35.0, 'desc': '对照组 Az VDV', 'loc': 'head'},
+    'Skew_Ax_C': {'pass': 1.0, 'warn': 3.0, 'desc': '对照组 Ax 歪度', 'loc': 'head'},
+    'Skew_Ay_C': {'pass': 1.0, 'warn': 3.0, 'desc': '对照组 Ay 歪度', 'loc': 'head'},
+    'Skew_Az_C': {'pass': 1.0, 'warn': 3.0, 'desc': '对照组 Az 歪度', 'loc': 'head'},
+    'Kurt_Ax_C': {'pass': 3.0, 'warn': 8.0, 'desc': '对照组 Ax 峰度', 'loc': 'head'},
+    'Kurt_Ay_C': {'pass': 3.0, 'warn': 8.0, 'desc': '对照组 Ay 峰度', 'loc': 'head'},
+    'Kurt_Az_C': {'pass': 3.0, 'warn': 8.0, 'desc': '对照组 Az 峰度', 'loc': 'head'},
+    'MAV_Ax_C': {'pass': 2.0, 'warn': 5.0, 'desc': '对照组 Ax MAV', 'loc': 'head'},
+    'MAV_Ay_C': {'pass': 2.5, 'warn': 5.0, 'desc': '对照组 Ay MAV', 'loc': 'head'},
+    'MAV_Az_C': {'pass': 1.5, 'warn': 3.5, 'desc': '对照组 Az MAV', 'loc': 'head'},
+    'Impf_Ax_C': {'pass': 6.0, 'warn': 18.0, 'desc': '对照组 Ax 冲击因子', 'loc': 'head'},
+    'Impf_Ay_C': {'pass': 5.0, 'warn': 15.0, 'desc': '对照组 Ay 冲击因子', 'loc': 'head'},
+    'Impf_Az_C': {'pass': 7.0, 'warn': 20.0, 'desc': '对照组 Az 冲击因子', 'loc': 'head'},
+
+    # ── 胸骨 (S) 指标阈值 ──
+    'RMS_Ax_S': {'pass': 3.0, 'warn': 7.0, 'desc': '胸骨 Ax RMS', 'loc': 'sternum'},
+    'RMS_Ay_S': {'pass': 3.0, 'warn': 6.0, 'desc': '胸骨 Ay RMS', 'loc': 'sternum'},
+    'RMS_Az_S': {'pass': 2.5, 'warn': 5.5, 'desc': '胸骨 Az RMS', 'loc': 'sternum'},
+    'Peak_Ax_S': {'pass': 10.0, 'warn': 25.0, 'desc': '胸骨 Ax Peak', 'loc': 'sternum'},
+    'Peak_Ay_S': {'pass': 10.0, 'warn': 22.0, 'desc': '胸骨 Ay Peak', 'loc': 'sternum'},
+    'Peak_Az_S': {'pass': 9.0, 'warn': 20.0, 'desc': '胸骨 Az Peak', 'loc': 'sternum'},
+    'Crest_Ax_S': {'pass': 5.0, 'warn': 12.0, 'desc': '胸骨 Ax Cf', 'loc': 'sternum'},
+    'Crest_Ay_S': {'pass': 5.0, 'warn': 12.0, 'desc': '胸骨 Ay Cf', 'loc': 'sternum'},
+    'Crest_Az_S': {'pass': 6.0, 'warn': 14.0, 'desc': '胸骨 Az Cf', 'loc': 'sternum'},
+    'VDV_Ax_S': {'pass': 14.0, 'warn': 28.0, 'desc': '胸骨 Ax VDV', 'loc': 'sternum'},
+    'VDV_Ay_S': {'pass': 13.0, 'warn': 26.0, 'desc': '胸骨 Ay VDV', 'loc': 'sternum'},
+    'VDV_Az_S': {'pass': 17.0, 'warn': 34.0, 'desc': '胸骨 Az VDV', 'loc': 'sternum'},
+    'Skew_Ax_S': {'pass': 1.0, 'warn': 3.0, 'desc': '胸骨 Ax 歪度', 'loc': 'sternum'},
+    'Skew_Ay_S': {'pass': 1.0, 'warn': 3.0, 'desc': '胸骨 Ay 歪度', 'loc': 'sternum'},
+    'Skew_Az_S': {'pass': 1.0, 'warn': 3.0, 'desc': '胸骨 Az 歪度', 'loc': 'sternum'},
+    'Kurt_Ax_S': {'pass': 3.0, 'warn': 8.0, 'desc': '胸骨 Ax 峰度', 'loc': 'sternum'},
+    'Kurt_Ay_S': {'pass': 3.0, 'warn': 8.0, 'desc': '胸骨 Ay 峰度', 'loc': 'sternum'},
+    'Kurt_Az_S': {'pass': 3.0, 'warn': 8.0, 'desc': '胸骨 Az 峰度', 'loc': 'sternum'},
+
+    # ── 总VDV ──
+    'E_total_VDV': {'pass': 30.0, 'warn': 60.0, 'desc': '实验组三轴合成VDV', 'loc': 'head'},
+    'C_total_VDV': {'pass': 35.0, 'warn': 70.0, 'desc': '对照组三轴合成VDV', 'loc': 'head'},
+
+    # ── 频段衰减 ──
+    'BAND_ATT_01_05': {'pass': 30.0, 'warn': 10.0, 'desc': '0.1-0.5Hz衰减率', 'loc': 'comparative'},
+    'BAND_ATT_05_1': {'pass': 20.0, 'warn': 5.0, 'desc': '0.5-1Hz衰减率', 'loc': 'comparative'},
+    'BAND_ATT_1_5': {'pass': 10.0, 'warn': 0.0, 'desc': '1-5Hz衰减率', 'loc': 'comparative'},
+    'BAND_ATT_5_20': {'pass': 0.0, 'warn': -20.0, 'desc': '5-20Hz衰减率', 'loc': 'comparative'},
+    'BAND_ATT_20_80': {'pass': 0.0, 'warn': -20.0, 'desc': '20-80Hz衰减率', 'loc': 'comparative'},
 }
 
 DIAGNOSIS_STATE_ICONS = {
@@ -989,6 +1077,19 @@ METRIC_THRESHOLDS = {
     'STFT_FC':    {'excellent': 1.0,   'good': 2.0,   'fair': 8.0,   'poor': 15.0},
     'STFT_KT':    {'excellent': 1.0,   'good': 3.0,   'fair': 10.0,  'poor': 20.0},
     'STFT_CE':    {'excellent': 2.0,   'good': 5.0,   'fair': 10.0,  'poor': 20.0},
+
+    # ── 全时域统计指标的四档评分阈值 ──
+    'RMS_Ay_E': {'excellent': 1.5, 'good': 3.0, 'fair': 5.0, 'poor': 8.0},
+    'RMS_Az_E': {'excellent': 1.0, 'good': 2.0, 'fair': 4.0, 'poor': 7.0},
+    'RMS_Ay_C': {'excellent': 3.0, 'good': 5.0, 'fair': 8.0, 'poor': 12.0},
+    'RMS_Az_C': {'excellent': 2.0, 'good': 3.5, 'fair': 6.0, 'poor': 10.0},
+    'VDV_Ay_E': {'excellent': 8.0, 'good': 15.0, 'fair': 25.0, 'poor': 40.0},
+    'VDV_Ay_C': {'excellent': 15.0, 'good': 25.0, 'fair': 40.0, 'poor': 60.0},
+    'E_total_VDV': {'excellent': 20.0, 'good': 35.0, 'fair': 55.0, 'poor': 80.0},
+    'C_total_VDV': {'excellent': 25.0, 'good': 40.0, 'fair': 65.0, 'poor': 100.0},
+    'BAND_ATT_01_05': {'excellent': 60.0, 'good': 40.0, 'fair': 15.0, 'poor': 0.0},
+    'BAND_ATT_05_1': {'excellent': 50.0, 'good': 30.0, 'fair': 10.0, 'poor': 0.0},
+    'BAND_ATT_1_5': {'excellent': 30.0, 'good': 15.0, 'fair': 5.0, 'poor': -10.0},
 }
 
 FOUR_LEVEL_GRADES = {
@@ -1899,6 +2000,335 @@ class MetadataRegistry:
 
 
 _global_registry: Optional[MetadataRegistry] = None
+
+
+# ═══════════════════════════════════════════════════════════
+#  事件-指标自动映射表 (F1: 补全25种事件→最优指标组合)
+# ═══════════════════════════════════════════════════════════
+EVENT_TO_EVALUATION_MAP = {
+    # ── 纵向事件 (5种) ──
+    'emergency_braking': {
+        'priority': 0,
+        'category': 'longitudinal',
+        'metrics': ['HIC15', 'ACC_H_PEAK', 'JERK_H', 'SRS_MRS', 'SRS_PV',
+                     'SEAT_Z', 'VDV_Z', 'AW_Z', 'DISP_HR', 'OVTV'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+    'aggressive_acceleration': {
+        'priority': 0,
+        'category': 'longitudinal',
+        'metrics': ['SEAT_XY', 'VDV_Z', 'AW_Z', 'AW_XY', 'R_FACTOR',
+                     'DISP_TR', 'ACC_RMS', 'ACC_PEAK'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+    'sudden_deceleration': {
+        'priority': 1,
+        'category': 'longitudinal',
+        'metrics': ['HIC15', 'ACC_H_PEAK', 'JERK_H', 'SRS_MRS',
+                     'SEAT_Z', 'VDV_Z', 'AW_Z', 'DISP_HR'],
+        'window': {'pre': 0.3, 'post': 1.0},
+    },
+    'rapid_speed_change': {
+        'priority': 2,
+        'category': 'longitudinal',
+        'metrics': ['SEAT_XY', 'VDV_Z', 'AW_XY', 'ACC_RMS', 'ACC_PEAK'],
+        'window': {'pre': 0.3, 'post': 1.0},
+    },
+    'speed_fluctuation': {
+        'priority': 3,
+        'category': 'longitudinal',
+        'metrics': ['AW_Z', 'ACC_RMS', 'OVTV', 'R_FACTOR'],
+        'window': {'pre': 0.5, 'post': 1.0},
+    },
+
+    # ── 侧向事件 (5种) ──
+    'sharp_turn': {
+        'priority': 0,
+        'category': 'lateral',
+        'metrics': ['SEAT_XY', 'AW_XY', 'R_FACTOR', 'ACC_RMS', 'ACC_PEAK',
+                     'DISP_TR', 'SRS_MRS', 'SRS_PV'],
+        'window': {'pre': 0.3, 'post': 1.0},
+    },
+    'lane_change': {
+        'priority': 1,
+        'category': 'lateral',
+        'metrics': ['SEAT_XY', 'AW_XY', 'R_FACTOR', 'ACC_RMS', 'ACC_PEAK'],
+        'window': {'pre': 0.3, 'post': 1.0},
+    },
+    'slalom': {
+        'priority': 1,
+        'category': 'lateral',
+        'metrics': ['SEAT_XY', 'AW_XY', 'R_FACTOR', 'STFT_FC', 'STFT_KT', 'STFT_CE'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+    'lateral_jerk': {
+        'priority': 2,
+        'category': 'lateral',
+        'metrics': ['JERK_H', 'SEAT_XY', 'ACC_RMS', 'ACC_PEAK'],
+        'window': {'pre': 0.2, 'post': 0.5},
+    },
+    'side_slip': {
+        'priority': 2,
+        'category': 'lateral',
+        'metrics': ['SEAT_XY', 'AW_XY', 'R_FACTOR', 'ACC_RMS'],
+        'window': {'pre': 0.3, 'post': 1.0},
+    },
+
+    # ── 复合事件 (5种) ──
+    'combined_braking_turn': {
+        'priority': 0,
+        'category': 'compound',
+        'metrics': ['HIC15', 'ACC_H_PEAK', 'JERK_H', 'SRS_MRS', 'SRS_PV',
+                     'SEAT_Z', 'SEAT_XY', 'VDV_Z', 'AW_Z', 'AW_XY',
+                     'DISP_HR', 'OVTV', 'R_FACTOR'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+    'evasive_maneuver': {
+        'priority': 0,
+        'category': 'compound',
+        'metrics': ['HIC15', 'ACC_H_PEAK', 'JERK_H', 'SRS_MRS', 'SRS_PV',
+                     'SEAT_Z', 'SEAT_XY', 'AW_Z', 'AW_XY', 'DISP_HR', 'OVTV'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+    'acceleration_with_turn': {
+        'priority': 1,
+        'category': 'compound',
+        'metrics': ['SEAT_Z', 'SEAT_XY', 'VDV_Z', 'AW_Z', 'AW_XY',
+                     'DISP_HR', 'OVTV', 'R_FACTOR'],
+        'window': {'pre': 0.3, 'post': 1.0},
+    },
+    'braking_with_steering': {
+        'priority': 1,
+        'category': 'compound',
+        'metrics': ['HIC15', 'ACC_H_PEAK', 'JERK_H', 'SRS_MRS',
+                     'SEAT_Z', 'SEAT_XY', 'AW_Z', 'AW_XY', 'DISP_HR'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+    'multi_axis_vibration': {
+        'priority': 2,
+        'category': 'compound',
+        'metrics': ['SEAT_Z', 'SEAT_XY', 'VDV_Z', 'AW_Z', 'AW_XY',
+                     'OVTV', 'R_FACTOR', 'STFT_FC', 'STFT_KT', 'STFT_CE'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+
+    # ── 异常事件 (5种) ──
+    'impact_event': {
+        'priority': 0,
+        'category': 'anomaly',
+        'metrics': ['HIC15', 'ACC_H_PEAK', 'JERK_H', 'SRS_MRS', 'SRS_PV',
+                     'SRS_Q', 'SRS_ATT', 'S_D', 'DISP_HR', 'ACC_PEAK'],
+        'window': {'pre': 0.1, 'post': 0.5},
+    },
+    'vibration_spike': {
+        'priority': 1,
+        'category': 'anomaly',
+        'metrics': ['SRS_MRS', 'SRS_PV', 'ACC_PEAK', 'JERK_H', 'VDV_Z'],
+        'window': {'pre': 0.2, 'post': 0.5},
+    },
+    'sensor_anomaly': {
+        'priority': 2,
+        'category': 'anomaly',
+        'metrics': ['ACC_RMS', 'ACC_PEAK', 'STFT_FC', 'STFT_KT', 'STFT_CE'],
+        'window': {'pre': 0.1, 'post': 0.3},
+    },
+    'data_gap': {
+        'priority': 3,
+        'category': 'anomaly',
+        'metrics': ['ACC_RMS', 'ACC_PEAK'],
+        'window': {'pre': 0.1, 'post': 0.3},
+    },
+    'signal_saturation': {
+        'priority': 3,
+        'category': 'anomaly',
+        'metrics': ['ACC_PEAK', 'STFT_FC', 'STFT_KT'],
+        'window': {'pre': 0.1, 'post': 0.3},
+    },
+
+    # ── 状态事件 (5种) ──
+    'steady_state': {
+        'priority': 2,
+        'category': 'state',
+        'metrics': ['SEAT_Z', 'SEAT_XY', 'AW_Z', 'AW_XY', 'VDV_Z',
+                     'ACC_RMS', 'OVTV', 'R_FACTOR', 'FDS_D', 'FDS_R', 'RFC_CC'],
+        'window': {'pre': 1.0, 'post': 2.0},
+    },
+    'idle_vibration': {
+        'priority': 2,
+        'category': 'state',
+        'metrics': ['SEAT_Z', 'AW_Z', 'VDV_Z', 'OVTV', 'STFT_FC', 'STFT_KT', 'STFT_CE'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+    'cruise_condition': {
+        'priority': 2,
+        'category': 'state',
+        'metrics': ['SEAT_Z', 'SEAT_XY', 'AW_Z', 'AW_XY', 'VDV_Z',
+                     'ACC_RMS', 'OVTV', 'R_FACTOR'],
+        'window': {'pre': 1.0, 'post': 2.0},
+    },
+    'road_roughness_response': {
+        'priority': 1,
+        'category': 'state',
+        'metrics': ['SEAT_Z', 'SEAT_XY', 'VDV_Z', 'AW_Z', 'AW_XY',
+                     'OVTV', 'R_FACTOR', 'DISP_TR', 'SRS_MRS', 'SRS_PV'],
+        'window': {'pre': 0.5, 'post': 1.5},
+    },
+    'periodic_excitation': {
+        'priority': 2,
+        'category': 'state',
+        'metrics': ['SEAT_Z', 'AW_Z', 'VDV_Z', 'OVTV', 'STFT_FC', 'STFT_KT',
+                     'STFT_CE', 'FDS_D', 'FDS_R', 'RFC_CC'],
+        'window': {'pre': 1.0, 'post': 2.0},
+    },
+}
+
+
+def get_metrics_for_event(event_type: str) -> List[str]:
+    """获取事件类型对应的最优指标组合
+
+    Args:
+        event_type: 事件类型 (如 'emergency_braking')
+
+    Returns:
+        指标ID列表
+    """
+    event_config = EVENT_TO_EVALUATION_MAP.get(event_type, {})
+    return event_config.get('metrics', [])
+
+
+def get_event_window(event_type: str) -> Dict[str, float]:
+    """获取事件类型对应的数据窗口配置
+
+    Args:
+        event_type: 事件类型
+
+    Returns:
+        {'pre': float, 'post': float}
+    """
+    event_config = EVENT_TO_EVALUATION_MAP.get(event_type, {})
+    return event_config.get('window', {'pre': 0.5, 'post': 1.5})
+
+
+def get_event_priority(event_type: str) -> int:
+    """获取事件优先级 (0=P0最高, 3=P3最低)
+
+    Args:
+        event_type: 事件类型
+
+    Returns:
+        优先级 0-3
+    """
+    event_config = EVENT_TO_EVALUATION_MAP.get(event_type, {})
+    return event_config.get('priority', 3)
+
+
+def get_events_by_category(category: str) -> List[str]:
+    """获取指定类别下的所有事件类型
+
+    Args:
+        category: 事件类别 ('longitudinal', 'lateral', 'compound', 'anomaly', 'state')
+
+    Returns:
+        事件类型列表
+    """
+    return [event_type for event_type, config in EVENT_TO_EVALUATION_MAP.items()
+            if config.get('category') == category]
+
+
+def get_all_event_types() -> List[str]:
+    """获取所有25种事件类型"""
+    return list(EVENT_TO_EVALUATION_MAP.keys())
+
+
+def get_event_categories() -> List[str]:
+    """获取所有事件类别"""
+    return ['longitudinal', 'lateral', 'compound', 'anomaly', 'state']
+
+
+# ═══════════════════════════════════════════════════════════
+#  采样率自适应阈值 (DQ3)
+# ═══════════════════════════════════════════════════════════
+
+def sr_adaptive_threshold(base_threshold: float, sample_rate: float,
+                           base_sr: float = 100.0,
+                           metric_id: str = '') -> float:
+    """采样率自适应阈值调整 (DQ3)
+
+    sr=100 和 sr=1000 共用同一阈值不合理，本函数根据采样率自动调整阈值。
+    低采样率→放宽阈值（避免误报），高采样率→收紧阈值（更高的检测精度）。
+
+    Args:
+        base_threshold: 基准阈值 (在 base_sr 采样率下)
+        sample_rate: 实际采样率 [Hz]
+        base_sr: 基准采样率 [Hz] (默认100Hz)
+        metric_id: 指标ID (可选，用于指标特定调整)
+
+    Returns:
+        调整后的阈值
+    """
+    if sample_rate <= 0:
+        return base_threshold
+
+    ratio = sample_rate / base_sr
+
+    # RMS类指标: sr越高→峰值检测越精准→阈值应略收紧
+    if 'RMS' in metric_id:
+        factor = max(0.8, min(1.2, 1.0 / np.sqrt(ratio)))
+    # 冲击类指标 (Peak, Crest, Impf): sr越高→峰值捕获越准→阈值应收紧
+    elif any(k in metric_id for k in ['Peak', 'Crest', 'Impf']):
+        factor = max(0.75, min(1.3, 0.9 + 0.1 / ratio))
+    # VDV/功率类: 与sr平方根相关
+    elif any(k in metric_id for k in ['VDV', 'AW']):
+        factor = max(0.85, min(1.15, np.power(ratio, 0.1)))
+    # 默认: 微调
+    else:
+        factor = max(0.85, min(1.15, 1.0))
+
+    return base_threshold * factor
+
+
+# ═══════════════════════════════════════════════════════════
+#  置信度传播辅助函数 (F2)
+# ═══════════════════════════════════════════════════════════
+
+def propagate_confidence(event_confidence: float, metric_quality: float = 1.0,
+                          data_quality: float = 1.0) -> Dict[str, float]:
+    """置信度传播链: 事件检测→指标计算→评分不确定性 (F2)
+
+    Args:
+        event_confidence: 事件检测置信度 [0, 1]
+        metric_quality: 指标计算质量 [0, 1] (如 coherence)
+        data_quality: 数据质量评分 [0, 1]
+
+    Returns:
+        {'overall_confidence': float, 'level': str, 'uncertainty_band': str}
+    """
+    overall = event_confidence * metric_quality * data_quality
+    overall = max(0.0, min(1.0, overall))
+
+    if overall >= 0.95:
+        level = 'high'
+        band = '±5%'
+    elif overall >= 0.85:
+        level = 'medium'
+        band = '±15%'
+    elif overall >= 0.70:
+        level = 'low'
+        band = '±30%'
+    else:
+        level = 'unreliable'
+        band = '>±30%'
+
+    return {
+        'overall_confidence': round(overall, 4),
+        'level': level,
+        'uncertainty_band': band,
+        'components': {
+            'event_confidence': event_confidence,
+            'metric_quality': metric_quality,
+            'data_quality': data_quality
+        }
+    }
 
 
 def get_global_registry() -> MetadataRegistry:

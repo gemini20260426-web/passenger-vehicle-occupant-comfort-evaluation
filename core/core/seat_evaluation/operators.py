@@ -398,6 +398,31 @@ class AttenuationOperator:
             'band_attenuation': band_atten
         }
 
+    def get_band_attenuation_for_radar(self, exp_data_ax, ctrl_data_ax,
+                                        exp_data_ay, ctrl_data_ay,
+                                        exp_data_az, ctrl_data_az,
+                                        fs=1000):
+        """获取三轴五频段衰减数据 (雷达图数据源)
+
+        Returns:
+            {'Ax': {band: pct, ...}, 'Ay': {...}, 'Az': {...}}
+        """
+        bpf = BandpassAttenuationOperator(fs=fs)
+
+        results = {}
+        for axis_name, (exp, ctrl) in [
+            ('Ax', (exp_data_ax, ctrl_data_ax)),
+            ('Ay', (exp_data_ay, ctrl_data_ay)),
+            ('Az', (exp_data_az, ctrl_data_az))
+        ]:
+            verified = bpf.compute_verified_attenuation(exp, ctrl)
+            results[axis_name] = {
+                band: info['attenuation_pct']
+                for band, info in verified.items()
+            }
+
+        return results
+
 
 class STFTOperator:
     """短时傅里叶变换算子 - 时频分析 ISO 18431-4"""
@@ -878,6 +903,27 @@ class ISO2631_5_Operator:
             if n < 4:
                 return {'S_d_MPa': 0.0, 'S_d_level': '无显著冲击', 'n_events': 0}
 
+            # [新增] 样本量校验: 至少 0.5s 数据
+            MIN_SAMPLES_FOR_S_D = int(sample_rate * 0.5)
+            if n < MIN_SAMPLES_FOR_S_D:
+                logger.warning(
+                    f"S_D 样本量不足: {n} < {MIN_SAMPLES_FOR_S_D} "
+                    f"({n/sample_rate:.2f}s < 0.5s minimum)"
+                )
+                return {
+                    'S_d_MPa': float('nan'),
+                    'S_d_level': '数据不足 (需≥0.5s)',
+                    'n_events': 0
+                }
+
+            # [新增] 输入有效性检查: 全零信号直接返回
+            if np.all(np.abs(ax) < 0.01) and np.all(np.abs(ay) < 0.01) and np.all(np.abs(az) < 0.01):
+                return {
+                    'S_d_MPa': 0.0,
+                    'S_d_level': '绿色: 低风险 (无显著加速度)',
+                    'n_events': 0
+                }
+
             dt = 1.0 / sample_rate
             if timestamps is None:
                 timestamps = np.arange(n) * dt
@@ -962,8 +1008,116 @@ class ISO2631_5_Operator:
             return {'S_d_MPa': 0.0, 'S_d_level': '计算失败', 'n_events': 0}
 
 
+class BandpassAttenuationOperator:
+    """Butterworth带通滤波衰减算子 — 低频段衰减验证 (<5Hz)
+
+    背景: PSD ratio 法在低频段 (0.1-0.5Hz) 受 DC 偏移影响,
+          Ay 衰减从实际 80.4% 被高估为 93.9% (偏差约14pp).
+
+    本算子用 Butterworth BPF RMS 比值作为低频段验证标准,
+    消除 DC 偏移偏差。
+
+    参考: 本项目第四轮评测实测验证数据
+    """
+
+    DEFAULT_BANDS = {
+        '0.1-0.5Hz': (0.1, 0.5),
+        '0.5-1Hz': (0.5, 1.0),
+        '1-5Hz': (1.0, 5.0),
+        '5-20Hz': (5.0, 20.0),
+        '20-80Hz': (20.0, 80.0),
+    }
+
+    def __init__(self, fs: float = 1000, order: int = 4):
+        self.fs = fs
+        self.order = order
+
+    def compute_band_attenuation(self, exp_data: np.ndarray, ctrl_data: np.ndarray,
+                                  bands: dict = None) -> dict:
+        """计算各频段衰减率 (Butterworth BPF RMS 法)
+
+        Args:
+            exp_data: 实验组信号 [N]
+            ctrl_data: 对照组信号 [N]
+            bands: 频段定义 {name: (flo, fhi)}
+
+        Returns:
+            {band_name: attenuation_pct}
+        """
+        if bands is None:
+            bands = self.DEFAULT_BANDS
+
+        results = {}
+        trim = int(self.fs)  # 去掉前后1s瞬态
+
+        for bname, (flo, fhi) in bands.items():
+            # 超过 Nyquist/2.2 的频段回退到 PSD 法
+            if fhi >= self.fs / 2.2:
+                results[bname] = None  # 标记为 PSD 回退
+                continue
+
+            try:
+                sos = signal.butter(self.order, [flo/(self.fs/2), fhi/(self.fs/2)],
+                                    btype='bandpass', output='sos')
+                e_filt = signal.sosfilt(sos, exp_data)
+                c_filt = signal.sosfilt(sos, ctrl_data)
+
+                if len(e_filt) > trim * 2:
+                    e_rms = np.sqrt(np.mean(e_filt[trim:-trim]**2))
+                    c_rms = np.sqrt(np.mean(c_filt[trim:-trim]**2))
+                    results[bname] = float((1 - e_rms / c_rms) * 100) if c_rms > 1e-6 else 0.0
+                else:
+                    results[bname] = 0.0
+            except Exception as e:
+                logger.error(f"BPF衰减计算失败 [{bname}]: {e}")
+                results[bname] = 0.0
+
+        return results
+
+    def compute_verified_attenuation(self, exp_data, ctrl_data, bands=None):
+        """双方法验证: BPF (<5Hz) + PSD (≥5Hz)
+
+        Returns:
+            {'band_name': {'bpf_pct': float, 'psd_pct': float, 'method': 'bpf'|'psd'}}
+        """
+        if bands is None:
+            bands = self.DEFAULT_BANDS
+
+        # BPF 结果
+        bpf_results = self.compute_band_attenuation(exp_data, ctrl_data, bands)
+
+        # PSD 结果 (回退用)
+        f, Pxx_e = signal.welch(exp_data, fs=self.fs, nperseg=8192)
+        f, Pxx_c = signal.welch(ctrl_data, fs=self.fs, nperseg=8192)
+
+        verified = {}
+        for bname, (flo, fhi) in bands.items():
+            mask = (f >= flo) & (f <= fhi)
+            ratio = np.divide(Pxx_e[mask], Pxx_c[mask],
+                              out=np.ones_like(Pxx_e[mask])*np.nan,
+                              where=Pxx_c[mask] > 1e-15)
+            psd_pct = float((1 - np.nanmean(ratio)) * 100)
+
+            if fhi <= 5.0 and bpf_results.get(bname) is not None:
+                verified[bname] = {
+                    'attenuation_pct': bpf_results[bname],
+                    'psd_pct': psd_pct,
+                    'method': 'bpf',
+                    'verified': True
+                }
+            else:
+                verified[bname] = {
+                    'attenuation_pct': psd_pct,
+                    'psd_pct': psd_pct,
+                    'method': 'psd',
+                    'verified': fhi <= 5.0
+                }
+
+        return verified
+
+
 class OperatorSystem:
-    """12大算子系统 - 统一管理"""
+    """14大算子系统 - 统一管理 (含结果缓存)"""
 
     def __init__(self):
         self.cfc = CFCOperator()
@@ -980,6 +1134,11 @@ class OperatorSystem:
         self.fds = FDSOperator()
         self.iso2631_5 = ISO2631_5_Operator()
         self.statistics = StatisticalOperator()
+        self.bandpass = BandpassAttenuationOperator()
+
+        # A2: 算子结果缓存 — 一次计算，多指标共享
+        self._cache = {}
+        self._cache_enabled = True
 
         self.operators = {
             'CFC': self.cfc,
@@ -996,7 +1155,43 @@ class OperatorSystem:
             'FDS': self.fds,
             'ISO2631_5': self.iso2631_5,
             'STATISTICS': self.statistics,
+            'BANDPASS': self.bandpass,
         }
 
     def get_operator(self, name: str):
         return self.operators.get(name.upper())
+
+    def cached_compute(self, cache_key: str, compute_fn, *args, **kwargs):
+        """带缓存的算子计算 (A2)
+
+        当多次计算同一算子结果时（如SRS一次计算、MRS/PV/Q/ATT全部得到），
+        使用缓存避免重复计算。
+
+        Args:
+            cache_key: 缓存键
+            compute_fn: 计算函数
+            *args, **kwargs: 传递给 compute_fn
+
+        Returns:
+            计算结果
+        """
+        if self._cache_enabled and cache_key in self._cache:
+            return self._cache[cache_key]
+        result = compute_fn(*args, **kwargs)
+        if self._cache_enabled:
+            self._cache[cache_key] = result
+        return result
+
+    def clear_cache(self):
+        """清空算子缓存"""
+        self._cache.clear()
+
+    @property
+    def cache_enabled(self):
+        return self._cache_enabled
+
+    @cache_enabled.setter
+    def cache_enabled(self, value: bool):
+        self._cache_enabled = value
+        if not value:
+            self.clear_cache()

@@ -41,6 +41,32 @@ MIN_SAMPLES_PER_METRIC = {
 }
 METRIC_INSUFFICIENT_DATA = -1.0
 
+# DQ2: 相干性阈值
+COHERENCE_THRESHOLD_WARN = 0.5
+COHERENCE_THRESHOLD_FAIL = 0.3
+
+
+def coherence_quality_label(coh: float) -> str:
+    """相干性阈值自动降级 (DQ2)
+
+    CSD算子有coh计算，coh<0.5时应标记结果为"低可信"而非直接丢弃。
+    本函数返回质量标签用于标注。
+    """
+    if coh >= COHERENCE_THRESHOLD_WARN:
+        return 'high'
+    elif coh >= COHERENCE_THRESHOLD_FAIL:
+        return 'low_confidence'
+    else:
+        return 'unreliable'
+
+
+def mark_fallback_metric(metric_id: str, fallback_reason: str) -> str:
+    """缺失位置降级策略 (DQ4)
+
+    floor缺失→SEAT回退为AW时，显式标注 _fallback 后缀。
+    """
+    return f"{metric_id}_fallback({fallback_reason})"
+
 
 class MultiChannelSeatEvaluationEngine(QObject):
     """多通道座椅评测引擎"""
@@ -578,7 +604,64 @@ class MultiChannelSeatEvaluationEngine(QObject):
             dz = ops.integration.integrate_to_displacement(az_f, sr) if len(az) >= 4 else np.zeros(n_ref)
             disp_3d = ops.vector.synthesize(dx, dy, dz)
             return float(np.max(disp_3d))
-        
+
+        # ── 全时域统计指标 (实验组 E / 对照组 C / 胸骨 S) ──
+        elif metric_id.endswith('_E') or metric_id.endswith('_C') or metric_id.endswith('_S'):
+            group = data_window.get('group', 'E')
+            data_arrays = {'Ax': ax, 'Ay': ay, 'Az': az}
+
+            for axis in ['Ax', 'Ay', 'Az']:
+                for stat in ['RMS', 'Peak', 'Crest', 'VDV', 'Skew', 'Kurt', 'MAV', 'Impf']:
+                    expected_key = f'{stat}_{axis}_{group}'
+                    if metric_id != expected_key:
+                        continue
+
+                    arr = data_arrays[axis]
+                    if len(arr) < 10:
+                        return 0.0
+
+                    if stat == 'RMS':
+                        return float(np.sqrt(np.mean(arr**2)))
+                    elif stat == 'Peak':
+                        return float(np.max(np.abs(arr)))
+                    elif stat == 'Crest':
+                        rms = np.sqrt(np.mean(arr**2))
+                        return float(np.max(np.abs(arr)) / rms) if rms > 1e-6 else 0.0
+                    elif stat == 'VDV':
+                        return float(np.power(np.sum(arr**4) / sr, 0.25))
+                    elif stat == 'Skew':
+                        from scipy import stats
+                        return float(stats.skew(arr))
+                    elif stat == 'Kurt':
+                        from scipy import stats
+                        return float(stats.kurtosis(arr, fisher=True))
+                    elif stat == 'MAV':
+                        return float(np.mean(np.abs(arr)))
+                    elif stat == 'Impf':
+                        peak = np.max(np.abs(arr))
+                        mav = np.mean(np.abs(arr))
+                        return float(peak / mav) if mav > 1e-6 else 0.0
+
+        # ── 总VDV ──
+        elif metric_id == 'E_total_VDV':
+            total = np.sqrt(ax**2 + ay**2 + az**2)
+            return float(np.power(np.sum(total**4) / sr, 0.25))
+        elif metric_id == 'C_total_VDV':
+            total = np.sqrt(ax**2 + ay**2 + az**2)
+            return float(np.power(np.sum(total**4) / sr, 0.25))
+
+        # ── 频段衰减指标 ──
+        elif metric_id.startswith('BAND_ATT_'):
+            exp_data = data_window.get('exp_data', az)
+            ctrl_data = data_window.get('ctrl_data', None)
+            if ctrl_data is None:
+                return 0.0
+            from .operators import BandpassAttenuationOperator
+            bpf = BandpassAttenuationOperator(fs=sr)
+            results = bpf.compute_band_attenuation(exp_data, ctrl_data)
+            band_key = metric_id.replace('BAND_ATT_', '').replace('_', '-') + 'Hz'
+            return float(results.get(band_key, 0.0))
+
         return 0.0
     
     def _calculate_location_score(self, metrics: Dict[str, float], location_id: str) -> float:
@@ -1715,3 +1798,305 @@ class MultiChannelSeatEvaluationEngine(QObject):
             'location_results': location_results_dict,
             'metadata': result.metadata
         }
+
+
+class IMUValidationGateway:
+    """IMU数据有效性校验网关 (DQ1)
+
+    在数据送入算子计算前，对IMU数据执行有效性校验:
+      - 数据完整性 (非空/非全零)
+      - 采样率范围 (≥10Hz, ≤10000Hz)
+      - 加速度范围 (合理物理范围 -50g ~ +50g)
+      - 统计合理性 (方差/峰值/过零率)
+      - 时间戳连续性 (单调递增)
+
+    返回校验结果 + 质量标记 (pass/warn/fail)
+    """
+
+    MAX_ACCEL_G = 50.0
+    MIN_ACCEL_G = -50.0
+    MIN_SAMPLE_RATE = 10.0
+    MAX_SAMPLE_RATE = 10000.0
+    MIN_VARIANCE = 1e-9
+    MIN_ZERO_CROSSING_RATE = 0.01
+
+    def validate(self, channel_data: Dict[str, Any], sample_rate: float = None) -> Dict[str, Any]:
+        """校验单个IMU通道数据
+
+        Args:
+            channel_data: {'ax': [...], 'ay': [...], 'az': [...], ...}
+            sample_rate: 采样率，None则从timestamps推断
+
+        Returns:
+            {'valid': bool, 'quality': 'pass'|'warn'|'fail', 'checks': {...}, 'errors': [...]}
+        """
+        checks = {}
+        errors = []
+
+        ax = np.array(channel_data.get('ax', []))
+        ay = np.array(channel_data.get('ay', []))
+        az = np.array(channel_data.get('az', []))
+
+        # 1. 数据完整性
+        n = min(len(ax), len(ay), len(az))
+        checks['data_present'] = n > 0
+        if not checks['data_present']:
+            errors.append('数据缺失: 三轴加速度数据为空')
+            return {'valid': False, 'quality': 'fail', 'checks': checks, 'errors': errors}
+
+        checks['data_length'] = n
+        checks['min_samples'] = n >= 10
+        if n < 10:
+            errors.append(f'数据不足: n={n} < 10 samples')
+
+        # 2. 全零检测
+        all_zero = (np.all(np.abs(ax) < 1e-6) and np.all(np.abs(ay) < 1e-6) and
+                    np.all(np.abs(az) < 1e-6))
+        checks['not_all_zero'] = not all_zero
+        if all_zero:
+            errors.append('全零信号: 三轴加速度均为零')
+
+        # 3. 加速度范围
+        max_acc = max(np.max(np.abs(ax)), np.max(np.abs(ay)), np.max(np.abs(az)))
+        checks['accel_range_ok'] = max_acc <= self.MAX_ACCEL_G
+        if max_acc > self.MAX_ACCEL_G:
+            errors.append(f'加速度超限: max={max_acc:.1f}g > {self.MAX_ACCEL_G}g')
+
+        # 4. 统计合理性
+        var_x = float(np.var(ax))
+        var_y = float(np.var(ay))
+        var_z = float(np.var(az))
+        min_var = min(var_x, var_y, var_z)
+        checks['variance_ok'] = min_var > self.MIN_VARIANCE
+        if min_var <= self.MIN_VARIANCE:
+            errors.append(f'方差过小: min_var={min_var:.2e}')
+
+        # 5. 采样率范围
+        if sample_rate is not None:
+            checks['sample_rate'] = sample_rate
+            checks['sr_ok'] = self.MIN_SAMPLE_RATE <= sample_rate <= self.MAX_SAMPLE_RATE
+            if not checks['sr_ok']:
+                errors.append(f'采样率异常: sr={sample_rate:.1f}Hz')
+        else:
+            timestamps = channel_data.get('timestamps', [])
+            if len(timestamps) >= 2:
+                sr_est = 1.0 / np.mean(np.diff(np.array(timestamps)))
+                checks['sample_rate_estimated'] = sr_est
+                checks['sr_ok'] = self.MIN_SAMPLE_RATE <= sr_est <= self.MAX_SAMPLE_RATE
+
+        # 6. 时间戳连续性
+        timestamps = channel_data.get('timestamps', [])
+        if len(timestamps) >= 2:
+            ts = np.array(timestamps)
+            checks['timestamps_monotonic'] = bool(np.all(np.diff(ts) > 0))
+            if not checks['timestamps_monotonic']:
+                errors.append('时间戳非单调递增')
+
+        # 综合判定
+        n_checks_passed = sum(1 for v in checks.values() if isinstance(v, bool) and v)
+        n_checks_total = sum(1 for v in checks.values() if isinstance(v, bool))
+
+        if len(errors) == 0:
+            quality = 'pass'
+        elif n_checks_passed >= n_checks_total * 0.7:
+            quality = 'warn'
+        else:
+            quality = 'fail'
+
+        return {
+            'valid': quality != 'fail',
+            'quality': quality,
+            'checks': checks,
+            'errors': errors,
+            'max_accel_g': float(max_acc),
+            'n_samples': n
+        }
+
+
+class BatchEvaluationPipeline:
+    """离线批量评测 Pipeline (A3)
+
+    支持 CSV 全量分析:
+      - 逐行/逐窗口读取 CSV 数据
+      - 批量调用 MultiChannelSeatEvaluationEngine
+      - 汇总结果到 DataFrame
+      - 导出诊断报告
+    """
+
+    def __init__(self, engine: MultiChannelSeatEvaluationEngine = None,
+                 validator: IMUValidationGateway = None):
+        self.engine = engine or MultiChannelSeatEvaluationEngine()
+        self.validator = validator or IMUValidationGateway()
+        self.results = []
+        self.validated_count = 0
+        self.rejected_count = 0
+
+    def process_csv(self, csv_path: str, delimiter: str = ',',
+                    sample_rate: float = 100.0, group_tag: str = 'experimental') -> List[Dict]:
+        """从CSV文件批量处理评测数据
+
+        Args:
+            csv_path: CSV文件路径
+            delimiter: 分隔符
+            sample_rate: 采样率
+            group_tag: 组别标签
+
+        Returns:
+            评测结果列表
+        """
+        import csv as _csv
+        self.results = []
+        self.validated_count = 0
+        self.rejected_count = 0
+
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = _csv.DictReader(f, delimiter=delimiter)
+            for row_idx, row in enumerate(reader):
+                try:
+                    # 构建通道数据
+                    channel_data = self._parse_csv_row(row)
+                    if not channel_data:
+                        continue
+
+                    # IMU 数据校验
+                    validation = self.validator.validate(
+                        channel_data, sample_rate=sample_rate
+                    )
+                    if not validation['valid']:
+                        self.rejected_count += 1
+                        logger.warning(
+                            f"Row {row_idx}: IMU validation failed - {validation['errors']}"
+                        )
+                        continue
+                    self.validated_count += 1
+
+                    # 构建 trigger
+                    trigger = {
+                        'event_id': f'csv_row_{row_idx}',
+                        'event_type': 'csv_batch',
+                        'timestamp': float(row.get('timestamp', row_idx / sample_rate)),
+                        'data_window': {'pre': 0.0, 'post': 1.0},
+                        'multi_channel_data': {
+                            **channel_data,
+                            '_sample_rate': sample_rate
+                        },
+                        'group_tag': group_tag
+                    }
+
+                    result = self.engine.evaluate_by_event(trigger)
+                    if result:
+                        self.results.append({
+                            'row_idx': row_idx,
+                            'result': self.engine._result_to_dict(result),
+                            'validation': validation
+                        })
+
+                except Exception as e:
+                    logger.error(f"Row {row_idx} processing failed: {e}")
+
+        logger.info(
+            f"Batch processing complete: {len(self.results)} results, "
+            f"{self.validated_count} validated, {self.rejected_count} rejected"
+        )
+        return self.results
+
+    def process_data_windows(self, data_windows: List[Dict[str, Any]],
+                             sample_rate: float = 100.0,
+                             group_tag: str = 'experimental') -> List[Dict]:
+        """批量处理数据窗口列表
+
+        Args:
+            data_windows: 数据窗口列表
+            sample_rate: 采样率
+            group_tag: 组别标签
+
+        Returns:
+            评测结果列表
+        """
+        self.results = []
+        self.validated_count = 0
+        self.rejected_count = 0
+
+        for idx, window in enumerate(data_windows):
+            try:
+                channel_data = window.get('channel_data', window)
+                validation = self.validator.validate(channel_data, sample_rate=sample_rate)
+                if not validation['valid']:
+                    self.rejected_count += 1
+                    continue
+                self.validated_count += 1
+
+                trigger = {
+                    'event_id': f'batch_{idx}',
+                    'event_type': window.get('event_type', 'batch'),
+                    'timestamp': window.get('timestamp', idx / sample_rate),
+                    'data_window': window.get('data_window', {'pre': 0.0, 'post': 1.0}),
+                    'multi_channel_data': {
+                        **channel_data,
+                        '_sample_rate': sample_rate
+                    },
+                    'group_tag': group_tag
+                }
+
+                result = self.engine.evaluate_by_event(trigger)
+                if result:
+                    self.results.append({
+                        'idx': idx,
+                        'result': self.engine._result_to_dict(result),
+                        'validation': validation
+                    })
+            except Exception as e:
+                logger.error(f"Window {idx} processing failed: {e}")
+
+        return self.results
+
+    def get_summary(self) -> Dict[str, Any]:
+        """获取批量评测摘要"""
+        if not self.results:
+            return {'total': 0, 'validated': self.validated_count,
+                    'rejected': self.rejected_count}
+
+        scores = [r['result'].get('overall_score', 0) for r in self.results]
+        risks = [r['result'].get('risk_level', 'normal') for r in self.results]
+
+        return {
+            'total': len(self.results),
+            'validated': self.validated_count,
+            'rejected': self.rejected_count,
+            'mean_score': float(np.mean(scores)) if scores else 0.0,
+            'min_score': float(np.min(scores)) if scores else 0.0,
+            'max_score': float(np.max(scores)) if scores else 0.0,
+            'risk_distribution': {
+                level: risks.count(level) for level in set(risks)
+            }
+        }
+
+    def export_summary_csv(self, output_path: str):
+        """导出评测摘要为CSV"""
+        import csv as _csv
+        summary = self.get_summary()
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            writer = _csv.writer(f)
+            writer.writerow(['metric', 'value'])
+            for k, v in summary.items():
+                writer.writerow([k, v])
+
+    @staticmethod
+    def _parse_csv_row(row: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        """解析CSV行数据为通道数据格式"""
+        try:
+            # 尝试常见的列名模式
+            ax_col = row.get('ax') or row.get('acc_x') or row.get('Ax') or row.get('head_ax')
+            ay_col = row.get('ay') or row.get('acc_y') or row.get('Ay') or row.get('head_ay')
+            az_col = row.get('az') or row.get('acc_z') or row.get('Az') or row.get('head_az')
+
+            if ax_col is None or ay_col is None or az_col is None:
+                return None
+
+            return {
+                'ax': float(ax_col),
+                'ay': float(ay_col),
+                'az': float(az_col),
+            }
+        except (ValueError, TypeError):
+            return None
