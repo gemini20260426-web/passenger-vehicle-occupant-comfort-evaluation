@@ -46,6 +46,8 @@ INDICATOR_DEFINITIONS = {
 
     'ACC_RMS': {'name': '加速度均方根', 'unit': 'g', 'type': 'basic'},
     'ACC_PEAK': {'name': '峰值加速度', 'unit': 'g', 'type': 'basic'},
+    'S_D': {'name': '脊柱压缩应力', 'unit': 'MPa', 'type': 'spine'},
+    'DISP_HR': {'name': '头部三维合成位移', 'unit': 'mm', 'type': 'dynamic'},
 
     # ═══════════════════════════════════════════════════════════
     #  全时域统计指标 (Full Timeseries Statistics) — 87个
@@ -1160,9 +1162,10 @@ class MetadataRegistry:
                 display_name_en='CAN Bus IMU',
                 imu_labels={
                     'IMU1': '头部眉心-1', 'IMU2': '头部眉心-2',
-                    'IMU4': '躯干T8-2', 'IMU5': '座垫R点-1',
-                    'IMU6': '座垫R点-2', 'IMU7': '座椅底部-1',
-                    'IMU8': '座椅底部-2', 'IMU9': '胸骨剑突-1',
+                    'IMU3': '躯干T8-1', 'IMU4': '躯干T8-2',
+                    'IMU5': '座垫R点-1', 'IMU6': '座垫R点-2',
+                    'IMU7': '座椅底部-1', 'IMU8': '座椅底部-2',
+                    'IMU9': '胸骨剑突-1', 'IMU10': '胸骨剑突-2',
                 },
                 protocol='CAN 2.0B', physical_channel='ch1',
                 sampling_rate_hz=100.0, sensor_model='SEN-IMU-V3',
