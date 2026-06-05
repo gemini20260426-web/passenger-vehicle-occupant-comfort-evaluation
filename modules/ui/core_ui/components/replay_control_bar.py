@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton, Q
 from PySide6.QtCore import Qt, Signal, QPoint
 from PySide6.QtGui import QFont, QPainter, QColor, QPen
 
+from core.core.analysis.clearable_registry import ClearableResource, ClearableRegistry
+
 logger = logging.getLogger(__name__)
 
 SPEED_OPTIONS = ['0.25x', '0.5x', '1x', '2x', '5x', '10x']
@@ -384,8 +386,10 @@ class CheckableComboBox(QWidget):
     def _update_button_text(self):
         count = len(self._checked)
         total = len(self._items)
-        if count == 0:
+        if total == 0:
             self._button.setText('🎯 事件跳转...')
+        elif count == 0:
+            self._button.setText(f'🎯 事件跳转 ({total}个)')
         elif count == total:
             self._button.setText(f'☑ 全部事件 ({count})')
         else:
@@ -519,7 +523,7 @@ class CheckableComboBox(QWidget):
             self.selection_changed.emit(self.get_checked_data())
 
 
-class ReplayControlBar(QWidget):
+class ReplayControlBar(QWidget, ClearableResource):
     """回放控制栏"""
 
     play_clicked = Signal()
@@ -545,6 +549,8 @@ class ReplayControlBar(QWidget):
         self._init_ui()
         self.set_status('正在解析数据...')
         self._set_controls_enabled(False)
+        # 注册到统一清除中心
+        ClearableRegistry.instance().register("回放控制栏", self)
 
     def _init_ui(self):
         outer = QVBoxLayout(self)
@@ -777,6 +783,17 @@ class ReplayControlBar(QWidget):
         self._time_min = 0.0
         self._time_max = 0.0
 
+    def clear_all(self):
+        """清除所有回放控制栏数据（实现 ClearableResource 协议）"""
+        self.reset_state()
+        self.set_play_enabled(False)
+        self.set_events([])
+        self._update_time_label(0.0)
+        if hasattr(self, 'event_jump_combo') and self.event_jump_combo:
+            self.event_jump_combo.clear_items()
+        if hasattr(self, 'time_label') and self.time_label:
+            self.time_label.setText("00:00 / 00:00")
+
     def _on_slider_released(self):
         if self._time_max > self._time_min:
             ratio = self.progress_slider.value() / 1000.0
@@ -920,6 +937,12 @@ class ReplayControlBar(QWidget):
                 items.append((label, str(eid)))
         self.event_jump_combo.set_items(items)
 
+    def sync_events_from_distributor(self):
+        """从 EventDistributor 统一同步事件到回放栏（唯一事件源）"""
+        from core.core.analysis.event_distributor import EventDistributor
+        events = EventDistributor.instance().get_events()
+        self.set_events(events)
+
     def _on_time_range_changed(self):
         start_val = self.start_time_spin.value()
         end_val = self.end_time_spin.value()
@@ -940,9 +963,16 @@ class ReplayControlBar(QWidget):
         self.time_range_changed.emit(0, 0)
 
     def update_time_range_display(self, start_time: float, end_time: float):
+        """更新回放区间显示（时间标签 + SpinBox），同步 _time_min/_time_max 确保进度条正确"""
+        self._time_min = start_time
+        if end_time > 0:
+            self._time_max = end_time
         self.start_time_spin.blockSignals(True)
         self.end_time_spin.blockSignals(True)
+        self.start_time_spin.setRange(self._time_min, self._time_max)
+        self.end_time_spin.setRange(0, self._time_max)
         self.start_time_spin.setValue(start_time)
         self.end_time_spin.setValue(end_time)
         self.start_time_spin.blockSignals(False)
         self.end_time_spin.blockSignals(False)
+        self._update_time_label(start_time)

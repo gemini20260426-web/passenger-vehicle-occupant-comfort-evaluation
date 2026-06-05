@@ -119,8 +119,9 @@ class CacheRegistry:
             conn.commit()
 
     def _load_all(self):
-        """从 SQLite 加载所有缓存条目"""
+        """从 SQLite 加载所有缓存条目，过滤掉无效条目（0条记录或缓存文件不存在）"""
         self._entries.clear()
+        invalid_ids = []
         try:
             with sqlite3.connect(self._index_db) as conn:
                 conn.row_factory = sqlite3.Row
@@ -128,6 +129,14 @@ class CacheRegistry:
                     "SELECT * FROM cache_index ORDER BY creation_time DESC"
                 ).fetchall()
             for row in rows:
+                # 跳过记录数为0的无效条目
+                if row['record_count'] == 0:
+                    invalid_ids.append(row['id'])
+                    continue
+                # 验证缓存文件是否存在
+                if not os.path.exists(row['cache_db_path']):
+                    invalid_ids.append(row['id'])
+                    continue
                 entry = CacheEntry(
                     id=row['id'],
                     cache_db_path=row['cache_db_path'],
@@ -144,10 +153,49 @@ class CacheRegistry:
                 self._entries[entry.id] = entry
                 if row['is_default']:
                     self._default_id = entry.id
+            # 清理无效条目
+            if invalid_ids:
+                with sqlite3.connect(self._index_db) as conn:
+                    for iid in invalid_ids:
+                        conn.execute("DELETE FROM cache_index WHERE id = ?", [iid])
+                    conn.commit()
+                logger.info(f"已清理 {len(invalid_ids)} 个无效缓存条目")
         except Exception as e:
             logger.warning(f"加载缓存索引失败: {e}")
 
     # ── 扫描与注册 ─────────────────────────────────────────────
+
+    def _find_best_analysis_file(self, cache_ts: str) -> Optional[str]:
+        """
+        根据缓存时间戳查找最佳匹配的分析文件。
+        支持精确匹配和模糊匹配（时间戳相差在 10 以内）。
+        """
+        # 精确匹配
+        exact_path = os.path.join(self._data_dir, f'analysis_results_{cache_ts}.db')
+        if os.path.exists(exact_path):
+            return exact_path
+        
+        # 模糊匹配：扫描所有 analysis_results_*.db，找时间戳最接近的
+        try:
+            cache_ts_int = int(cache_ts)
+        except (ValueError, TypeError):
+            return None
+        
+        analysis_files = glob.glob(os.path.join(self._data_dir, 'analysis_results_*.db'))
+        best_path = None
+        best_diff = float('inf')
+        for af in analysis_files:
+            af_name = os.path.basename(af)
+            af_ts_str = af_name.replace('analysis_results_', '').replace('.db', '')
+            try:
+                af_ts_int = int(af_ts_str)
+            except (ValueError, TypeError):
+                continue
+            diff = abs(cache_ts_int - af_ts_int)
+            if diff < best_diff and diff <= 10:  # 允许最大相差 10
+                best_diff = diff
+                best_path = af
+        return best_path
 
     def _scan_and_register(self):
         """扫描 data_output 目录，注册未记录的缓存文件"""
@@ -155,6 +203,9 @@ class CacheRegistry:
         new_count = 0
         for cache_path in cache_files:
             cache_name = os.path.basename(cache_path)
+            # 跳过 registry 自身
+            if cache_name == 'cache_registry.db':
+                continue
             ts_str = cache_name.replace('cache_', '').replace('.db', '')
             # 检查是否已注册
             if cache_path in {e.cache_db_path for e in self._entries.values()}:
@@ -163,9 +214,9 @@ class CacheRegistry:
             metadata = self._extract_cache_metadata(cache_path)
             if metadata['record_count'] == 0:
                 continue
-            # 查找对应的分析缓存
-            analysis_path = os.path.join(self._data_dir, f'analysis_results_{ts_str}.db')
-            if not os.path.exists(analysis_path):
+            # 查找对应的分析缓存（支持模糊匹配）
+            analysis_path = self._find_best_analysis_file(ts_str)
+            if analysis_path is None:
                 analysis_path = ''
             # 提取分析缓存事件数
             event_count = 0
@@ -272,6 +323,30 @@ class CacheRegistry:
         except Exception as e:
             logger.error(f"保存缓存条目失败: {e}")
 
+    def _update_entry(self, entry_id: str):
+        """更新已有缓存条目到 SQLite（仅更新可变字段）"""
+        try:
+            entry = self._entries.get(entry_id)
+            if not entry:
+                return
+            with sqlite3.connect(self._index_db) as conn:
+                conn.execute("""
+                    UPDATE cache_index SET
+                        record_count = ?, event_count = ?,
+                        source_types = ?, time_min = ?, time_max = ?
+                    WHERE id = ?
+                """, (
+                    entry.record_count,
+                    entry.event_count,
+                    self._json_encode(entry.source_types),
+                    entry.time_range[0],
+                    entry.time_range[1],
+                    entry_id,
+                ))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"更新缓存条目失败: {e}")
+
     def register(self, cache_path: str, analysis_path: str = '',
                  metadata: Optional[Dict[str, Any]] = None,
                  force: bool = False) -> Optional[str]:
@@ -279,14 +354,43 @@ class CacheRegistry:
         
         Args:
             force: 若为 True，即使 record_count==0 也注册（用于预注册空缓存）
+        
+        注意：如果已存在相同 cache_path 的条目，则更新而非新建。
         """
         if metadata is None:
             metadata = self._extract_cache_metadata(cache_path)
         if metadata['record_count'] == 0 and not force:
             return None
+        
+        # 检查是否已存在相同 cache_path 的条目，避免重复注册
+        existing_id = None
+        for eid, entry in self._entries.items():
+            if entry.cache_db_path == cache_path:
+                existing_id = eid
+                break
+        
         event_count = 0
-        if analysis_path:
+        if analysis_path and os.path.exists(analysis_path):
             event_count = self._count_events_in_analysis_cache(analysis_path)
+        elif not analysis_path:
+            # 尝试模糊匹配分析文件
+            cache_name = os.path.basename(cache_path)
+            ts_str = cache_name.replace('cache_', '').replace('.db', '')
+            best_analysis = self._find_best_analysis_file(ts_str)
+            if best_analysis:
+                analysis_path = best_analysis
+                event_count = self._count_events_in_analysis_cache(best_analysis)
+        
+        if existing_id and metadata['record_count'] > 0:
+            # 更新已有条目（例如从空缓存变为有数据）
+            self._entries[existing_id].record_count = metadata['record_count']
+            self._entries[existing_id].source_types = metadata.get('source_types', [])
+            self._entries[existing_id].time_range = metadata.get('time_range', (0.0, 0.0))
+            self._entries[existing_id].event_count = event_count
+            self._update_entry(existing_id)
+            logger.info(f"已更新缓存条目: {existing_id[:8]}... → {os.path.basename(cache_path)} ({metadata['record_count']}条)")
+            return existing_id
+        
         entry = CacheEntry(
             id=str(uuid.uuid4()),
             cache_db_path=cache_path,
@@ -303,7 +407,7 @@ class CacheRegistry:
         self._entries[entry.id] = entry
         if self._default_id is None:
             self._set_default(entry.id)
-        logger.info(f"已注册新缓存: {entry.id[:8]}... → {os.path.basename(cache_path)}")
+        logger.info(f"已注册新缓存: {entry.id[:8]}... → {os.path.basename(cache_path)} ({metadata['record_count']}条)")
         return entry.id
 
     def list_caches(self) -> List[CacheEntry]:
@@ -328,16 +432,7 @@ class CacheRegistry:
         analysis_cache = None
         if entry.analysis_db_path and os.path.exists(entry.analysis_db_path):
             from core.core.analysis.analysis_result_cache import AnalysisResultCache
-            analysis_cache = AnalysisResultCache(
-                output_dir=self._data_dir,
-                cache=cache
-            )
-            # 尝试复用已有 db_path
-            if hasattr(analysis_cache, 'db_path'):
-                try:
-                    analysis_cache.db_path = entry.analysis_db_path
-                except Exception:
-                    pass
+            analysis_cache = AnalysisResultCache(db_path=entry.analysis_db_path)
         return cache, analysis_cache
 
     def delete(self, cache_id: str) -> bool:
@@ -388,8 +483,16 @@ class CacheRegistry:
         entry.imu_channels = metadata.get('imu_channels', entry.imu_channels)
         entry.time_range = metadata.get('time_range', entry.time_range)
         # 重新统计事件数
-        if entry.analysis_db_path:
+        if entry.analysis_db_path and os.path.exists(entry.analysis_db_path):
             entry.event_count = self._count_events_in_analysis_cache(entry.analysis_db_path)
+        else:
+            # 尝试模糊匹配分析文件
+            cache_name = os.path.basename(abs_path)
+            ts_str = cache_name.replace('cache_', '').replace('.db', '')
+            best_analysis = self._find_best_analysis_file(ts_str)
+            if best_analysis:
+                entry.analysis_db_path = best_analysis
+                entry.event_count = self._count_events_in_analysis_cache(best_analysis)
         self._save_entry(entry)
         logger.info(
             f"已刷新缓存条目 {target_id[:8]}...: "

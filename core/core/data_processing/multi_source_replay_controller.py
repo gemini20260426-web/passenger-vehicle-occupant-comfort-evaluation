@@ -270,12 +270,19 @@ class MultiSourceReplayController(QObject):
         start_time = max(self._time_min, event.start_time - pre_window)
         end_time = min(self._time_max, event.end_time + post_window)
         self.set_playback_range(start_time, end_time)
+        # 暂停回放，避免数据持续推送；用户需手动点击播放
+        if self._state == 'playing':
+            self.pause()
         logger.info(f"跳转到事件 {event_id}: [{start_time:.1f}s, {end_time:.1f}s]")
         return True
 
     def jump_to_events(self, event_ids: list, pre_window: float = 2.0, post_window: float = 3.0):
         if not event_ids:
             return False
+
+        # 暂停当前回放，事件跳转后用户需手动点击播放
+        if self._state == 'playing':
+            self.pause()
 
         events = []
         for eid in event_ids:
@@ -293,6 +300,7 @@ class MultiSourceReplayController(QObject):
         start_time = max(self._time_min, min_start - pre_window)
         end_time = min(self._time_max, max_end + post_window)
         self.set_playback_range(start_time, end_time)
+
         logger.info(f"跳转到 {len(events)} 个事件: [{start_time:.1f}s, {end_time:.1f}s]")
         return True
 

@@ -76,6 +76,12 @@ class MetricComputer:
         self._cfc1000 = CFCOperator(cfc=1000)
         self._initialized = True
 
+    # ── SRS/FDS/STFT 子指标映射 ──
+    _SRS_SUB_IDS = {'SRS_MRS': 'SRS_MRS', 'SRS_Q': 'SRS_Q', 'SRS_PV': 'SRS_PV', 'SRS_ATT': 'SRS_ATT'}
+    _FDS_SUB_IDS = {'FDS_D': 'FDS_D', 'FDS_R': 'FDS_R'}
+    _STFT_SUB_IDS = {'STFT_FC': 'STFT_FC', 'STFT_KT': 'STFT_KT', 'STFT_CE': 'STFT_CE'}
+    _ALL_SUB_METRICS = {**_SRS_SUB_IDS, **_FDS_SUB_IDS, **_STFT_SUB_IDS}
+
     def compute(self, metric_id: str, ctx: MetricComputeContext) -> float:
         self._init_cfc()
         ops = self._ops
@@ -88,10 +94,29 @@ class MetricComputer:
         sr = ctx.sample_rate
         ax, ay, az = ctx.ax, ctx.ay, ctx.az
 
+        # ── 主路由: _METRIC_HANDLERS ──
         handler = self._METRIC_HANDLERS.get(metric_id)
         if handler:
             return handler(self, ctx, ops, sr, ax, ay, az)
-        return 0.0
+
+        # ── SRS子指标路由 ──
+        if metric_id in self._SRS_SUB_IDS:
+            return self.compute_srs(ctx, self._SRS_SUB_IDS[metric_id])
+
+        # ── FDS子指标路由 ──
+        if metric_id in self._FDS_SUB_IDS:
+            return self.compute_fds(ctx, self._FDS_SUB_IDS[metric_id])
+
+        # ── STFT子指标路由 ──
+        if metric_id in self._STFT_SUB_IDS:
+            return self.compute_stft(ctx, self._STFT_SUB_IDS[metric_id])
+
+        # ── 未识别指标: 报错而非静默返回0 ──
+        logger.error(f"未知指标: {metric_id}")
+        raise ValueError(
+            f"MetricComputer.compute(): 未知指标 '{metric_id}'。"
+            f"有效指标: {list(self._METRIC_HANDLERS.keys()) + list(self._ALL_SUB_METRICS.keys())}"
+        )
 
     def _compute_seat_z(self, ctx, ops, sr, ax, ay, az):
         az_cfc = self._cfc1000.filter(az, sr) if len(az) >= 4 else az
@@ -302,3 +327,22 @@ class MetricComputer:
 
 
 MetricComputer._register_handlers(MetricComputer)
+
+
+def verify_all_metrics_registered():
+    """验证所有metadata定义的指标均可通过compute()计算
+    返回 True 表示所有指标已注册，False 表示存在缺失指标
+    """
+    from .metadata_registry import INDICATOR_DEFINITIONS
+    defined = set(INDICATOR_DEFINITIONS.keys())
+    registered = set(MetricComputer._METRIC_HANDLERS.keys()) | set(MetricComputer._ALL_SUB_METRICS.keys())
+    missing = defined - registered
+    extra = registered - defined
+    if missing:
+        logger.error(f"MetricComputer 未注册指标: {missing}")
+    if extra:
+        logger.warning(f"MetricComputer 多余指标(不在metadata中): {extra}")
+    if missing:
+        return False
+    logger.info(f"MetricComputer 指标完整性验证通过: {len(registered)} 个指标已注册")
+    return True

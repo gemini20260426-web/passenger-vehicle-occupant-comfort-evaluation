@@ -20,6 +20,7 @@ from collections import OrderedDict
 from PySide6.QtCore import QObject, Signal
 
 from .core_types import ManeuverEvent, BehaviorCategory, RiskLevel, BEHAVIOR_LABELS_CN
+from .clearable_registry import ClearableResource, ClearableRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ def _risk_level_to_str(risk_level) -> str:
     return level_map.get(level, 'low')
 
 
-class EventDistributor(QObject):
+class EventDistributor(QObject, ClearableResource):
     """统一事件分发中心 — 驾驶行为事件的唯一内存真相源
 
     所有模块必须通过此中心获取事件，禁止绕过直接访问 SQLite 或自行缓存。
@@ -89,6 +90,9 @@ class EventDistributor(QObject):
         self._events: Dict[str, ManeuverEvent] = OrderedDict()
         self._seq_counter: int = 0
         self._analysis_cache = None
+
+        # 注册到统一清除中心
+        ClearableRegistry.instance().register("事件分发中心", self)
 
         logger.info("[EventDistributor] 统一事件分发中心已初始化")
 
@@ -304,6 +308,10 @@ class EventDistributor(QObject):
             logger.info(f"[EventDistributor] 已清空 {count} 个事件")
             self._notify_changed()
             return count
+
+    def clear_all(self) -> None:
+        """清除所有事件（实现 ClearableResource 协议）"""
+        self.clear()
 
     def _get_seq_id(self, event_id: str) -> int:
         """获取事件的顺序ID"""

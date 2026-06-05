@@ -155,6 +155,7 @@ class MetadataManagementTab(QWidget):
         """)
 
         self._build_indicator_threshold_tab()
+        self._build_full_timeseries_indicator_tab()
         self._build_data_source_tab()
         self._build_driving_behavior_tab()
         self._build_field_operator_tab()
@@ -427,6 +428,67 @@ class MetadataManagementTab(QWidget):
         self.quick_result_label.setStyleSheet(
             f"color: {color}; font-family: 'Microsoft YaHei'; font-size: 15px; font-weight: bold;"
         )
+
+    def _build_full_timeseries_indicator_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        title_label = QLabel("全量统计分析 — 全时域统计指标 / 概览仪表盘 / 频段衰减")
+        title_label.setFont(QFont("Microsoft YaHei", 13, QFont.Bold))
+        layout.addWidget(title_label)
+
+        self.fts_indicator_table = QTableWidget()
+        self.fts_indicator_table.setColumnCount(6)
+        self.fts_indicator_table.setHorizontalHeaderLabels([
+            "指标代码", "中文名", "评测维度", "方向", "单位", "所属模块"
+        ])
+        self.fts_indicator_table.horizontalHeader().setStretchLastSection(True)
+        self.fts_indicator_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.fts_indicator_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.fts_indicator_table.setAlternatingRowColors(True)
+        self.fts_indicator_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.fts_indicator_table)
+
+        self._populate_fts_indicator_table()
+        self.sub_tab.addTab(tab, "全时域统计指标")
+
+    def _populate_fts_indicator_table(self):
+        reg = self._registry
+        dims = ('全时域统计', '概览仪表盘', '频段衰减')
+        codes = sorted(
+            [c for c, m in reg.indicators.items()
+             if m.evaluation_dimension in dims],
+            key=lambda c: (dims.index(reg.indicators[c].evaluation_dimension) if reg.indicators[c].evaluation_dimension in dims else 99, c)
+        )
+        self.fts_indicator_table.setRowCount(len(codes))
+        for row, code in enumerate(codes):
+            meta = reg.indicators.get(code)
+            display_name = meta.display_name_cn if meta else code
+            dimension = meta.evaluation_dimension if meta else ''
+            direction = meta.direction.name if meta else ''
+            unit = meta.unit if meta else ''
+
+            modules = []
+            for mod_code, mod_def in reg.evaluation_modules.items():
+                if code in mod_def.applicable_indicators:
+                    modules.append(mod_def.display_name_cn)
+            module_str = ', '.join(modules) if modules else '—'
+
+            items = [
+                QTableWidgetItem(code),
+                QTableWidgetItem(display_name),
+                QTableWidgetItem(dimension),
+                QTableWidgetItem(direction),
+                QTableWidgetItem(unit),
+                QTableWidgetItem(module_str),
+            ]
+            for col, item in enumerate(items):
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.fts_indicator_table.setItem(row, col, item)
+
+        self.fts_indicator_table.resizeColumnsToContents()
 
     def _build_data_source_tab(self):
         tab = QWidget()

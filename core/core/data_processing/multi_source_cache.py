@@ -24,7 +24,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_RECORDS = 1000000
+DEFAULT_MAX_RECORDS = 15000000
 DEFAULT_CACHE_TTL_DAYS = 7
 DEFAULT_WRITE_BUFFER_SIZE = 5000
 DEFAULT_QUERY_CACHE_SIZE = 32

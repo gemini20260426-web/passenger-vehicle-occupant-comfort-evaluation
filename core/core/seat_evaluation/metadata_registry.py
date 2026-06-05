@@ -46,6 +46,109 @@ INDICATOR_DEFINITIONS = {
 
     'ACC_RMS': {'name': '加速度均方根', 'unit': 'g', 'type': 'basic'},
     'ACC_PEAK': {'name': '峰值加速度', 'unit': 'g', 'type': 'basic'},
+
+    # ═══════════════════════════════════════════════════════════
+    #  全时域统计指标 (Full Timeseries Statistics) — 87个
+    # ═══════════════════════════════════════════════════════════
+
+    # ── 实验组 (E) 全套指标 ──
+    'RMS_Ax_E': {'name': '实验组 Ax-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'RMS_Ay_E': {'name': '实验组 Ay-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'RMS_Az_E': {'name': '实验组 Az-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Ax_E': {'name': '实验组 Ax-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Ay_E': {'name': '实验组 Ay-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Az_E': {'name': '实验组 Az-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Crest_Ax_E': {'name': '实验组 Ax-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Crest_Ay_E': {'name': '实验组 Ay-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Crest_Az_E': {'name': '实验组 Az-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'VDV_Ax_E': {'name': '实验组 Ax-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'VDV_Ay_E': {'name': '实验组 Ay-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'VDV_Az_E': {'name': '实验组 Az-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'Skew_Ax_E': {'name': '实验组 Ax-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Skew_Ay_E': {'name': '实验组 Ay-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Skew_Az_E': {'name': '实验组 Az-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Ax_E': {'name': '实验组 Ax-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Ay_E': {'name': '实验组 Ay-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Az_E': {'name': '实验组 Az-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'MAV_Ax_E': {'name': '实验组 Ax-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'MAV_Ay_E': {'name': '实验组 Ay-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'MAV_Az_E': {'name': '实验组 Az-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'Impf_Ax_E': {'name': '实验组 Ax-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Impf_Ay_E': {'name': '实验组 Ay-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Impf_Az_E': {'name': '实验组 Az-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+
+    # ── 对照组 (C) 全套指标 ──
+    'RMS_Ax_C': {'name': '对照组 Ax-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'RMS_Ay_C': {'name': '对照组 Ay-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'RMS_Az_C': {'name': '对照组 Az-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Ax_C': {'name': '对照组 Ax-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Ay_C': {'name': '对照组 Ay-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Az_C': {'name': '对照组 Az-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Crest_Ax_C': {'name': '对照组 Ax-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Crest_Ay_C': {'name': '对照组 Ay-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Crest_Az_C': {'name': '对照组 Az-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'VDV_Ax_C': {'name': '对照组 Ax-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'VDV_Ay_C': {'name': '对照组 Ay-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'VDV_Az_C': {'name': '对照组 Az-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'Skew_Ax_C': {'name': '对照组 Ax-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Skew_Ay_C': {'name': '对照组 Ay-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Skew_Az_C': {'name': '对照组 Az-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Ax_C': {'name': '对照组 Ax-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Ay_C': {'name': '对照组 Ay-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Az_C': {'name': '对照组 Az-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'MAV_Ax_C': {'name': '对照组 Ax-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'MAV_Ay_C': {'name': '对照组 Ay-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'MAV_Az_C': {'name': '对照组 Az-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'Impf_Ax_C': {'name': '对照组 Ax-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Impf_Ay_C': {'name': '对照组 Ay-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Impf_Az_C': {'name': '对照组 Az-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+
+    # ── 总振动剂量值 ──
+    'E_total_VDV': {'name': '实验组总VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'C_total_VDV': {'name': '对照组总VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+
+    # ── 胸骨指标 (Sternum) ──
+    'RMS_Ax_S': {'name': '胸骨 Ax-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'RMS_Ay_S': {'name': '胸骨 Ay-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'RMS_Az_S': {'name': '胸骨 Az-RMS', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Ax_S': {'name': '胸骨 Ax-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Ay_S': {'name': '胸骨 Ay-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Peak_Az_S': {'name': '胸骨 Az-Peak', 'unit': 'g', 'type': 'full_timeseries'},
+    'Crest_Ax_S': {'name': '胸骨 Ax-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Crest_Ay_S': {'name': '胸骨 Ay-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Crest_Az_S': {'name': '胸骨 Az-CrestFactor', 'unit': '', 'type': 'full_timeseries'},
+    'VDV_Ax_S': {'name': '胸骨 Ax-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'VDV_Ay_S': {'name': '胸骨 Ay-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'VDV_Az_S': {'name': '胸骨 Az-VDV', 'unit': 'm/s^1.75', 'type': 'full_timeseries'},
+    'Skew_Ax_S': {'name': '胸骨 Ax-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Skew_Ay_S': {'name': '胸骨 Ay-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Skew_Az_S': {'name': '胸骨 Az-Skewness', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Ax_S': {'name': '胸骨 Ax-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Ay_S': {'name': '胸骨 Ay-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'Kurt_Az_S': {'name': '胸骨 Az-Kurtosis', 'unit': '', 'type': 'full_timeseries'},
+    'MAV_Ax_S': {'name': '胸骨 Ax-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'MAV_Ay_S': {'name': '胸骨 Ay-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'MAV_Az_S': {'name': '胸骨 Az-MAV', 'unit': 'g', 'type': 'full_timeseries'},
+    'Impf_Ax_S': {'name': '胸骨 Ax-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Impf_Ay_S': {'name': '胸骨 Ay-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+    'Impf_Az_S': {'name': '胸骨 Az-ImpulseFactor', 'unit': '', 'type': 'full_timeseries'},
+
+    # ── 概览仪表盘指标 ──
+    'OVTV_DASHBOARD': {'name': '总振动值 OVTV(g)', 'unit': 'g', 'type': 'dashboard'},
+    'DOM_BAND': {'name': '主导频带', 'unit': 'Hz', 'type': 'dashboard'},
+    'CF_Z': {'name': '冲击因数 CF(Z)', 'unit': '', 'type': 'dashboard'},
+    'LOCATION_COUNT': {'name': '位置数', 'unit': '个', 'type': 'dashboard'},
+    'ISO_REF_ZONE': {'name': 'ISO参考区', 'unit': '', 'type': 'dashboard'},
+    'DURATION': {'name': '分析时长', 'unit': 's', 'type': 'dashboard'},
+    'BEHAVIOR_EVENT_COUNT': {'name': '驾驶行为事件数', 'unit': '次', 'type': 'dashboard'},
+    'BEHAVIOR_EVENT_TYPES': {'name': '事件类型覆盖', 'unit': '种', 'type': 'dashboard'},
+
+    # ── 频段衰减指标 ──
+    'BAND_ATT_01_05': {'name': '超低频段衰减率(0.1-0.5Hz)', 'unit': '%', 'type': 'band_attenuation'},
+    'BAND_ATT_05_1': {'name': '低频段衰减率(0.5-1Hz)', 'unit': '%', 'type': 'band_attenuation'},
+    'BAND_ATT_1_5': {'name': '中频段衰减率(1-5Hz)', 'unit': '%', 'type': 'band_attenuation'},
+    'BAND_ATT_5_20': {'name': '高频段衰减率(5-20Hz)', 'unit': '%', 'type': 'band_attenuation'},
+    'BAND_ATT_20_80': {'name': '超高频段衰减率(20-80Hz)', 'unit': '%', 'type': 'band_attenuation'},
 }
 
 INDICATOR_DETAIL = {
@@ -736,6 +839,60 @@ INDICATOR_DETAIL = {
         'two_point_description': '🔶 head vs seat_r PEAK衰减 = 座椅对冲击峰值的隔振效果',
         'three_point_description': '🔶 head→torso→seat_r 峰值梯度 揭示冲击沿脊柱衰减的传递路径',
     },
+
+    'S_D': {
+        'category': 'spine',
+        'location_dependency': 'single_point',
+        'location_dependency_label': '单点 (胸骨剑突)',
+        'primary_imu': 'IMU9_胸骨剑突-1 (sternum)',
+        'data_fields': 'ax[点数N]+ay[点数N]+az[点数N]@sternum',
+        'operator_pipeline': (
+            '① ISO2631_5Operator.compute(ax*9.81, ay*9.81, az*9.81, sr):\n'
+            '   - cont2discrete 双线性变换 → 离散状态空间模型\n'
+            '   - 输入: 三轴加速度[m/s²]@胸骨剑突\n'
+            '   - 输出: S_d [MPa] 脊柱压缩应力\n'
+            '② 若采样率<200Hz: np.interp 线性插值至200Hz\n'
+        ),
+        'formula': (
+            'ISO 2631-5:2018 Annex D\n'
+            'S_e(t) = [ Σ(m_k × a_k(t)) + Σ(c_k × S_{k-1}(t)) ]\n'
+            'S_d = max_t(S_e(t)) / cross_sectional_area\n'
+            'c_stress = 1.0 (应力转换因子)'
+        ),
+        'calculation_logic': (
+            'ISO 2631-5 脊柱压缩应力模型\n'
+            '通过多自由度离散状态空间模型将三轴加速度转化为\n'
+            '腰椎(L4/L5)间盘压缩应力\n'
+            'S_d < 0.5 MPa: 低风险\n'
+            'S_d > 0.8 MPa: 高风险(ISO 2631-5 Annex C)'
+        ),
+        'single_point_description': '✅ 胸骨剑突单点加速度→脊柱压缩应力模型→S_d',
+        'two_point_description': '不适用',
+        'three_point_description': '不适用',
+    },
+
+    'DISP_HR': {
+        'category': 'dynamic',
+        'location_dependency': 'single_point',
+        'location_dependency_label': '单点 (头部)',
+        'primary_imu': 'IMU1_头部眉心-1 (head)',
+        'data_fields': 'ax+ay+az@head → 三轴位移合成',
+        'operator_pipeline': (
+            '① 三轴分别HP滤波(0.5Hz) → 一次积分(速度) → HP滤波 → 二次积分(位移)\n'
+            '② VectorOperator.synthesize(dx, dy, dz): 三维合成位移\n'
+            '③ DISP_HR = max(disp_3d) [mm]'
+        ),
+        'formula': (
+            'For axis in (ax,ay,az):\n'
+            '  vel = cumsum(HP_filter(axis))/sr  →  vel_f = HP_filter(vel)\n'
+            '  disp_axis = cumsum(vel_f)/sr × 1000\n'
+            'DISP_HR = max(√(dx²+dy²+dz²)) [mm]'
+        ),
+        'calculation_logic': '头部三维合成位移峰值，表征头部在空间中的最大偏移量',
+        'single_point_description': '✅ 头部三轴加速度→二次积分→三维合成位移峰值',
+        'two_point_description': '不适用',
+        'three_point_description': '不适用',
+    },
 }
 
 
@@ -813,6 +970,8 @@ METRIC_THRESHOLDS = {
     'JERK_H':     {'excellent': 5.0,   'good': 15.0,  'fair': 25.0,  'poor': 40.0},
     'SRS_MRS':    {'excellent': 5.0,   'good': 10.0,  'fair': 15.0,  'poor': 20.0},
     'SRS_PV':     {'excellent': 2.0,   'good': 3.5,   'fair': 5.0,   'poor': 7.0},
+    'SRS_Q':      {'excellent': 10.0,  'good': 10.0,  'fair': 10.0,  'poor': 10.0},
+    'SRS_ATT':    {'excellent': 0.10,  'good': 0.10,  'fair': 0.10,  'poor': 0.10},
     'SEAT_Z':     {'excellent': 0.5,   'good': 0.8,   'fair': 1.0,   'poor': 1.25},
     'SEAT_XY':    {'excellent': 0.5,   'good': 0.8,   'fair': 1.0,   'poor': 1.25},
     'AW_Z':       {'excellent': 0.315, 'good': 0.5,   'fair': 0.8,   'poor': 1.0},
@@ -966,6 +1125,8 @@ class MetadataRegistry:
             'JERK_H':     IndicatorDef('JERK_H',     '头部加加速度',             unit='g/s',  evaluation_dimension='冲击域', direction=EvaluationDirection.LOWER_IS_BETTER),
             'SRS_MRS':    IndicatorDef('SRS_MRS',    'SRS最大响应谱',            unit='g',    evaluation_dimension='冲击域', direction=EvaluationDirection.LOWER_IS_BETTER),
             'SRS_PV':     IndicatorDef('SRS_PV',     'SRS伪速度',               unit='m/s',  evaluation_dimension='冲击域', direction=EvaluationDirection.LOWER_IS_BETTER),
+            'SRS_Q':      IndicatorDef('SRS_Q',      'SRS品质因数',             unit='',     evaluation_dimension='冲击域', direction=EvaluationDirection.CENTER_IS_BETTER),
+            'SRS_ATT':    IndicatorDef('SRS_ATT',    'SRS衰减时间常数',          unit='s',    evaluation_dimension='冲击域', direction=EvaluationDirection.CENTER_IS_BETTER),
             'SEAT_Z':     IndicatorDef('SEAT_Z',     'Z轴SEAT因子',             unit='',     evaluation_dimension='频域',   direction=EvaluationDirection.LOWER_IS_BETTER),
             'SEAT_XY':    IndicatorDef('SEAT_XY',    '水平SEAT因子',             unit='',     evaluation_dimension='频域',   direction=EvaluationDirection.LOWER_IS_BETTER),
             'AW_Z':       IndicatorDef('AW_Z',       'Z轴加权加速度均方根',      unit='m/s2', evaluation_dimension='频域',   direction=EvaluationDirection.LOWER_IS_BETTER),
@@ -986,6 +1147,9 @@ class MetadataRegistry:
             'DISP_HR':    IndicatorDef('DISP_HR',    '三轴峰峰位移',             unit='mm',   evaluation_dimension='时域',   direction=EvaluationDirection.LOWER_IS_BETTER),
             'S_D':        IndicatorDef('S_D',        '脊柱应力S_D',              unit='MPa',  evaluation_dimension='生物力学', direction=EvaluationDirection.LOWER_IS_BETTER),
         }
+        self._register_full_timeseries_indicators()
+        self._register_dashboard_indicators()
+        self._register_band_attenuation_indicators()
 
         self.metric_thresholds_4level = METRIC_THRESHOLDS
         self.diagnosis_thresholds = DIAGNOSIS_THRESHOLDS
@@ -1076,6 +1240,72 @@ class MetadataRegistry:
                 risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
                 color_hex='#6c757d', accel_range=(-0.05, 0.05), speed_range=(0, 3),
                 description='车辆怠速或处于静止状态'),
+
+            # ── 补齐22种驾驶事件类型 (来自 DrivingEventDetector EVENT_TYPES) ──
+            'cruising': DrivingStateDef('cruising', '恒速行驶', 'Cruising',
+                risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
+                color_hex='#2E86C1', accel_range=(-0.05, 0.05), speed_range=(30, 120),
+                description='车辆保持恒定速度行驶，无加减速'),
+            'stopped': DrivingStateDef('stopped', '停车', 'Stopped',
+                risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
+                color_hex='#85929E', accel_range=(-0.02, 0.02), speed_range=(0, 0),
+                description='车辆完全停止'),
+            'parked': DrivingStateDef('parked', '驻车', 'Parked',
+                risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
+                color_hex='#95A5A6', accel_range=(0.0, 0.0), speed_range=(0, 0),
+                description='车辆处于驻车状态'),
+            'lane_keeping': DrivingStateDef('lane_keeping', '车道保持', 'Lane Keeping',
+                risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
+                color_hex='#27AE60', accel_range=(-0.1, 0.1), speed_range=(30, 120),
+                description='车辆保持车道居中行驶'),
+            'left_turn': DrivingStateDef('left_turn', '左转', 'Left Turn',
+                risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
+                color_hex='#3498DB', accel_range=(-0.5, 0.5), speed_range=(10, 50),
+                description='车辆向左转弯行驶'),
+            'right_turn': DrivingStateDef('right_turn', '右转', 'Right Turn',
+                risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
+                color_hex='#2980B9', accel_range=(-0.5, 0.5), speed_range=(10, 50),
+                description='车辆向右转弯行驶'),
+            'tight_turn': DrivingStateDef('tight_turn', '小半径转弯', 'Tight Turn',
+                risk_category=RiskCategory.WARNING, risk_level_cn='警告',
+                color_hex='#E67E22', accel_range=(-1.5, 1.5), speed_range=(5, 30),
+                description='车辆以小半径转弯，侧向加速度较大'),
+            'wide_turn': DrivingStateDef('wide_turn', '大半径转弯', 'Wide Turn',
+                risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
+                color_hex='#1ABC9C', accel_range=(-0.3, 0.3), speed_range=(20, 80),
+                description='车辆以大半径转弯，侧向加速度较小'),
+            'u_turn': DrivingStateDef('u_turn', 'U型转弯', 'U-Turn',
+                risk_category=RiskCategory.WARNING, risk_level_cn='警告',
+                color_hex='#8E44AD', accel_range=(-1.0, 1.0), speed_range=(5, 20),
+                description='车辆进行U型掉头转弯'),
+            'cornering_acceleration': DrivingStateDef('cornering_acceleration', '弯道加速', 'Cornering Acceleration',
+                risk_category=RiskCategory.WARNING, risk_level_cn='警告',
+                color_hex='#D35400', accel_range=(0.5, 2.0), speed_range=(10, 60),
+                description='车辆在弯道中加速行驶'),
+            'cornering_deceleration': DrivingStateDef('cornering_deceleration', '弯道减速', 'Cornering Deceleration',
+                risk_category=RiskCategory.NORMAL, risk_level_cn='安全',
+                color_hex='#F39C12', accel_range=(-2.0, -0.5), speed_range=(10, 60),
+                description='车辆在弯道中减速行驶'),
+            'aggressive_deceleration': DrivingStateDef('aggressive_deceleration', '激进减速', 'Aggressive Deceleration',
+                risk_category=RiskCategory.WARNING, risk_level_cn='警告',
+                color_hex='#E74C3C', accel_range=(-5.0, -2.0), speed_range=(0, 120),
+                description='车辆以异常速率减速，减速度较大'),
+            'weaving': DrivingStateDef('weaving', '蛇形驾驶', 'Weaving',
+                risk_category=RiskCategory.DANGER, risk_level_cn='危险',
+                color_hex='#C0392B', accel_range=(-1.5, 1.5), speed_range=(20, 100),
+                description='车辆频繁左右变道，蛇形行驶'),
+            'rapid_direction_change': DrivingStateDef('rapid_direction_change', '急速变向', 'Rapid Direction Change',
+                risk_category=RiskCategory.DANGER, risk_level_cn='危险',
+                color_hex='#922B21', accel_range=(-3.0, 3.0), speed_range=(30, 100),
+                description='车辆急速改变行驶方向，侧向加速度突变'),
+            'severe_bump': DrivingStateDef('severe_bump', '剧烈颠簸', 'Severe Bump',
+                risk_category=RiskCategory.WARNING, risk_level_cn='警告',
+                color_hex='#E74C3C', accel_range=(-5.0, 5.0), speed_range=(10, 80),
+                description='车辆遭遇剧烈颠簸，垂向加速度大幅突变'),
+            'skid_risk': DrivingStateDef('skid_risk', '侧滑风险', 'Skid Risk',
+                risk_category=RiskCategory.CRITICAL, risk_level_cn='严重',
+                color_hex='#7B241C', accel_range=(-4.0, 4.0), speed_range=(20, 100),
+                description='车辆存在侧滑风险，轮胎附着力不足'),
         }
         self.raw_fields: Dict[str, RawFieldDef] = {
             'ax': RawFieldDef('ax', 'X轴加速度', 'Accel X',
@@ -1165,6 +1395,66 @@ class MetadataRegistry:
                 range_min=-500.0, range_max=500.0,
                 sample_rate_hz=100.0, source_device='Derived',
                 field_category='衍生量'),
+            'vdv_total': RawFieldDef('vdv_total', '总振动剂量值', 'Total VDV',
+                physical_unit='m/s^1.75', data_type='float32',
+                range_min=0.0, range_max=50.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'seat_attenuation': RawFieldDef('seat_attenuation', '座椅衰减率', 'Seat Attenuation',
+                physical_unit='%', data_type='float32',
+                range_min=-100.0, range_max=100.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'band_energy_01_05': RawFieldDef('band_energy_01_05', '超低频段能量(0.1-0.5Hz)', 'Band Energy 0.1-0.5Hz',
+                physical_unit='g²/Hz', data_type='float32',
+                range_min=0.0, range_max=10.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'band_energy_05_1': RawFieldDef('band_energy_05_1', '低频段能量(0.5-1Hz)', 'Band Energy 0.5-1Hz',
+                physical_unit='g²/Hz', data_type='float32',
+                range_min=0.0, range_max=10.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'band_energy_1_5': RawFieldDef('band_energy_1_5', '中频段能量(1-5Hz)', 'Band Energy 1-5Hz',
+                physical_unit='g²/Hz', data_type='float32',
+                range_min=0.0, range_max=10.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'band_energy_5_20': RawFieldDef('band_energy_5_20', '高频段能量(5-20Hz)', 'Band Energy 5-20Hz',
+                physical_unit='g²/Hz', data_type='float32',
+                range_min=0.0, range_max=10.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'band_energy_20_80': RawFieldDef('band_energy_20_80', '超高频段能量(20-80Hz)', 'Band Energy 20-80Hz',
+                physical_unit='g²/Hz', data_type='float32',
+                range_min=0.0, range_max=10.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'crest_factor_z': RawFieldDef('crest_factor_z', 'Z轴波峰因子', 'Crest Factor Z',
+                physical_unit='', data_type='float32',
+                range_min=1.0, range_max=20.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'skewness_z': RawFieldDef('skewness_z', 'Z轴偏度', 'Skewness Z',
+                physical_unit='', data_type='float32',
+                range_min=-5.0, range_max=5.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'kurtosis_z': RawFieldDef('kurtosis_z', 'Z轴峭度', 'Kurtosis Z',
+                physical_unit='', data_type='float32',
+                range_min=-3.0, range_max=20.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'impulse_factor_z': RawFieldDef('impulse_factor_z', 'Z轴脉冲因子', 'Impulse Factor Z',
+                physical_unit='', data_type='float32',
+                range_min=1.0, range_max=50.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
+            'mav_z': RawFieldDef('mav_z', 'Z轴平均绝对值', 'MAV Z',
+                physical_unit='g', data_type='float32',
+                range_min=0.0, range_max=5.0,
+                sample_rate_hz=100.0, source_device='Derived',
+                field_category='衍生量'),
         }
         self.operators: Dict[str, OperatorDef] = {
             'w_bz': OperatorDef('w_bz', 'ISO2631 W_b 垂直加权',
@@ -1227,6 +1517,86 @@ class MetadataRegistry:
                 input_type='array[float]', output_type='float',
                 input_count=1, output_count=1,
                 description='ISO2631-5 脊柱压缩应力模型'),
+            'psd': OperatorDef('psd', '功率谱密度 PSD',
+                category='频域', pipeline_id='frequency',
+                input_type='array[float]', output_type='array[float]',
+                input_count=1, output_count=1,
+                description='Welch法功率谱密度估计'),
+            'jerk': OperatorDef('jerk', '加加速度 Jerk',
+                category='冲击', pipeline_id='shock',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='加速度时间导数，衡量冲击的瞬变速率'),
+            'seat_z': OperatorDef('seat_z', 'SEAT Z传递率',
+                category='频域', pipeline_id='frequency',
+                input_type='array[float]', output_type='float',
+                input_count=2, output_count=1,
+                description='ISO2631-1 座椅Z轴有效振幅传递率'),
+            'seat_xy': OperatorDef('seat_xy', 'SEAT XY传递率',
+                category='频域', pipeline_id='frequency',
+                input_type='array[float]', output_type='float',
+                input_count=2, output_count=1,
+                description='ISO2631-1 座椅XY轴有效振幅传递率'),
+            'aw_z': OperatorDef('aw_z', '频率加权加速度Z',
+                category='频域', pipeline_id='frequency',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='ISO2631-1 W_b加权垂直加速度均方根'),
+            'aw_xy': OperatorDef('aw_xy', '频率加权加速度XY',
+                category='频域', pipeline_id='frequency',
+                input_type='array[float]', output_type='float',
+                input_count=2, output_count=1,
+                description='ISO2631-1 W_d加权水平加速度均方根'),
+            'ovtv': OperatorDef('ovtv', '总振动值 OVTV',
+                category='频域', pipeline_id='frequency',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='ISO2631-1 总体振动总值'),
+            'disp_tr': OperatorDef('disp_tr', '位移传递率',
+                category='频域', pipeline_id='frequency',
+                input_type='array[float]', output_type='float',
+                input_count=2, output_count=1,
+                description='振动位移传递特性'),
+            'r_factor': OperatorDef('r_factor', 'R因子',
+                category='时域', pipeline_id='basic',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='VDV与容许值比值，评估舒适度裕量'),
+            'skewness': OperatorDef('skewness', '偏度算子',
+                category='统计', pipeline_id='full_timeseries',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='计算时间序列的三阶中心矩偏度'),
+            'kurtosis': OperatorDef('kurtosis', '峭度算子',
+                category='统计', pipeline_id='full_timeseries',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='计算时间序列的四阶中心矩峭度'),
+            'mav': OperatorDef('mav', '平均绝对值 MAV',
+                category='统计', pipeline_id='full_timeseries',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='计算时间序列的平均绝对幅值'),
+            'impulse_factor': OperatorDef('impulse_factor', '脉冲因子',
+                category='统计', pipeline_id='full_timeseries',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='峰值与平均绝对值的比值，检测冲击脉冲'),
+            'crest_factor': OperatorDef('crest_factor', '波峰因子',
+                category='统计', pipeline_id='full_timeseries',
+                input_type='array[float]', output_type='float',
+                input_count=1, output_count=1,
+                description='峰值与RMS的比值，衡量信号冲击特征'),
+            'band_energy': OperatorDef('band_energy', '频段能量',
+                category='频域', pipeline_id='full_timeseries',
+                input_type='array[float]', output_type='float',
+                input_count=2, output_count=1,
+                description='计算指定频段的PSD积分能量'),
+            'sliding_window': OperatorDef('sliding_window', '滑动窗口',
+                category='时域', pipeline_id='full_timeseries',
+                input_type='array[float]', output_type='array[float]',
+                input_count=1, output_count=1,
+                description='全时域滑动窗口分割与逐窗统计'),
         }
         self.evaluation_modules: Dict[str, EvaluationModuleDef] = {
             'seat_evaluation': EvaluationModuleDef(
@@ -1290,8 +1660,97 @@ class MetadataRegistry:
                 operator_count=1, status='active',
                 description='脊柱应力S_D，ISO 2631-5脊柱模型生物力学响应',
             ),
+            'full_timeseries_eval': EvaluationModuleDef(
+                'full_timeseries_eval', '全时域统计评测引擎',
+                display_name_en='Full Timeseries Evaluation Engine',
+                applicable_indicators=(
+                    'RMS_Ax_E', 'RMS_Ay_E', 'RMS_Az_E', 'RMS_Ax_C', 'RMS_Ay_C', 'RMS_Az_C',
+                    'Peak_Ax_E', 'Peak_Ay_E', 'Peak_Az_E', 'Peak_Ax_C', 'Peak_Ay_C', 'Peak_Az_C',
+                    'Crest_Ax_E', 'Crest_Ay_E', 'Crest_Az_E', 'Crest_Ax_C', 'Crest_Ay_C', 'Crest_Az_C',
+                    'VDV_Ax_E', 'VDV_Ay_E', 'VDV_Az_E', 'VDV_Ax_C', 'VDV_Ay_C', 'VDV_Az_C',
+                    'Skew_Ax_E', 'Skew_Ay_E', 'Skew_Az_E', 'Skew_Ax_C', 'Skew_Ay_C', 'Skew_Az_C',
+                    'Kurt_Ax_E', 'Kurt_Ay_E', 'Kurt_Az_E', 'Kurt_Ax_C', 'Kurt_Ay_C', 'Kurt_Az_C',
+                    'MAV_Ax_E', 'MAV_Ay_E', 'MAV_Az_E', 'MAV_Ax_C', 'MAV_Ay_C', 'MAV_Az_C',
+                    'Impf_Ax_E', 'Impf_Ay_E', 'Impf_Az_E', 'Impf_Ax_C', 'Impf_Ay_C', 'Impf_Az_C',
+                    'E_total_VDV', 'C_total_VDV',
+                ),
+                operator_count=11, status='active',
+                description='全时域滑动窗口8类统计特征(RMS/Peak/Crest/VDV/Skew/Kurt/MAV/Impulse)×3轴×2组，含胸骨扩展',
+            ),
+            'dashboard_overview': EvaluationModuleDef(
+                'dashboard_overview', '概览仪表盘引擎',
+                display_name_en='Dashboard Overview Engine',
+                applicable_indicators=(
+                    'OVTV_DASHBOARD', 'DOM_BAND', 'CF_Z', 'LOCATION_COUNT',
+                    'ISO_REF_ZONE', 'DURATION', 'BEHAVIOR_EVENT_COUNT', 'BEHAVIOR_EVENT_TYPES',
+                ),
+                operator_count=3, status='active',
+                description='全量统计分析概览仪表盘，含OVTV/主导频带/冲击因数/ISO参考区等8项关键指标',
+            ),
         }
         self.standard_references = STANDARD_REFERENCES
+
+    def _register_full_timeseries_indicators(self):
+        features = ['RMS', 'Peak', 'Crest', 'VDV', 'Skew', 'Kurt', 'MAV', 'Impf']
+        axes = ['Ax', 'Ay', 'Az']
+        groups = [
+            ('E', '实验组', '全时域统计'),
+            ('C', '对照组', '全时域统计'),
+            ('S', '胸骨', '全时域统计'),
+        ]
+        for group_code, group_cn, dim in groups:
+            for feat in features:
+                for axis in axes:
+                    code = f'{feat}_{axis}_{group_code}'
+                    name = f'{group_cn} {axis}-{feat}'
+                    self.indicators[code] = IndicatorDef(
+                        code, name,
+                        unit='', evaluation_dimension=dim,
+                        direction=EvaluationDirection.LOWER_IS_BETTER,
+                    )
+        self.indicators['E_total_VDV'] = IndicatorDef(
+            'E_total_VDV', '实验组总VDV',
+            unit='m/s^1.75', evaluation_dimension='全时域统计',
+            direction=EvaluationDirection.LOWER_IS_BETTER,
+        )
+        self.indicators['C_total_VDV'] = IndicatorDef(
+            'C_total_VDV', '对照组总VDV',
+            unit='m/s^1.75', evaluation_dimension='全时域统计',
+            direction=EvaluationDirection.LOWER_IS_BETTER,
+        )
+
+    def _register_dashboard_indicators(self):
+        dashboards = [
+            ('OVTV_DASHBOARD', '总振动值 OVTV(g)', 'g'),
+            ('DOM_BAND', '主导频带', 'Hz'),
+            ('CF_Z', '冲击因数 CF(Z)', ''),
+            ('LOCATION_COUNT', '位置数', '个'),
+            ('ISO_REF_ZONE', 'ISO参考区', ''),
+            ('DURATION', '分析时长', 's'),
+            ('BEHAVIOR_EVENT_COUNT', '驾驶行为事件数', '次'),
+            ('BEHAVIOR_EVENT_TYPES', '事件类型覆盖', '种'),
+        ]
+        for code, name, unit in dashboards:
+            self.indicators[code] = IndicatorDef(
+                code, name,
+                unit=unit, evaluation_dimension='概览仪表盘',
+                direction=EvaluationDirection.CENTER_IS_BETTER,
+            )
+
+    def _register_band_attenuation_indicators(self):
+        bands = [
+            ('BAND_ATT_01_05', '超低频段衰减率(0.1-0.5Hz)'),
+            ('BAND_ATT_05_1', '低频段衰减率(0.5-1Hz)'),
+            ('BAND_ATT_1_5', '中频段衰减率(1-5Hz)'),
+            ('BAND_ATT_5_20', '高频段衰减率(5-20Hz)'),
+            ('BAND_ATT_20_80', '超高频段衰减率(20-80Hz)'),
+        ]
+        for code, name in bands:
+            self.indicators[code] = IndicatorDef(
+                code, name,
+                unit='%', evaluation_dimension='频段衰减',
+                direction=EvaluationDirection.HIGHER_IS_BETTER,
+            )
 
     def generate_result_schema(self) -> Dict[str, Any]:
         def _serialize(obj):
@@ -1388,8 +1847,14 @@ class MetadataRegistry:
     def get_indicator_definition(self, code: str) -> Dict[str, str]:
         return INDICATOR_DEFINITIONS.get(code, {})
 
+    def get_indicator_meta(self, code: str):
+        return self.indicators.get(code)
+
     def get_indicator_detail(self, code: str) -> Dict[str, Any]:
         return self.indicator_details.get(code, {})
+
+    def get_threshold(self, code: str) -> dict:
+        return self.diagnosis_thresholds.get(code, {})
 
     def get_metric_thresholds(self, code: str) -> Dict[str, float]:
         return self.metric_thresholds_4level.get(code, {})
@@ -1468,5 +1933,25 @@ COMPARISON_DIMENSIONS = [
         'description': '振动的频率分布与能量集中度',
         'color': '#9B59B6',
         'metrics': ['STFT_FC', 'STFT_KT', 'STFT_CE'],
+    },
+    {
+        'id': 'full_timeseries',
+        'name': '全时域统计',
+        'description': '全时域滑动窗口统计特征(RMS/Peak/Crest/VDV/Skew/Kurt/MAV/Impulse)',
+        'color': '#1ABC9C',
+        'metrics': [
+            'RMS_Ax_E', 'RMS_Ay_E', 'RMS_Az_E', 'RMS_Ax_C', 'RMS_Ay_C', 'RMS_Az_C',
+            'Peak_Ax_E', 'Peak_Ay_E', 'Peak_Az_E', 'Peak_Ax_C', 'Peak_Ay_C', 'Peak_Az_C',
+            'Crest_Ax_E', 'Crest_Ay_E', 'Crest_Az_E', 'Crest_Ax_C', 'Crest_Ay_C', 'Crest_Az_C',
+            'VDV_Ax_E', 'VDV_Ay_E', 'VDV_Az_E', 'VDV_Ax_C', 'VDV_Ay_C', 'VDV_Az_C',
+            'E_total_VDV', 'C_total_VDV',
+        ],
+    },
+    {
+        'id': 'band_attenuation',
+        'name': '频段衰减',
+        'description': '各频段(0.1-80Hz)的振动能量衰减率',
+        'color': '#E67E22',
+        'metrics': ['BAND_ATT_01_05', 'BAND_ATT_05_1', 'BAND_ATT_1_5', 'BAND_ATT_5_20', 'BAND_ATT_20_80'],
     },
 ]

@@ -24,6 +24,7 @@ from core.core.data_processing.floor_imu_parser import parse_all_channels, get_c
 from core.core.data_processing.can_parser_v2 import IMU_NAME_MAP
 from core.core.analysis.event_distributor import EventDistributor
 from modules.ui.professional_styles import PRO_COLORS
+from core.core.analysis.clearable_registry import ClearableResource, ClearableRegistry
 
 
 # ── 数据源模式枚举 ──
@@ -58,7 +59,7 @@ DEFAULT_DISPLAY_ROWS = 50
 LOAD_INCREMENT = 50
 
 
-class EnhancedCANFullParsingTab(QWidget):
+class EnhancedCANFullParsingTab(QWidget, ClearableResource):
     """增强版CAN全量解析标签页 - 卡片式紧凑布局"""
 
     data_loaded = Signal(str)
@@ -102,6 +103,9 @@ class EnhancedCANFullParsingTab(QWidget):
         # 初始化UI
         self._init_ui()
         self.logger.info("增强版CAN全量解析标签页已初始化")
+
+        # 注册到统一清除中心
+        ClearableRegistry.instance().register("CAN全量解析", self)
 
     def _init_ui(self):
         outer_layout = QVBoxLayout(self)
@@ -750,12 +754,12 @@ class EnhancedCANFullParsingTab(QWidget):
             if hasattr(self, 'behavior_timeline') and self.behavior_timeline:
                 self.behavior_timeline._refresh_event_list()
 
-            # 更新回放栏事件列表
+            # 更新回放栏事件列表（统一从 EventDistributor 同步）
             main = self._find_main_window()
             if main and hasattr(main, 'right_tab') and main.right_tab:
                 if hasattr(main.right_tab, 'replay_bar') and main.right_tab.replay_bar:
                     try:
-                        main.right_tab.replay_bar.set_events(events)
+                        main.right_tab.replay_bar.sync_events_from_distributor()
                     except Exception:
                         pass
 
@@ -1003,7 +1007,11 @@ class EnhancedCANFullParsingTab(QWidget):
             return False
 
     def clear_data(self):
-        """清除数据"""
+        """清除数据（向后兼容旧接口）"""
+        self.clear_all()
+
+    def clear_all(self):
+        """清除所有CAN全量解析数据（实现 ClearableResource 协议）"""
         self._all_channel_data = {}
         self._vehicle_data = {}
         self._current_data = []

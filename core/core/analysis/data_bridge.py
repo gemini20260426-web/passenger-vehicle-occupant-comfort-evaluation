@@ -892,8 +892,14 @@ class DataBridge(QObject):
         finally:
             self._eval_queue_processing = False
 
-    def _build_multi_channel_data(self, start_time: float, end_time: float) -> Dict[str, Any]:
+    def _build_multi_channel_data(self, start_time: float, end_time: float,
+                                  cache=None) -> Dict[str, Any]:
         """从缓存和近期原始记录中提取多通道时间窗口数据
+
+        Args:
+            start_time: 起始时间
+            end_time: 结束时间
+            cache: 可选的外部缓存（如回放控制器的历史缓存），优先于 self._cache 使用
 
         支持三种数据格式:
             1. can_wide: 单条记录含多通道 (如 ch4_ax, ch4_ay)
@@ -946,9 +952,10 @@ class DataBridge(QObject):
         raw_records = list(self._recent_raw_records)
         data_source = "deque"
 
-        if self._cache:
+        cache_to_use = cache or self._cache
+        if cache_to_use:
             try:
-                cached_records = self._cache.query_time_range(start_time - 0.5, end_time + 0.5)
+                cached_records = cache_to_use.query_time_range(start_time - 0.5, end_time + 0.5)
                 if cached_records:
                     raw_records = cached_records
                     data_source = "cache"
@@ -971,10 +978,11 @@ class DataBridge(QObject):
             )
             time_filtered = raw_records
 
-        if len(time_filtered) < 10:
+        if len(time_filtered) < 3:
             self.logger.warning(
                 f"[多通道数据] 时间窗口 [{start_time:.3f}, {end_time:.3f}] "
-                f"记录数不足: {len(time_filtered)} (数据源: {data_source})"
+                f"记录数严重不足: {len(time_filtered)} < 3 (数据源: {data_source}, "
+                f"缓存命中: {'是' if data_source == 'cache' else '否'})"
             )
             return multi_channel_data
 

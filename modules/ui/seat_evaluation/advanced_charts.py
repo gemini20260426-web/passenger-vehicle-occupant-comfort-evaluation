@@ -12,7 +12,7 @@
 
 import os
 import numpy as np
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import logging
 
 import matplotlib
@@ -68,6 +68,17 @@ plt.rcParams.update({
     'axes.unicode_minus': False,
 })
 
+# ── 图表尺寸限制（防止超出UI容器）──
+MAX_FIGSIZE_W = 12
+MAX_FIGSIZE_H = 10
+
+def _constrain_figsize(figsize: Tuple[float, float]) -> Tuple[float, float]:
+    """约束图表尺寸，防止超出UI容器"""
+    w, h = figsize
+    scale_factor = min(1.0, MAX_FIGSIZE_W / w) if w > 0 else 1.0
+    scale_factor = min(scale_factor, MAX_FIGSIZE_H / h) if h > 0 else scale_factor
+    return (w * scale_factor, h * scale_factor)
+
 # ══════════════════════════════════════════════════════════════════
 # 图表1: 驾驶事件时间线
 # ══════════════════════════════════════════════════════════════════
@@ -76,6 +87,7 @@ def create_event_timeline(t: np.ndarray, speed: np.ndarray, wheel: np.ndarray,
                           events: List[Dict], title: str = "驾驶事件时间线",
                           figsize: tuple = (12, 5)) -> Figure:
     """生成驾驶事件时间线图（车速曲线 + 方向盘曲线 + 事件色块标注）"""
+    figsize = _constrain_figsize(figsize)
     fig = Figure(figsize=figsize, dpi=100)
     fig.patch.set_facecolor('white')
     
@@ -150,32 +162,36 @@ def create_psd_comparison(channel_data_map: Dict[str, Dict],
     from scipy import signal as sp_signal
     
     if positions is None:
-        # 默认：头部、座垫R点、座椅底部
-        positions = [
-            (n for n in exp_imus if '头部' in n or 'Head' in n),
-            (n for n in exp_imus if '座垫R点' in n or 'SeatR' in n),
-            (n for n in exp_imus if '座椅底部' in n or 'SeatBase' in n),
-        ]
-        # 查找匹配的对照组
         paired = []
-        for exp_name in exp_imus[:3]:
-            ctrl_name = exp_name.replace('-1', '-2')
-            location = exp_name.split('_')[1] if '_' in exp_name else exp_name
-            paired.append((location, exp_name, ctrl_name if ctrl_name in ctrl_imus else None))
+        for exp_name in exp_imus:
+            body_part = exp_name.split('_', 1)[1].rsplit('-', 1)[0] if '_' in exp_name else exp_name
+            ctrl_name = next((k for k in ctrl_imus if body_part in k), None)
+            location = body_part
+            if ctrl_name:
+                paired.append((location, exp_name, ctrl_name))
         positions = paired
-    
+
+    logger.debug(f"PSD对比: exp_imus={exp_imus}, ctrl_imus={ctrl_imus}, positions={positions}")
+    logger.debug(f"PSD对比: channel_data_map keys={list(channel_data_map.keys())}")
+
     valid_positions = [(loc, e, c) for loc, e, c in positions
                        if e in channel_data_map and c and c in channel_data_map]
-    
-    if len(valid_positions) < 2:
+
+    logger.debug(f"PSD对比: valid_positions={valid_positions}")
+
+    if len(valid_positions) < 1:
+        logger.warning(f"PSD对比图无法生成: 有效位置数={len(valid_positions)} (需要>=1), "
+                       f"exp_imus={exp_imus}, ctrl_imus={ctrl_imus}")
         return None
     
     n = len(valid_positions)
-    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4.5))
+    raw_figsize = (5 * n, 4.5)
+    figsize = _constrain_figsize(raw_figsize)
+    fig, axes = plt.subplots(1, n, figsize=figsize)
     if n == 1:
         axes = [axes]
     
-    channel_key = f"Az_m_s2" if axis == 'Z' else f"A{axis.lower()}_m_s2"
+    channel_key = 'az' if axis == 'Z' else axis.lower()
     
     for ax, (loc, exp_imu, ctrl_imu) in zip(axes, valid_positions):
         for label, imu, style in [
@@ -188,8 +204,8 @@ def create_psd_comparison(channel_data_map: Dict[str, Dict],
                 continue
             
             # 估算采样率
-            if 'rel_time' in data_dict:
-                t_arr = data_dict['rel_time']
+            if 'timestamps' in data_dict:
+                t_arr = data_dict['timestamps']
                 fs = 1.0 / np.median(np.diff(t_arr)) if len(t_arr) > 1 else 512
             else:
                 fs = 512
@@ -229,7 +245,6 @@ def create_comparison_radar(comparison_data: Dict[str, Dict],
     Args:
         comparison_data: {指标名: {'exp': float, 'ctrl': float, 'atten_pct': float, ...}}
     """
-    # 提取可对比的标量指标
     items = []
     for key, val in comparison_data.items():
         if isinstance(val, dict) and 'exp' in val and 'ctrl' in val:
@@ -249,6 +264,7 @@ def create_comparison_radar(comparison_data: Dict[str, Dict],
     ctrl_vals_plot = ctrl_vals + [ctrl_vals[0]]
     angles_plot = angles + [angles[0]]
     
+    figsize = _constrain_figsize(figsize)
     fig, ax = plt.subplots(figsize=figsize, subplot_kw={'projection': 'polar'})
     
     ax.fill(angles_plot, exp_vals_plot, alpha=0.2, color=COLORS['exp'])
@@ -294,6 +310,7 @@ def create_attenuation_bar(comparison_data: Dict[str, Dict],
     values = list(items.values())
     bar_colors = [COLORS['green'] if v > 0 else COLORS['accent'] for v in values]
     
+    figsize = _constrain_figsize(figsize)
     fig, ax = plt.subplots(figsize=figsize)
     
     bars = ax.barh(range(len(labels)), values, color=bar_colors,
@@ -328,51 +345,69 @@ def create_attenuation_bar(comparison_data: Dict[str, Dict],
 # ══════════════════════════════════════════════════════════════════
 
 def create_acceleration_waveform(channel_data_map: Dict[str, Dict],
-                                 imu_names: List[str] = None,
+                                 exp_imus: List[str] = None,
+                                 ctrl_imus: List[str] = None,
                                  figsize: tuple = (14, 8)) -> Optional[Figure]:
-    """
-    生成三轴加速度时域波形。
-    
-    Args:
-        channel_data_map: {imu_name: {channel: numpy_array, 'rel_time': array}}
-        imu_names: 要绘制的 IMU 名称列表
-    """
-    if imu_names is None:
-        imu_names = [k for k in channel_data_map.keys()
-                     if k.endswith('-1')][:3]
-    
-    if not imu_names:
+    if exp_imus is None:
+        exp_imus = [k for k in channel_data_map.keys()
+                    if k.endswith('-1')][:3]
+    if ctrl_imus is None:
+        ctrl_imus = [k for k in channel_data_map.keys()
+                     if k.endswith('-2')][:3]
+
+    if not exp_imus and not ctrl_imus:
         return None
-    
-    axes_keys = ['Ax_m_s2', 'Ay_m_s2', 'Az_m_s2']
+
+    axes_keys = ['ax', 'ay', 'az']
     axis_labels = ['X轴 (纵向) m/s²', 'Y轴 (侧向) m/s²', 'Z轴 (垂向) m/s²']
-    line_colors = [COLORS['accent'], COLORS['primary'], COLORS['green']]
+    exp_colors = [COLORS['accent'], COLORS['primary'], COLORS['green']]
+    ctrl_colors = [COLORS['secondary'], COLORS['accent'], COLORS['purple']]
     alphas = [0.85, 0.65, 0.5]
-    
+
+    figsize = _constrain_figsize(figsize)
     fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True)
-    
-    for row, (axis_key, ylabel, col) in enumerate(zip(axes_keys, axis_labels, line_colors)):
+
+    for row, (axis_key, ylabel) in enumerate(zip(axes_keys, axis_labels)):
         ax = axes[row]
-        for i, (imu_name, alpha) in enumerate(zip(imu_names, alphas)):
+        exp_color = exp_colors[row]
+        ctrl_color = ctrl_colors[row]
+
+        for i, (imu_name, alpha) in enumerate(zip(exp_imus, alphas)):
+            if i >= len(exp_imus):
+                break
             data_dict = channel_data_map.get(imu_name, {})
             ch_data = data_dict.get(axis_key)
             if ch_data is None:
                 continue
-            t_arr = data_dict.get('rel_time', np.arange(len(ch_data)))
+            t_arr = data_dict.get('timestamps', np.arange(len(ch_data)))
             if len(t_arr) != len(ch_data):
                 t_arr = np.linspace(0, len(ch_data) / 512, len(ch_data))
-            label = imu_name.replace('_', ' ').replace('-1', '')
+            label = imu_name.split('_', 1)[1].rsplit('-', 1)[0] if '_' in imu_name else imu_name.replace('-1', '')
             ax.plot(t_arr, ch_data, alpha=alpha, linewidth=0.8,
-                    label=label, color=col)
-        
+                    label=f'实验组-{label}', color=exp_color)
+
+        for i, (imu_name, alpha) in enumerate(zip(ctrl_imus, alphas)):
+            if i >= len(ctrl_imus):
+                break
+            data_dict = channel_data_map.get(imu_name, {})
+            ch_data = data_dict.get(axis_key)
+            if ch_data is None:
+                continue
+            t_arr = data_dict.get('timestamps', np.arange(len(ch_data)))
+            if len(t_arr) != len(ch_data):
+                t_arr = np.linspace(0, len(ch_data) / 512, len(ch_data))
+            label = imu_name.split('_', 1)[1].rsplit('-', 1)[0] if '_' in imu_name else imu_name.replace('-2', '')
+            ax.plot(t_arr, ch_data, alpha=alpha, linewidth=0.8,
+                    label=f'对照组-{label}', color=ctrl_color, linestyle='--')
+
         ax.set_ylabel(ylabel, fontsize=10, fontfamily=CN_FONT_FAMILY)
         ax.legend(loc='upper right', prop={'family': CN_FONT_FAMILY, 'size': 7}, ncol=3)
         ax.grid(True, alpha=0.2)
-    
-    axes[0].set_title('三轴加速度时域波形 (实验组)', fontsize=13,
+
+    axes[0].set_title('三轴加速度时域波形 (实验组 vs 对照组)', fontsize=13,
                       fontweight='bold', fontfamily=CN_FONT_FAMILY)
     axes[-1].set_xlabel('时间 (s)', fontsize=11, fontfamily=CN_FONT_FAMILY)
-    
+
     fig.tight_layout()
     return fig
 
@@ -396,8 +431,9 @@ def create_srs_comparison(channel_data_map: Dict[str, Dict],
         location_name: 位置名称
         axis: 分析轴 ('X', 'Y', 'Z')
     """
-    channel_key = f"A{axis.lower()}_m_s2"
+    channel_key = {'X': 'ax', 'Y': 'ay', 'Z': 'az'}.get(axis.upper(), axis.lower())
     
+    figsize = _constrain_figsize(figsize)
     fig, ax = plt.subplots(figsize=figsize)
     
     for label, imu, ls in [('实验组', exp_imu, '-'), ('对照组', ctrl_imu, '--')]:
@@ -406,8 +442,8 @@ def create_srs_comparison(channel_data_map: Dict[str, Dict],
         if ch_data is None:
             continue
         
-        if 'rel_time' in data_dict:
-            t_arr = data_dict['rel_time']
+        if 'timestamps' in data_dict:
+            t_arr = data_dict['timestamps']
             fs = 1.0 / np.median(np.diff(t_arr)) if len(t_arr) > 1 else 512
         else:
             fs = 512

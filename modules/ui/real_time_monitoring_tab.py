@@ -30,6 +30,7 @@ from PySide6.QtGui import QFont
 from modules.ui.driving_risk_dashboard import DrivingRiskDashboard
 from modules.ui.behavior_timeline_view import BehaviorTimelineView
 from modules.ui.feature_analysis_view import FeatureAnalysisView
+from core.core.analysis.clearable_registry import ClearableResource, ClearableRegistry
 
 try:
     from core.core.seat_evaluation.metadata_registry import get_global_registry
@@ -2313,7 +2314,7 @@ class ComparisonTab(QWidget):
             self.comparison_table.scrollToBottom()
 
 
-class RealTimeMonitoringTab(QWidget):
+class RealTimeMonitoringTab(QWidget, ClearableResource):
     """实时驾驶监控主标签页 — v3.0 五视图专业架构"""
 
     task_progress_changed = Signal(str, int, str)
@@ -2332,6 +2333,9 @@ class RealTimeMonitoringTab(QWidget):
         self._frame_count = 0
 
         self.init_ui()
+
+        # 注册到统一清除中心
+        ClearableRegistry.instance().register("实时行为监控", self)
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -2355,7 +2359,7 @@ class RealTimeMonitoringTab(QWidget):
         header_layout.addWidget(self.stop_btn)
 
         self.clear_btn = QPushButton("清空数据")
-        self.clear_btn.clicked.connect(self._clear_data)
+        self.clear_btn.clicked.connect(self.clear_all)
         header_layout.addWidget(self.clear_btn)
 
         self.status_label = QLabel("等待开始")
@@ -2673,7 +2677,12 @@ class RealTimeMonitoringTab(QWidget):
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
 
-    def _clear_data(self):
+    def clear_data(self):
+        """清除数据（向后兼容旧接口）"""
+        self.clear_all()
+
+    def clear_all(self):
+        """清除所有实时监控数据（实现 ClearableResource 协议）"""
         self.basic_results.clear()
         self.advanced_results.clear()
         self._frame_count = 0

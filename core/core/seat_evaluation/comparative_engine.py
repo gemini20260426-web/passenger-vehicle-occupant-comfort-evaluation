@@ -7,6 +7,7 @@
 
 import numpy as np
 import logging
+import warnings
 from typing import Dict, Any, Optional, List
 from PySide6.QtCore import QObject, Signal
 
@@ -19,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 class ComparativeEvaluationEngine(QObject):
-    """对照分析引擎"""
+    """对照分析引擎 v1.0 — [已弃用] 请使用 comparative_engine_v2.MultiChannelComparativeEngine
+    
+    自 v3.5 起，本引擎已弃用。所有新代码应直接使用 comparative_engine_v2.MultiChannelComparativeEngine。
+    """
     
     comparison_started = Signal(dict)
     comparison_completed = Signal(dict)
@@ -27,6 +31,10 @@ class ComparativeEvaluationEngine(QObject):
     
     def __init__(self, config_manager=None, data_storage=None):
         super().__init__()
+        warnings.warn(
+            "ComparativeEvaluationEngine is deprecated. Use MultiChannelComparativeEngine from comparative_engine_v2 instead.",
+            DeprecationWarning, stacklevel=2
+        )
         self.config_manager = config_manager
         self.data_storage = data_storage
         

@@ -1339,6 +1339,20 @@ class InstanceViewPanel(QWidget):
     def set_data_query_fn(self, query_fn: Callable):
         self._data_query_fn = query_fn
 
+    def clear(self):
+        """清除实例视图所有数据"""
+        self._current_record = None
+        self._control_record = None
+        self._all_record_ids = []
+        self._all_records = {}
+        self._nav_bar._event_label.setText("未选择事件")
+        self._nav_bar._jump_combo.clear()
+        self._nav_bar._jump_combo.addItem("跳转到...")
+        self._context_label.setText("选择事件以查看评测详情")
+        self._core_comparison_table.setRowCount(0)
+        self._comparison_table.setRowCount(0)
+        self._comparison_conclusion.setText("")
+
     def set_all_records(self, records: Dict[str, Any]):
         self._all_records = records
 

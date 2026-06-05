@@ -64,6 +64,7 @@ class FullTimeseriesEvaluator:
         self.ctrl = {}  # 对照组 IMUx-2 (偶数)
         self.sw = None  # speed/wheel
         self.events = []
+        self._external_events = None  # 外部注入的行为事件（优先级高于内部检测）
         self.results = {}  # 各级分析结果缓存
 
     def load_from_dataframe(self, df: pd.DataFrame):
@@ -77,17 +78,25 @@ class FullTimeseriesEvaluator:
         
         for im in sorted(imus):
             num = int(im.split('_')[0].replace('IMU', ''))
-            grp = '实验组(主动)' if num % 2 == 1 else '对照组(被动)'
+            grp = '实验组' if num % 2 == 1 else '对照组'
             n = len(self.df_raw[self.df_raw['imu_name'] == im])
             body = im.split('_')[1] if '_' in im else '?'
             logger.info(f"    IMU{num:>2d} [{grp:>12s}] {body:>12s} → {n:>6d}行")
 
         for im in imus:
             sub = self.df_raw[self.df_raw['imu_name'] == im].sort_values('rel_time')
-            val_cols = ['rel_time', 'Ax_m_s2', 'Ay_m_s2', 'Az_m_s2',
-                        'Gx_dps', 'Gy_dps', 'Gz_dps',
-                        'Gx_rad_s', 'Gy_rad_s', 'Gz_rad_s']
-            vals = sub[val_cols].values if all(c in sub.columns for c in val_cols) else None
+            base_cols = ['rel_time', 'Ax_m_s2', 'Ay_m_s2', 'Az_m_s2']
+            gyro_candidates = [
+                ['Gx_rad_s', 'Gy_rad_s', 'Gz_rad_s'],
+                ['Gx_dps', 'Gy_dps', 'Gz_dps'],
+            ]
+            gyro_cols = []
+            for cand in gyro_candidates:
+                if all(c in sub.columns for c in cand):
+                    gyro_cols = cand
+                    break
+            val_cols = base_cols + gyro_cols
+            vals = sub[val_cols].values if all(c in sub.columns for c in base_cols) else None
             if vals is not None:
                 num = int(im.split('_')[0].replace('IMU', ''))
                 if num % 2 == 1:
@@ -117,6 +126,14 @@ class FullTimeseriesEvaluator:
                     self.sw.append((t, match.iloc[0]['speed'], match.iloc[0]['wheel']))
                 else:
                     self.sw.append((t, np.nan, np.nan))
+        elif 'speed' in self.df_raw.columns and 'wheel' in self.df_raw.columns and len(self.common_t) > 0:
+            sw_sub2 = self.df_raw.drop_duplicates('rel_time').sort_values('rel_time')
+            for t in self.common_t:
+                match = sw_sub2[abs(sw_sub2['rel_time'] - t) < 1e-3]
+                if len(match) > 0:
+                    self.sw.append((t, match.iloc[0]['speed'], match.iloc[0]['wheel']))
+                else:
+                    self.sw.append((t, np.nan, np.nan))
         self.sw = np.array(self.sw) if self.sw else np.array([])
         if len(self.sw) > 0:
             try:
@@ -124,22 +141,39 @@ class FullTimeseriesEvaluator:
             except (ValueError, IndexError):
                 logger.info(f"  Speed: N/A")
 
+        self._aligned_cache = {}
+        for imu_name in list(self.exp.keys()) + list(self.ctrl.keys()):
+            source = self.exp.get(imu_name)
+            if source is None:
+                source = self.ctrl.get(imu_name)
+            if source is None:
+                continue
+            n_data_cols = source.shape[1] - 1
+            tmap = {round(row[0], 4): row[1:] for row in source}
+            result = []
+            for t in self.common_t:
+                result.append([t] + list(tmap.get(t, [np.nan] * n_data_cols)))
+            self._aligned_cache[imu_name] = np.array(result)
+
     def load_from_csv(self, csv_path: str):
         """从CSV文件加载数据"""
         df = pd.read_csv(csv_path)
         self.load_from_dataframe(df)
 
     def get_aligned(self, imu_name: str) -> Optional[np.ndarray]:
-        """返回对齐到common_t的数据"""
+        """返回对齐到common_t的数据（优先使用缓存）"""
+        if hasattr(self, '_aligned_cache') and imu_name in self._aligned_cache:
+            return self._aligned_cache[imu_name]
         source = self.exp.get(imu_name)
         if source is None:
             source = self.ctrl.get(imu_name)
         if source is None:
             return None
         tmap = {round(row[0], 4): row[1:] for row in source}
+        n_data_cols = source.shape[1] - 1
         result = []
         for t in self.common_t:
-            result.append([t] + list(tmap.get(t, [np.nan] * 9)))
+            result.append([t] + list(tmap.get(t, [np.nan] * n_data_cols)))
         return np.array(result)
 
     def detect_events(self):
@@ -201,6 +235,48 @@ class FullTimeseriesEvaluator:
         for t, c in etype_counts.items():
             logger.info(f"    {t}: {c}次")
 
+    def set_external_events(self, events: List[Dict]):
+        from core.core.analysis.layer3_maneuver_segmentation.event_detector import EVENT_TYPES
+        self._external_events = events
+        self.events = []
+        if not self.common_t or len(self.common_t) == 0:
+            logger.warning("  无对齐时间轴，无法转换外部事件")
+            return
+        t0 = self.common_t[0]
+        t1 = self.common_t[-1]
+        dt = self.common_t[1] - self.common_t[0] if len(self.common_t) > 1 else 1.0 / self.fs
+        for evt in events:
+            ts = evt.get('t_start', 0)
+            te = evt.get('t_end', 0)
+            if te <= t0 or ts >= t1:
+                continue
+            s = max(0, int((ts - t0) / dt))
+            e = min(len(self.common_t) - 1, int((te - t0) / dt))
+            if e <= s:
+                continue
+            etype = evt.get('event_type', evt.get('type', 'unknown'))
+            cn_type = EVENT_TYPES.get(etype, etype)
+            self.events.append({
+                't_start': ts, 't_end': te,
+                'type': cn_type,
+                'event_type': etype,
+                'speed_start': evt.get('speed_at_start', 0),
+                'speed_end': evt.get('speed_at_end', 0),
+                'wheel_change': 0,
+                'idx_start': s, 'idx_end': e,
+                'duration': te - ts,
+            })
+        etype_counts = pd.Series([ev['type'] for ev in self.events]).value_counts()
+        logger.info(f"  [外部事件] 注入 {len(self.events)} 个行为事件（{len(etype_counts)} 种类型）:")
+        for t, c in etype_counts.items():
+            logger.info(f"    {t}: {c}次")
+
+    def _get_sternum(self):
+        for k in self.exp:
+            if '胸骨' in k or 'sternum' in k.lower() or '剑突' in k:
+                return self.get_aligned(k)
+        return None
+
     def window_analysis(self) -> pd.DataFrame:
         """全时域滑动窗口连续对比"""
         logger.info("[3/10] 全时域滑动窗口分析...")
@@ -215,13 +291,19 @@ class FullTimeseriesEvaluator:
             
         exp_head = self.get_aligned(exp_keys[0])
         ctrl_head = self.get_aligned(ctrl_keys[0])
-        exp_sternum = self.get_aligned(exp_keys[-1]) if len(exp_keys) > 1 else None
+        exp_sternum = self._get_sternum()
 
         results = []
         for start in range(0, len(self.common_t) - ws, ss):
             end = start + ws
+            speed_val = np.nan
+            if len(self.sw) > 0 and self.sw.ndim == 2:
+                try:
+                    speed_val = np.nanmean(self.sw[start:end, 1])
+                except (IndexError, ValueError):
+                    speed_val = np.nan
             win = {'t_center': self.common_t[start + ws // 2],
-                   'speed': np.nanmean(self.sw[start:end, 1])}
+                   'speed': speed_val}
 
             for axis_idx, axis in enumerate(['Ax', 'Ay', 'Az']):
                 col = axis_idx + 1
@@ -278,7 +360,7 @@ class FullTimeseriesEvaluator:
             
         exp_head = self.get_aligned(exp_keys[0])
         ctrl_head = self.get_aligned(ctrl_keys[0])
-        exp_sternum = self.get_aligned(exp_keys[-1]) if len(exp_keys) > 1 else None
+        exp_sternum = self._get_sternum()
 
         results = []
         for ev in self.events:
@@ -378,7 +460,7 @@ class FullTimeseriesEvaluator:
         ctrl_head = self.get_aligned(ctrl_keys[0])
 
         stft_results = {}
-        for axis_idx, axis in enumerate(['Ay']):
+        for axis_idx, axis in enumerate(['Ax', 'Ay', 'Az']):
             col = axis_idx + 1
             f_e, t_e, Zxx_e = signal.stft(exp_head[:, col], fs=self.fs,
                                            nperseg=self.cfg['nfft_stft'],
@@ -449,7 +531,7 @@ class FullTimeseriesEvaluator:
             
         exp_head = self.get_aligned(exp_keys[0])
         ctrl_head = self.get_aligned(ctrl_keys[0])
-        exp_sternum = self.get_aligned(exp_keys[-1]) if len(exp_keys) > 1 else None
+        exp_sternum = self._get_sternum()
 
         metrics = {}
         for label, data in [('exp', exp_head), ('ctrl', ctrl_head),
@@ -516,7 +598,7 @@ class FullTimeseriesEvaluator:
         lines.append(f"- 对照组: {len(self.ctrl)} 个传感器")
         lines.append("")
 
-        lines.append("## 2. 频段衰减效果 (主动座椅 vs 被动座椅)")
+        lines.append("## 2. 频段衰减效果 (实验组 vs 对照组)")
         lines.append("| 频段 | Ax | Ay | Az |")
         lines.append("|:---|---:|---:|---:|")
         for band in ['0.1-0.5Hz', '0.5-1Hz', '1-5Hz', '5-20Hz', '20-80Hz']:
@@ -528,7 +610,7 @@ class FullTimeseriesEvaluator:
         lines.append("")
 
         lines.append("## 3. 综合评价指标")
-        lines.append("| 指标 | 主动座椅 | 被动座椅 | 改善幅度 |")
+        lines.append("| 指标 | 实验组 | 对照组 | 改善幅度 |")
         lines.append("|:---|---:|---:|---:|")
         for ax in ['Ax', 'Ay', 'Az']:
             e_vdv = metrics.get(f'exp_{ax}_VDV', np.nan)

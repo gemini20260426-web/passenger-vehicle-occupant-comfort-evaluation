@@ -220,6 +220,24 @@ class EventTypeTagBar(QWidget):
             self._rebuild_tags()
             self.type_selected.emit(tag_id)
 
+    def clear_all(self):
+        """清除标签栏所有数据"""
+        self._type_labels.clear()
+        self._type_colors.clear()
+        self._type_counts.clear()
+        self._type_eval_counts.clear()
+        self._all_count = 0
+        self._all_eval_count = 0
+        self._selected_type = None
+        for btn in self._tag_buttons.values():
+            btn.deleteLater()
+        self._tag_buttons.clear()
+        # 移除所有tag按钮控件（保留stretch）
+        while self._scroll_layout.count() > 1:
+            item = self._scroll_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
 
 class EventManagerPanel(QWidget):
     """事件管理子Tab - 表格形式"""
@@ -242,6 +260,17 @@ class EventManagerPanel(QWidget):
         self._type_colors: Dict[str, str] = {}
         self._active_group_tags: List[str] = ['experimental', 'control']
         self._init_ui()
+
+    def clear_all(self):
+        """清除事件管理面板所有数据（实现 ClearableResource 协议）"""
+        self._records.clear()
+        self._checked_ids.clear()
+        self._filter_type = None
+        self._table.setRowCount(0)
+        if hasattr(self, '_tag_bar') and hasattr(self._tag_bar, 'clear_all'):
+            self._tag_bar.clear_all()
+        if hasattr(self, '_count_label'):
+            self._count_label.setText("")
 
     def _init_ui(self):
         outer_layout = QVBoxLayout(self)
@@ -694,6 +723,10 @@ class EventManagerPanel(QWidget):
 
     def update_record(self, record):
         self._records[record.event_id] = record
+        self._update_tag_bar()
+        self._rebuild_table()
+
+    def refresh(self):
         self._update_tag_bar()
         self._rebuild_table()
 

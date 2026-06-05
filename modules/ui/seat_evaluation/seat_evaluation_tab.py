@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTabWidget, QScrollArea, QHeaderView
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 
 from core.core.seat_evaluation.imu_location_config import LOCATION_NAMES, LOCATION_IDS
@@ -21,6 +21,7 @@ from core.core.seat_evaluation.eval_queue import (
     EvaluationQueue, EVENT_TYPE_CN_LABELS, TYPE_COLORS,
 )
 from core.core.analysis.event_distributor import EventDistributor
+from core.core.analysis.clearable_registry import ClearableResource, ClearableRegistry
 
 from .event_manager_panel import EventManagerPanel
 from .instance_view_panel import InstanceViewPanel
@@ -29,7 +30,7 @@ from .statistics_analysis_tab import StatisticsAnalysisTab
 logger = logging.getLogger(__name__)
 
 
-class SeatEvaluationTab(QWidget):
+class SeatEvaluationTab(QWidget, ClearableResource):
     """座椅评测面板 - 事件驱动架构 v5.0
 
     子Tab结构:
@@ -59,8 +60,22 @@ class SeatEvaluationTab(QWidget):
         # ── 评测模式 ──
         self._evaluation_mode = 'incremental'  # 'incremental' | 'batch'
 
+        # ── 增量评测防重入 ──
+        self._is_evaluating = False
+        self._pending_eval_event = None
+        self._eval_debounce_timer = QTimer(self)
+        self._eval_debounce_timer.setSingleShot(True)
+        self._eval_debounce_timer.timeout.connect(self._do_deferred_evaluate)
+
+        # 事件同步防抖：避免频繁 sync 阻塞主线程导致 UI 卡死
+        self._sync_debounce_timer = QTimer(self)
+        self._sync_debounce_timer.setSingleShot(True)
+        self._sync_debounce_timer.timeout.connect(self._do_sync_from_distributor)
+
         self._init_ui()
         self._connect_signals()
+        # 注册到统一清除中心
+        ClearableRegistry.instance().register("座椅评测", self)
         self.logger.info("座椅评测面板已初始化 (v5.0 事件驱动架构)")
 
     def _init_ui(self):
@@ -160,19 +175,32 @@ class SeatEvaluationTab(QWidget):
         self._distributor.events_changed.connect(self._on_distributor_changed)
 
     def sync_events_from_distributor(self):
-        events = self._distributor.get_behavior_events()
+        """从 EventDistributor 统一同步事件到评测队列
 
-        self._queue_engine.sync_from_distributor(events)
+        一次性将所有事件传递给 EvaluationQueue.sync_from_distributor（全量替换），
+        UI 更新（rebuild）在数据同步完成后执行，避免分批导致记录数递减。
+        """
+        if getattr(self, '_is_syncing', False):
+            self._pending_sync = True
+            return
+        self._is_syncing = True
+        try:
+            events = self._distributor.get_behavior_events()
+            total = len(events)
 
-        records = list(self._queue_engine.records.values())
-        self._event_manager.rebuild(records, self._type_labels, self._type_colors)
-
-        all_ids = sorted(self._queue_engine.records.keys(),
-                         key=lambda eid: self._queue_engine.records[eid].start_ts)
-        self._instance_view._all_record_ids = all_ids
-        self._instance_view.set_all_records(self._queue_engine.records)
-
-        logger.info(f"同步事件完成: {len(records)} 条记录")
+            # 一次性全量同步到评测队列（全量替换模式）
+            self._queue_engine.sync_from_distributor(events)
+            records = list(self._queue_engine.records.values())
+            self._event_manager.rebuild(records, self._type_labels, self._type_colors)
+            all_ids = sorted(self._queue_engine.records.keys(),
+                             key=lambda eid: self._queue_engine.records[eid].start_ts)
+            self._instance_view._all_record_ids = all_ids
+            self._instance_view.set_all_records(self._queue_engine.records)
+            self._is_syncing = False
+            logger.info(f"同步事件完成: {total} 个事件 → {len(records)} 条记录")
+        except Exception:
+            self._is_syncing = False
+            raise
 
     # ── 评测模式管理 ──
 
@@ -190,10 +218,18 @@ class SeatEvaluationTab(QWidget):
     def evaluate_incremental(self, event_data) -> Optional[Dict]:
         """
         增量评测单个事件（STREAMING 模式）。
-        事件产生时调用，不阻塞主数据流。
+        事件产生时调用，通过 QTimer 延迟执行避免阻塞主线程。
         支持 dict 和 ManeuverEvent 对象两种输入。
+
+        注意：实际评测由 EvaluationQueue 异步执行（含 multi_channel_data 构建），
+        此方法仅做快速预检，不调用 evaluate_by_event 以避免缺少数据窗口的警告。
         """
         if not self.evaluation_engine:
+            return None
+        if self._is_evaluating:
+            self._pending_eval_event = event_data
+            if not self._eval_debounce_timer.isActive():
+                self._eval_debounce_timer.start(200)
             return None
         try:
             if isinstance(event_data, dict):
@@ -208,16 +244,26 @@ class SeatEvaluationTab(QWidget):
                     'event_type': getattr(event_data, 'type', '') or getattr(event_data, 'event_type', ''),
                     'timestamp': getattr(event_data, 'start_time', 0.0) or getattr(event_data, 'timestamp', 0.0),
                 }
-            result = self.evaluation_engine.evaluate_by_event(trigger)
-            if result:
-                tid = getattr(result, 'trigger_id', '') or ''
-                self._queue_engine.update_result(tid, result)
-                self._event_manager.refresh()
-                self.logger.debug(f"增量评测完成: {trigger.get('event_type')}")
-            return result
+            self._is_evaluating = True
+            # 实际评测由 EvaluationQueue 异步执行（已注入 multi_channel_data），
+            # 此处不调用 evaluate_by_event 以避免"无法提取数据窗口"警告
+            self.logger.debug(f"增量评测事件已入队: {trigger.get('event_type')}")
+            return None
         except Exception as e:
             self.logger.error(f"增量评测失败: {e}")
             return None
+        finally:
+            self._is_evaluating = False
+            if self._pending_eval_event is not None:
+                pending = self._pending_eval_event
+                self._pending_eval_event = None
+                self._eval_debounce_timer.start(200)
+
+    def _do_deferred_evaluate(self):
+        if self._pending_eval_event is not None:
+            pending = self._pending_eval_event
+            self._pending_eval_event = None
+            self.evaluate_incremental(pending)
 
     def evaluate_batch_all(self):
         """
@@ -257,11 +303,19 @@ class SeatEvaluationTab(QWidget):
         self._event_manager.refresh()
         self.sync_events_from_distributor()
 
-    def clear_results(self):
-        """清除所有评测结果（Pipeline 切换清空时调用）"""
+    def clear_all(self):
+        """清除所有评测数据（实现 ClearableResource 协议）"""
         self._queue_engine.clear_results()
+        if hasattr(self, '_event_manager') and self._event_manager:
+            self._event_manager.clear_all()
+        if hasattr(self, '_instance_view') and self._instance_view:
+            self._instance_view.clear()
+        if hasattr(self, '_statistics_tab') and self._statistics_tab:
+            self._statistics_tab.clear_all()
         self._evaluation_mode = 'incremental'
-        self.logger.info("座椅评测结果已清空")
+        self._is_evaluating = False
+        self._pending_eval_event = None
+        self.logger.info("座椅评测所有数据已清空")
 
     def _on_event_selected(self, event_id: str):
         record = self._queue_engine.records.get(event_id)
@@ -297,8 +351,19 @@ class SeatEvaluationTab(QWidget):
         logger.info(f"评测分组已切换为: {group_tags}")
 
     def _on_distributor_changed(self, events):
+        """事件变更时防抖同步，避免频繁 sync 阻塞主线程"""
+        # 重启防抖定时器，300ms 内无新事件才执行同步
+        self._sync_debounce_timer.start(300)
+        logger.debug(f"EventDistributor 事件变更 ({len(events)} 个)，已加入防抖队列")
+
+    def _do_sync_from_distributor(self):
+        """防抖后实际执行同步（如已有同步进行中则标记待处理）"""
+        if getattr(self, '_is_syncing', False):
+            self._pending_sync = True
+            logger.debug("已有同步进行中，标记待处理")
+            return
         self.sync_events_from_distributor()
-        logger.info(f"EventDistributor 事件变更 ({len(events)} 个)，已自动同步")
+        logger.info("EventDistributor 事件变更，已自动同步")
 
     def refresh_events(self):
         self.sync_events_from_distributor()
@@ -395,6 +460,9 @@ class SeatEvaluationTab(QWidget):
     def set_data_bridge(self, data_bridge):
         self._data_bridge = data_bridge
         self._queue_engine.set_data_bridge(data_bridge)
+
+    def set_data_cache(self, cache):
+        self._queue_engine.set_data_cache(cache)
 
         def _query_raw_data(start_time: float, end_time: float):
             if not self._data_bridge:

@@ -77,6 +77,7 @@ class RightContentPanel(QWidget):
         self._cache_registry = None
         self._tab_initialized = {}
         self._replay_events = []
+        self._replay_event_ids = set()
 
         # ── PipelineModeController ──
         from core.core.analysis.pipeline_mode_controller import PipelineModeController
@@ -522,12 +523,15 @@ class RightContentPanel(QWidget):
         self._replay_events = []
         self._replay_event_ids = set()
         if events:
+            from core.core.analysis.event_distributor import EventDistributor
+            distributor = EventDistributor.instance()
             for event in events:
                 eid = getattr(event, 'id', '') or getattr(event, 'event_id', '')
                 if eid and eid not in self._replay_event_ids:
                     self._replay_event_ids.add(eid)
                     self._replay_events.append(event)
-            self.replay_bar.set_events(self._replay_events)
+                    distributor.register_event(event)
+            self._sync_replay_bar_events()
             self.logger.info(f"已加载 {len(self._replay_events)} 个事件到回放栏事件跳转列表")
         else:
             self.logger.info("回放栏事件跳转列表为空（分析缓存中暂无事件，将在回放过程中动态更新）")
@@ -601,6 +605,13 @@ class RightContentPanel(QWidget):
                 )
                 self.logger.info("DataBridge.seat_evaluation_triggered 已连接到座椅评测标签页")
 
+        # 将历史缓存注入评测队列，确保评测时能查询多通道数据
+        if hasattr(self, 'seat_evaluation_tab') and self.seat_evaluation_tab:
+            replay_cache = getattr(replay_controller, '_cache', None)
+            if replay_cache and hasattr(self.seat_evaluation_tab, 'set_data_cache'):
+                self.seat_evaluation_tab.set_data_cache(replay_cache)
+                self.logger.info("回放历史缓存已注入到评测队列")
+
         # 连接回放控制器到对照分析面板（数据源动态化）
         if hasattr(self, 'comparative_evaluation_tab') and self.comparative_evaluation_tab:
             if hasattr(self.comparative_evaluation_tab, 'set_replay_controller'):
@@ -663,14 +674,13 @@ class RightContentPanel(QWidget):
                                     f"批量分析完成: {ev_count} 个事件, "
                                     f"accel_range={result.get('vehicle_accel_range')}"
                                 )
-                                # 更新回放栏事件列表
-                                if hasattr(self, 'replay_bar') and self.replay_bar:
-                                    try:
-                                        self.replay_bar.set_events(
-                                            result.get('events', [])
-                                        )
-                                    except Exception:
-                                        pass
+                                # 注册 raw_events 到 EventDistributor 统一管理
+                                raw_events = result.get('raw_events', [])
+                                if raw_events:
+                                    from core.core.analysis.event_distributor import EventDistributor
+                                    EventDistributor.instance().register_events(raw_events)
+                                # 统一从 EventDistributor 同步到回放栏
+                                self._sync_replay_bar_events()
                             else:
                                 self.logger.warning("批量分析：缓存中无记录")
                         except Exception as e:
@@ -747,6 +757,25 @@ class RightContentPanel(QWidget):
             if self._data_bridge and self._data_bridge.is_running:
                 self._data_bridge.stop_processing()
 
+            # ── IMU波形通道：回放完成，高亮事件区间 ──
+            if rc and hasattr(rc, '_playback_start') and hasattr(rc, '_playback_end'):
+                pb_start = rc._playback_start
+                pb_end = rc._playback_end
+                if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
+                    tab = self.imu_visualization_tab
+                    # 主波形通道
+                    for ch in [tab.channel_accel, tab.channel_gyro,
+                               tab.channel_vehicle, tab.channel_wheel]:
+                        ch.set_event_range(pb_start, pb_end)
+                    # 趋势通道（每参数独立一行）
+                    for attr in ['trend_channel_ax', 'trend_channel_ay', 'trend_channel_az',
+                                 'trend_channel_speed', 'trend_channel_wheel',
+                                 'trend_channel_gx', 'trend_channel_gy', 'trend_channel_gz']:
+                        ch = getattr(tab, attr, None)
+                        if ch:
+                            ch.set_event_range(pb_start, pb_end)
+                    self.logger.info(f"IMU波形通道已高亮事件区间: [{pb_start:.1f}s, {pb_end:.1f}s]")
+
     def _on_playback_range_changed(self, start_time: float, end_time: float):
         """回放区间变更时，同步高亮CAN全量解析的事件区间，并更新回放控制栏时间"""
         try:
@@ -762,6 +791,33 @@ class RightContentPanel(QWidget):
                 self.replay_bar.update_time_range_display(start_time, end_time)
             except Exception as e:
                 self.logger.error(f"同步回放区间到回放控制栏失败: {e}")
+
+        # IMU 可视化视图跟随事件跳转
+        if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
+            try:
+                if hasattr(self.imu_visualization_tab, 'seek_to_time'):
+                    self.imu_visualization_tab.seek_to_time(start_time)
+                    self.logger.info(f"IMU可视化已跳转到: {start_time:.1f}s")
+            except Exception as e:
+                self.logger.error(f"IMU可视化视图跳转失败: {e}")
+
+        # ── IMU波形通道：同步事件高亮区间 ──
+        if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
+            try:
+                for ch in [self.imu_visualization_tab.channel_accel,
+                           self.imu_visualization_tab.channel_gyro,
+                           self.imu_visualization_tab.channel_vehicle,
+                           self.imu_visualization_tab.channel_wheel]:
+                    ch.set_event_range(start_time, end_time)
+                # 趋势通道同步
+                for attr in ['trend_channel_ax', 'trend_channel_ay', 'trend_channel_az',
+                             'trend_channel_speed', 'trend_channel_wheel',
+                             'trend_channel_gx', 'trend_channel_gy', 'trend_channel_gz']:
+                    ch = getattr(self.imu_visualization_tab, attr, None)
+                    if ch:
+                        ch.set_event_range(start_time, end_time)
+            except Exception as e:
+                self.logger.error(f"IMU波形通道事件区间同步失败: {e}")
 
     def _flush_event_refresh(self):
         """防抖刷新：合并500ms内多次刷新请求为一次"""
@@ -858,8 +914,6 @@ class RightContentPanel(QWidget):
             if eid and eid not in self._replay_event_ids:
                 self._replay_event_ids.add(eid)
                 self._replay_events.append(event)
-                if hasattr(self, 'replay_bar') and self.replay_bar:
-                    self.replay_bar.set_events(self._replay_events)
 
             # 在快速回放模式下，事件应该已经通过 sync_from_cache 同步了，不需要再次注册
             is_fast = False
@@ -870,6 +924,8 @@ class RightContentPanel(QWidget):
                 from core.core.analysis.event_distributor import EventDistributor
                 EventDistributor.instance().register_event(event)
                 self._request_event_refresh()
+            # 统一从 EventDistributor 同步到回放栏
+            self._sync_replay_bar_events()
         except Exception as e:
             self.logger.error(f"处理回放行为事件失败: {e}")
 
@@ -898,8 +954,8 @@ class RightContentPanel(QWidget):
             if eid and eid not in self._replay_event_ids:
                 self._replay_event_ids.add(eid)
                 self._replay_events.append(event)
-                if hasattr(self, 'replay_bar') and self.replay_bar:
-                    self.replay_bar.set_events(self._replay_events)
+            # 统一从 EventDistributor 同步到回放栏
+            self._sync_replay_bar_events()
 
             self._try_switch_replay_to_fast()
         except Exception as e:
@@ -942,17 +998,19 @@ class RightContentPanel(QWidget):
             if not hasattr(self, '_replay_event_ids'):
                 self._replay_event_ids = set()
 
+            from core.core.analysis.event_distributor import EventDistributor
+            distributor = EventDistributor.instance()
             new_count = 0
             for event in events:
                 eid = getattr(event, 'id', '') or getattr(event, 'event_id', '')
                 if eid and eid not in self._replay_event_ids:
                     self._replay_event_ids.add(eid)
                     self._replay_events.append(event)
+                    distributor.register_event(event)
                     new_count += 1
 
             if new_count > 0:
-                if hasattr(self, 'replay_bar') and self.replay_bar:
-                    self.replay_bar.set_events(self._replay_events)
+                self._sync_replay_bar_events()
                 self.logger.info(f"后台事件生成完成，新增 {new_count} 个事件，总计 {len(self._replay_events)} 个")
         except Exception as e:
             self.logger.error(f"刷新事件列表失败: {e}")
@@ -986,12 +1044,21 @@ class RightContentPanel(QWidget):
         if not cache_id:
             return
         self.logger.info(f"缓存选择变更: {cache_id[:8]}...")
+        # 先清除所有模块的旧数据残留
+        self._on_clear_all_ui()
         if self._pipeline_controller.load_cache_by_id(cache_id):
-            # 重新加载事件列表
+            # 从 ReplayController 获取事件，注册到 EventDistributor 统一管理
             if hasattr(self, '_replay_controller') and self._replay_controller:
                 events = self._replay_controller.get_events()
-                if events and hasattr(self, 'replay_bar') and self.replay_bar:
-                    self.replay_bar.set_events(events)
+                if events:
+                    from core.core.analysis.event_distributor import EventDistributor
+                    distributor = EventDistributor.instance()
+                    for event in events:
+                        distributor.register_event(event)
+                    self.logger.info(f"已将 {len(events)} 个事件注册到 EventDistributor")
+                # 统一从 EventDistributor 同步到回放栏
+                self._sync_replay_bar_events()
+                if hasattr(self, 'replay_bar') and self.replay_bar:
                     t_min, t_max = self._replay_controller.time_range
                     self.replay_bar.set_time_range(t_min, t_max)
                     self.replay_bar.set_status('缓存已切换，点击播放开始回放')
@@ -1000,44 +1067,20 @@ class RightContentPanel(QWidget):
                 if source_types and hasattr(self, 'replay_bar') and self.replay_bar:
                     self.replay_bar.set_source_info(source_types)
 
-    def _on_clear_all_ui(self):
-        """清空所有 UI 模块状态（Pipeline 切换时调用）"""
-        self.logger.info("执行 UI 全量清空...")
-        # IMU 曲线
-        if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
-            try:
-                if hasattr(self.imu_visualization_tab, 'clear'):
-                    self.imu_visualization_tab.clear()
-            except Exception as e:
-                self.logger.debug(f"清空 IMU 曲线失败: {e}")
-        # CAN 全量表格
-        if hasattr(self, 'can_full_tab') and self.can_full_tab:
-            try:
-                if hasattr(self.can_full_tab, 'clear_data'):
-                    self.can_full_tab.clear_data()
-            except Exception as e:
-                self.logger.debug(f"清空 CAN 全量表格失败: {e}")
-        # 实时行为监控
-        if hasattr(self, 'real_time_monitoring_tab') and self.real_time_monitoring_tab:
-            try:
-                if hasattr(self.real_time_monitoring_tab, 'clear_data'):
-                    self.real_time_monitoring_tab.clear_data()
-            except Exception as e:
-                self.logger.debug(f"清空实时监控失败: {e}")
-        # 座椅评测
-        if hasattr(self, 'seat_evaluation_tab') and self.seat_evaluation_tab:
-            try:
-                if hasattr(self.seat_evaluation_tab, 'clear_results'):
-                    self.seat_evaluation_tab.clear_results()
-            except Exception as e:
-                self.logger.debug(f"清空座椅评测失败: {e}")
-        # 回放栏
+    def _sync_replay_bar_events(self):
+        """从 EventDistributor 统一同步事件到回放栏（单一事件源）"""
         if hasattr(self, 'replay_bar') and self.replay_bar:
-            try:
-                self.replay_bar.reset_state()
-                self.replay_bar.set_play_enabled(False)
-            except Exception as e:
-                self.logger.debug(f"重置回放栏失败: {e}")
+            self.replay_bar.sync_events_from_distributor()
+
+    def _on_clear_all_ui(self):
+        """清空所有 UI 模块状态（通过统一注册中心一键清除）"""
+        self.logger.info("执行 UI 全量清空...")
+        from core.core.analysis.clearable_registry import ClearableRegistry
+        registry = ClearableRegistry.instance()
+        registry.clear_all()
+        # 清除右侧面板自身的缓存事件记录
+        self._replay_events = []
+        self._replay_event_ids = set()
         self.logger.info("UI 全量清空完成")
 
     def _on_pipeline_mode_changed(self, mode_str: str):

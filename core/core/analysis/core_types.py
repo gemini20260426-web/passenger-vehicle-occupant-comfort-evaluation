@@ -309,7 +309,9 @@ class LocationEvaluationResult:
     location_id: str
     location_name: str
     channel_id: str
-    metrics: Dict[str, float]  # 指标ID -> 值    location_score: float = 0.0  # 该位置的综合评分（v3.0以后由profile替代）    risk_level: RiskLevel = RiskLevel.SAFE
+    metrics: Dict[str, float]  # 指标ID -> 值
+    location_score: float = 0.0  # 该位置的综合评分（v3.0以后由profile替代）
+    risk_level: RiskLevel = RiskLevel.SAFE
     metadata: Dict[str, Any] = field(default_factory=dict)
     profile: Optional[Dict[str, Any]] = None  # v3.0: 多维振动剖面数据
 

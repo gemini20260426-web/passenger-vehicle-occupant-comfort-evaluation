@@ -35,8 +35,9 @@ from PySide6.QtWidgets import (
     QSplitter, QFrame, QCheckBox, QSpinBox, QHeaderView,
     QTabWidget, QScrollArea, QGridLayout, QSizePolicy, QDialog
 )
-from PySide6.QtCore import Qt, Signal, QThread, QObject, QSize
+from PySide6.QtCore import Qt, Signal, QThread, QObject, QSize, QTimer
 from PySide6.QtGui import QFont, QColor
+import shiboken6
 
 from core.core.seat_evaluation.engine_v2 import MultiChannelSeatEvaluationEngine
 from core.core.seat_evaluation.data_preprocessor import DataPreprocessor
@@ -774,12 +775,60 @@ class UnifiedEvaluationWorker(QObject):
                 evaluator = FullTimeseriesEvaluator()
                 if not self._is_running: return
                 self.progress_updated.emit(78, '加载数据...')
-                evaluator.load_from_csv(self._dataset_path)
+                is_db = _is_sqlite_cache_file(self._dataset_path)
+                logger.info(f"[全时域诊断] dataset_path={self._dataset_path}, is_db={is_db}, channel_data_map keys={list(channel_data_map.keys())[:5]}...")
+                if is_db:
+                    import pandas as pd
+                    rows = []
+                    for ch_name, ch_data in channel_data_map.items():
+                        if ch_name.startswith('_'):
+                            continue
+                        ts = ch_data.get('timestamps', [])
+                        ax = ch_data.get('ax', [])
+                        ay = ch_data.get('ay', [])
+                        az = ch_data.get('az', [])
+                        gx = ch_data.get('gx', [])
+                        gy = ch_data.get('gy', [])
+                        gz = ch_data.get('gz', [])
+                        sp = ch_data.get('speed', [])
+                        wh = ch_data.get('wheel', [])
+                        n = min(len(ts), len(ax), len(ay), len(az))
+                        for i in range(n):
+                            rows.append({
+                                'imu_name': ch_name,
+                                'rel_time': ts[i] if i < len(ts) else 0.0,
+                                'Ax_m_s2': ax[i] if i < len(ax) else 0.0,
+                                'Ay_m_s2': ay[i] if i < len(ay) else 0.0,
+                                'Az_m_s2': az[i] if i < len(az) else 0.0,
+                                'Gx_dps': gx[i] if i < len(gx) else 0.0,
+                                'Gy_dps': gy[i] if i < len(gy) else 0.0,
+                                'Gz_dps': gz[i] if i < len(gz) else 0.0,
+                                'speed': sp[i] if i < len(sp) else 0.0,
+                                'wheel': wh[i] if i < len(wh) else 0.0,
+                            })
+                    if rows:
+                        df_for_eval = pd.DataFrame(rows)
+                        evaluator.load_from_dataframe(df_for_eval)
+                        logger.info(f"[全时域诊断] load_from_dataframe完成: exp_keys={list(evaluator.exp.keys())[:3]}, ctrl_keys={list(evaluator.ctrl.keys())[:3]}, common_t={len(evaluator.common_t) if evaluator.common_t else 0}")
+                    else:
+                        raise RuntimeError("SQLite缓存数据为空，无法构建DataFrame")
+                else:
+                    evaluator.load_from_csv(self._dataset_path)
                 
                 if not self._is_running: return
                 self.progress_updated.emit(80, '检测事件...')
-                evaluator.detect_events()
+                behavior_events = behavior_summary.get('events', [])
+                if behavior_events:
+                    evaluator.set_external_events(behavior_events)
+                    logger.info(f"[全时域诊断] 使用驾驶行为事件: {len(behavior_events)} 个")
+                else:
+                    evaluator.detect_events()
+                    logger.info("[全时域诊断] 使用全时域引擎内部事件检测")
                 
+                if not self._is_running: return
+                self.progress_updated.emit(81, '事件级对比分析...')
+                evaluator.event_analysis()
+
                 if not self._is_running: return
                 self.progress_updated.emit(83, '滑动窗口分析...')
                 evaluator.window_analysis()
@@ -813,20 +862,30 @@ class UnifiedEvaluationWorker(QObject):
                 if not self._is_running: return
                 self.progress_updated.emit(98, '生成图表...')
                 viz_manager = VisualizationManager()
-                viz_manager.generate_all_plots(evaluator, output_dir)
-                
+                try:
+                    viz_manager.generate_all_plots(evaluator, output_dir)
+                except Exception as viz_e:
+                    logger.warning(f"图表文件生成失败(非致命): {viz_e}")
+
                 num_plots = len([f for f in os.listdir(output_dir) if f.endswith('.png')])
-                
+
                 full_timeseries_result = {
                     'events': evaluator.events,
                     'results': evaluator.results,
                     'output_dir': output_dir,
                     'num_plots': num_plots,
                 }
+                logger.info(f"[全时域诊断] 评测成功: events={len(evaluator.events)}, "
+                           f"results_keys={list(evaluator.results.keys())}, "
+                           f"results_empty={not bool(evaluator.results)}")
             except Exception as e:
+                import traceback
                 logger.warning(f"全时域评测失败(非致命): {e}")
+                logger.warning(f"全时域评测 Traceback:\n{traceback.format_exc()}")
                 full_timeseries_result = {'error': str(e)}
 
+            logger.info(f"[全时域诊断] full_timeseries_result type={type(full_timeseries_result).__name__}, "
+                       f"keys={list(full_timeseries_result.keys()) if isinstance(full_timeseries_result, dict) else 'N/A'}")
             location_results['_full_timeseries'] = full_timeseries_result
 
             # ── 概览图原始数据 (驾驶行为事件卡片的时序概览图) ──
@@ -959,6 +1018,8 @@ class IndicatorDetailDialog(QDialog):
         card = QFrame()
         card.setObjectName("proCard")
         card.setStyleSheet(CARD_STYLE)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        card.setMinimumWidth(0)
         return card
 
     def _build_basic_info_card(self) -> QFrame:
@@ -1186,6 +1247,8 @@ class StatisticsAnalysisTab(QWidget):
         self._behavior_events_for_timeline = []  # 行为事件列表（含时间戳）
         self._type_labels: Dict[str, str] = {}
 
+        self._chart_slots: Dict[str, Dict] = {}
+
         # ── 数据源模式 ──
         self._data_source_mode = self.DataSourceMode.OFFLINE_FILE
         self._cache_registry = None           # CacheRegistry 引用
@@ -1195,13 +1258,28 @@ class StatisticsAnalysisTab(QWidget):
         self._init_ui()
         self.logger.info("全量统计分析标签页已初始化")
 
+    def clear_all(self):
+        """清除全量统计分析所有数据（实现 ClearableResource 协议）"""
+        self._current_report = None
+        self._current_timeseries_result = None
+        self._contrast_data = []
+        self._dataset_path = ''
+        self._trip_summary = None
+        self._behavior_events_for_timeline = []
+        self._selected_cache_id = ''
+        self._time_range = (0.0, 0.0)
+        self._chart_slots.clear()
+        if hasattr(self, '_results_table') and self._results_table:
+            self._results_table.setRowCount(0)
+        self.logger.info("全量统计分析数据已清空")
+
     def _init_ui(self):
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
 
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidgetResizable(True)
-        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll_area.setFrameShape(QFrame.NoFrame)
         self._scroll_area.setStyleSheet(
@@ -1215,6 +1293,9 @@ class StatisticsAnalysisTab(QWidget):
 
         content = QWidget()
         self._content_widget = content
+        content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content.setMinimumSize(0, 0)
+        content.minimumSizeHint = lambda: QSize(0, 0)
 
         main_layout = QVBoxLayout(content)
         main_layout.setSpacing(12)
@@ -1231,9 +1312,11 @@ class StatisticsAnalysisTab(QWidget):
 
         # ════════════════════════════════════════════════════════════
         # 卡片布局顺序（递进式）:
-        #   控制 → 概览 → 行为 → 时间轴 → 剖面 → 对照 →
-        #   全时域 → 衰减 → 检验 → 输出
+        #   控制 → 概览 → 时序行为 → 剖面 → 对照 →
+        #   全时域 → 频域频谱 → 统计检验 → 输出
         # ════════════════════════════════════════════════════════════
+
+        self._group_chart_layouts = {}
 
         # ════ 1. 分析总览 ════
         self._overview_group = self._create_section_group("分析总览")
@@ -1246,15 +1329,33 @@ class StatisticsAnalysisTab(QWidget):
         self._condition_overview_card = self._create_condition_overview_card()
         self._overview_group._content_layout.addWidget(self._condition_overview_card)
 
-        # ════ 2. 驾驶行为事件 ════
+        _overview_charts = QVBoxLayout()
+        _overview_charts.setSpacing(12)
+        self._overview_group._content_layout.addLayout(_overview_charts)
+        self._group_chart_layouts['overview'] = _overview_charts
+
+        self._create_chart_placeholder("全时程概览图", "full_timeseries_overview", "overview", 360)
+
+        # ════ 2. 时序与行为分析 ════
+        self._timeline_behavior_group = self._create_section_group("时序与行为分析")
+        self._timeline_behavior_group.setVisible(True)
+        main_layout.addWidget(self._timeline_behavior_group)
+
         self._behavior_events_card = self._create_behavior_events_card()
-        main_layout.addWidget(self._behavior_events_card)
+        self._timeline_behavior_group._content_layout.addWidget(self._behavior_events_card)
 
-        # ════ 3. 行程时间轴 ════
         timeline_card = self._create_timeline_card()
-        main_layout.addWidget(timeline_card)
+        self._timeline_behavior_group._content_layout.addWidget(timeline_card)
 
-        # ════ 4. 多通道剖面分析 ════
+        _timeline_charts = QVBoxLayout()
+        _timeline_charts.setSpacing(12)
+        self._timeline_behavior_group._content_layout.addLayout(_timeline_charts)
+        self._group_chart_layouts['timeline_behavior'] = _timeline_charts
+
+        self._create_chart_placeholder("加速度波形", "acceleration_waveform", "timeline_behavior", 400)
+        self._create_chart_placeholder("事件对比图", "event_comparison", "timeline_behavior", 320)
+
+        # ════ 3. 多通道剖面分析 ════
         self._profile_group = self._create_section_group("多通道剖面分析")
         self._profile_group.setVisible(True)
         main_layout.addWidget(self._profile_group)
@@ -1274,7 +1375,10 @@ class StatisticsAnalysisTab(QWidget):
         self._temporal_card = self._create_temporal_card()
         self._profile_group._content_layout.addWidget(self._temporal_card)
 
-        # ════ 5. 指标对照分析 ════
+        self._contrast_profile_card = self._create_contrast_profile_card()
+        self._profile_group._content_layout.addWidget(self._contrast_profile_card)
+
+        # ════ 4. 指标对照分析 ════
         self._contrast_group = self._create_section_group("指标对照分析")
         self._contrast_group.setVisible(True)
         main_layout.addWidget(self._contrast_group)
@@ -1285,7 +1389,15 @@ class StatisticsAnalysisTab(QWidget):
         comparison_card = self._create_indicator_comparison_card()
         self._contrast_group._content_layout.addWidget(comparison_card)
 
-        # ════ 6. 全时域滑动窗口评测 ════
+        _contrast_charts = QVBoxLayout()
+        _contrast_charts.setSpacing(12)
+        self._contrast_group._content_layout.addLayout(_contrast_charts)
+        self._group_chart_layouts['contrast'] = _contrast_charts
+
+        self._create_chart_placeholder("衰减柱状图", "attenuation_bar", "contrast", 300)
+        self._create_chart_placeholder("雷达对比图", "comparison_radar", "contrast", 400)
+
+        # ════ 5. 全时域滑动窗口评测 ════
         self._fulltimeseries_group = self._create_section_group("全时域滑动窗口评测")
         self._fulltimeseries_group.setVisible(True)
         main_layout.addWidget(self._fulltimeseries_group)
@@ -1293,8 +1405,15 @@ class StatisticsAnalysisTab(QWidget):
         self._sliding_window_card = self._create_sliding_window_card()
         self._fulltimeseries_group._content_layout.addWidget(self._sliding_window_card)
 
-        # ════ 7. 频段衰减分析 ════
-        self._spectrum_group = self._create_section_group("频段衰减分析")
+        _fullts_charts = QVBoxLayout()
+        _fullts_charts.setSpacing(12)
+        self._fulltimeseries_group._content_layout.addLayout(_fullts_charts)
+        self._group_chart_layouts['fulltimeseries'] = _fullts_charts
+
+        self._create_chart_placeholder("滑动窗口衰减趋势图", "window_attenuation", "fulltimeseries", 380)
+
+        # ════ 6. 频域与频谱分析 ════
+        self._spectrum_group = self._create_section_group("频域与频谱分析")
         self._spectrum_group.setVisible(True)
         main_layout.addWidget(self._spectrum_group)
 
@@ -1305,7 +1424,18 @@ class StatisticsAnalysisTab(QWidget):
         self._stft_card = self._create_stft_card()
         self._spectrum_group._content_layout.addWidget(self._stft_card)
 
-        # ════ 8. 统计检验分析 ════
+        _spectrum_charts = QVBoxLayout()
+        _spectrum_charts.setSpacing(12)
+        self._spectrum_group._content_layout.addLayout(_spectrum_charts)
+        self._group_chart_layouts['spectrum'] = _spectrum_charts
+
+        self._create_chart_placeholder("PSD频谱对比", "psd_comparison", "spectrum", 320)
+        self._create_chart_placeholder("SRS冲击响应谱", "srs_comparison", "spectrum", 300)
+        self._create_chart_placeholder("频谱分析图", "spectrum_analysis", "spectrum", 320)
+        self._create_chart_placeholder("频谱衰减比图", "spectrum_ratio", "spectrum", 320)
+        self._create_chart_placeholder("频段雷达图", "band_radar", "spectrum", 420)
+
+        # ════ 7. 统计检验分析 ════
         self._statistics_group = self._create_section_group("统计检验分析")
         self._statistics_group.setVisible(True)
         main_layout.addWidget(self._statistics_group)
@@ -1313,7 +1443,16 @@ class StatisticsAnalysisTab(QWidget):
         self._statistics_card = self._create_statistics_card()
         self._statistics_group._content_layout.addWidget(self._statistics_card)
 
-        # ════ 9. 统一输出：QTabWidget（报告预览 + 对比数据表）════
+        _statistics_charts = QVBoxLayout()
+        _statistics_charts.setSpacing(12)
+        self._statistics_group._content_layout.addLayout(_statistics_charts)
+        self._group_chart_layouts['statistics'] = _statistics_charts
+
+        self._create_chart_placeholder("时频分析图", "stft_analysis", "statistics", 400)
+        self._create_chart_placeholder("统计仪表盘", "statistics_dashboard", "statistics", 340)
+        self._create_chart_placeholder("统计特征(算子级输出)", "statistical_features", "statistics", 500)
+
+        # ════ 8. 统一输出：QTabWidget（报告预览 + 对比数据表）════
         self._output_tab_widget = QTabWidget()
         self._output_tab_widget.setStyleSheet(f"""
             QTabWidget::pane {{
@@ -1468,49 +1607,6 @@ class StatisticsAnalysisTab(QWidget):
         self._output_tab_widget.addTab(report_preview_tab, "\U0001F4CA 报告预览")
         self._output_tab_widget.addTab(contrast_data_tab, "\U0001F4CB 对比数据表")
 
-        # ── Tab 3: 高级图表 ──
-        self._charts_tab = QWidget()
-        charts_layout = QVBoxLayout(self._charts_tab)
-        charts_layout.setContentsMargins(8, 8, 8, 8)
-        charts_layout.setSpacing(8)
-
-        # 图表工具栏
-        charts_toolbar = QHBoxLayout()
-        charts_toolbar.addWidget(QLabel("专业可视化图表"))
-        charts_toolbar.addStretch()
-        self._generate_charts_btn = QPushButton("\U0001F4CA 生成全部图表")
-        self._generate_charts_btn.setStyleSheet("""
-            QPushButton {
-                background: #2E75B6; color: white; border: none;
-                border-radius: 4px; padding: 6px 14px; font-size: 11px;
-            }
-            QPushButton:hover { background: #1F5A8E; }
-        """)
-        self._generate_charts_btn.clicked.connect(self._on_generate_charts)
-        charts_toolbar.addWidget(self._generate_charts_btn)
-        charts_layout.addLayout(charts_toolbar)
-
-        # 图表滚动区域
-        self._charts_scroll = QScrollArea()
-        self._charts_scroll.setWidgetResizable(True)
-        self._charts_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._charts_scroll.setFrameShape(QFrame.NoFrame)
-        self._charts_scroll.setStyleSheet("QScrollArea { border: none; background: #FAFBFC; }")
-
-        self._charts_container = QWidget()
-        self._charts_layout = QVBoxLayout(self._charts_container)
-        self._charts_layout.setSpacing(12)
-        self._charts_layout.setContentsMargins(4, 4, 4, 4)
-        self._charts_scroll.setWidget(self._charts_container)
-        charts_layout.addWidget(self._charts_scroll)
-
-        self._charts_placeholder = QLabel("分析完成后点击「生成全部图表」查看专业可视化")
-        self._charts_placeholder.setAlignment(Qt.AlignCenter)
-        self._charts_placeholder.setStyleSheet(f"color: {LC['text_muted']}; font-size: 14px; padding: 60px;")
-        self._charts_layout.addWidget(self._charts_placeholder)
-
-        self._output_tab_widget.addTab(self._charts_tab, "\U0001F4C8 高级图表")
-
         self._status_label = QLabel('就绪 — 请加载数据集开始分析')
         self._status_label.setStyleSheet(
             f"color: {LC['text_muted']}; font-size: 11px; padding: 7px 12px; "
@@ -1519,6 +1615,37 @@ class StatisticsAnalysisTab(QWidget):
         main_layout.addWidget(self._status_label)
 
         self._scroll_area.setWidget(content)
+        self._content_initialized = True
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._constrain_content_width)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._constrain_content_width()
+
+    def _constrain_content_width(self):
+        viewport = self._scroll_area.viewport()
+        content = self._content_widget
+        if viewport is None or content is None:
+            return
+        if shiboken6.isValid(content) and shiboken6.isValid(viewport):
+            vp_width = viewport.width()
+            if vp_width > 50:
+                content.setMaximumWidth(vp_width)
+                for i in range(content.layout().count() if content.layout() else 0):
+                    item = content.layout().itemAt(i)
+                    if item and item.widget():
+                        w = item.widget()
+                        if shiboken6.isValid(w):
+                            w.setMaximumWidth(vp_width)
+                            if isinstance(w, QGroupBox):
+                                inner = w.findChild(QWidget)
+                                if inner and shiboken6.isValid(inner):
+                                    inner.setMaximumWidth(vp_width - 24)
+                            if isinstance(w, QTabWidget):
+                                w.setMaximumWidth(vp_width)
 
     def _create_empty_guide(self) -> QFrame:
         card = QFrame()
@@ -2719,8 +2846,8 @@ class StatisticsAnalysisTab(QWidget):
 
                 t_seg = ts_arr[s:e] - t_s  # 相对时间
                 ax = axes_flat[i]
-                ax.plot(t_seg, exp_ay[s:e], 'b-', linewidth=1.2, alpha=0.8, label='Active')
-                ax.plot(t_seg, ctrl_ay[s:e], 'r--', linewidth=1.0, alpha=0.8, label='Passive')
+                ax.plot(t_seg, exp_ay[s:e], 'b-', linewidth=1.2, alpha=0.8, label='实验组')
+                ax.plot(t_seg, ctrl_ay[s:e], 'r--', linewidth=1.0, alpha=0.8, label='对照组')
                 ax.axvline(x=0, color='k', linestyle=':', alpha=0.4)
                 if ev.get('duration', 0) > 0:
                     ax.axvspan(0, ev.get('duration', 0.1), alpha=0.1, color='yellow')
@@ -2748,7 +2875,7 @@ class StatisticsAnalysisTab(QWidget):
             for i in range(n_ev, nrows * ncols):
                 axes_flat[i].set_visible(False)
 
-            plt.suptitle('全部驾驶事件 — 主动座椅(蓝) vs 被动座椅(红) 头部Ay对比', fontsize=12)
+            plt.suptitle('全部驾驶事件 — 实验组(蓝) vs 对照组(红) 头部Ay对比', fontsize=12)
             plt.tight_layout()
             return fig
         except Exception as e:
@@ -2788,9 +2915,9 @@ class StatisticsAnalysisTab(QWidget):
                 exp_psd = np.array(s.get('exp_psd', []))
                 ctrl_psd = np.array(s.get('ctrl_psd', []))
                 if len(exp_psd) > 0:
-                    ax0.semilogy(f_arr, exp_psd, 'b-', linewidth=1, alpha=0.8, label='Active Seat')
+                    ax0.semilogy(f_arr, exp_psd, 'b-', linewidth=1, alpha=0.8, label='实验组')
                 if len(ctrl_psd) > 0:
-                    ax0.semilogy(f_arr, ctrl_psd, 'r-', linewidth=1, alpha=0.8, label='Passive Seat')
+                    ax0.semilogy(f_arr, ctrl_psd, 'r-', linewidth=1, alpha=0.8, label='对照组')
                 ax0.set_title(f'{axis_name} — Power Spectral Density', fontsize=10)
                 ax0.set_ylabel('PSD')
                 ax0.legend(fontsize=7)
@@ -2819,7 +2946,7 @@ class StatisticsAnalysisTab(QWidget):
             for ax in axes.flatten():
                 ax.set_xlabel('Frequency (Hz)', fontsize=8)
 
-            plt.suptitle('频域分析 — 主动座椅 vs 被动座椅', fontsize=13, fontweight='bold')
+            plt.suptitle('频域分析 — 实验组 vs 对照组', fontsize=13, fontweight='bold')
             plt.tight_layout()
             return fig
         except Exception as e:
@@ -2864,7 +2991,7 @@ class StatisticsAnalysisTab(QWidget):
                                      shading='gouraud', cmap='viridis', norm=LogNorm())
                 plt.colorbar(im1, ax=ax1, label='Magnitude')
             ax1.set_ylabel('Freq (Hz)', fontsize=9)
-            ax1.set_title('Active Seat — Head Ay STFT', fontsize=11)
+            ax1.set_title('实验组 — Head Ay STFT', fontsize=11)
 
             if ctrl_filt is not None and ctrl_filt.size > 0:
                 im2 = ax2.pcolormesh(t_arr, f_filt, ctrl_filt,
@@ -2872,7 +2999,7 @@ class StatisticsAnalysisTab(QWidget):
                 plt.colorbar(im2, ax=ax2, label='Magnitude')
             ax2.set_ylabel('Freq (Hz)', fontsize=9)
             ax2.set_xlabel('Time (s)', fontsize=9)
-            ax2.set_title('Passive Seat — Head Ay STFT', fontsize=11)
+            ax2.set_title('对照组 — Head Ay STFT', fontsize=11)
 
             plt.suptitle('时频分析 (STFT) — Ay 横向加速度', fontsize=13, fontweight='bold')
             plt.tight_layout()
@@ -2918,9 +3045,9 @@ class StatisticsAnalysisTab(QWidget):
 
                 # 直方图
                 axes[0, coli].hist(evals[valid], bins=100, alpha=0.5, density=True,
-                                   color=color, label='Active')
+                                   color=color, label='实验组')
                 axes[0, coli].hist(cvals[valid], bins=100, alpha=0.5, density=True,
-                                   color='gray', label='Passive')
+                                   color='gray', label='对照组')
                 axes[0, coli].set_title(f'{axis_name} Distribution', fontsize=10)
                 axes[0, coli].legend(fontsize=7)
                 axes[0, coli].grid(True, alpha=0.2)
@@ -2928,13 +3055,13 @@ class StatisticsAnalysisTab(QWidget):
                 # 箱线图（下采样）
                 ds = max(1, int(len(evals[valid]) / 500))
                 data_box = [evals[valid][::ds], cvals[valid][::ds]]
-                bp = axes[1, coli].boxplot(data_box, labels=['Active', 'Passive'],
+                bp = axes[1, coli].boxplot(data_box, labels=['实验组', '对照组'],
                                             patch_artist=True,
                                             boxprops=dict(facecolor=color, alpha=0.5))
                 axes[1, coli].set_title(f'{axis_name} Box Plot', fontsize=10)
                 axes[1, coli].grid(True, alpha=0.2)
 
-            plt.suptitle('统计学分析 — 主动座椅 vs 被动座椅', fontsize=13, fontweight='bold')
+            plt.suptitle('统计学分析 — 实验组 vs 对照组', fontsize=13, fontweight='bold')
             plt.tight_layout()
             return fig
         except Exception as e:
@@ -2975,7 +3102,7 @@ class StatisticsAnalysisTab(QWidget):
 
             ax.set_xticks(angles[:-1])
             ax.set_xticklabels(bands_5, fontsize=9)
-            ax.set_title('Frequency Band Attenuation Radar\n(Active vs Passive Seat)',
+            ax.set_title('Frequency Band Attenuation Radar\n(实验组 vs 对照组)',
                          fontsize=12, fontweight='bold', pad=20)
             ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
             ax.set_ylim(-100, 200)
@@ -3065,17 +3192,7 @@ class StatisticsAnalysisTab(QWidget):
             return None
 
     def _populate_behavior_events(self, report: Dict):
-        # ── 时序概览图 ──
-        overview_data = report.get('_overview_data')
-        if overview_data:
-            adapted_ov = self._adapt_chart_overview_data(overview_data)
-            fig = self._generate_behavior_overview_chart(adapted_ov)
-            if fig:
-                self._embed_figure(fig, self._behavior_overview_chart)
-            else:
-                self._behavior_overview_chart.setVisible(False)
-        else:
-            self._behavior_overview_chart.setVisible(False)
+        self._behavior_overview_chart.setVisible(False)
 
         behavior_summary = report.get('behavior_summary', {})
         events = behavior_summary.get('events', [])
@@ -3878,7 +3995,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        title = QLabel("时频分析（STFT 时频谱）— 主动座椅 vs 被动座椅 Ay")
+        title = QLabel("时频分析（STFT 时频谱）— 实验组 vs 对照组 Ay")
         title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
         layout.addWidget(title)
 
@@ -4115,17 +4232,36 @@ class StatisticsAnalysisTab(QWidget):
         layout = container.layout()
         if layout is None:
             return
-        # 清除旧 canvas
         while layout.count():
             item = layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        # 创建 FigureCanvas
+
+        dpi = fig.get_dpi()
+        orig_w, orig_h = fig.get_size_inches()
+
+        viewport = self._scroll_area.viewport()
+        if viewport is not None and viewport.width() > 50:
+            max_px_w = viewport.width() - 30
+        else:
+            max_px_w = max(600, self.width() - 60)
+
+        target_w_inches = min(orig_w, max_px_w / dpi)
+        target_w_inches = max(4, target_w_inches)
+        target_w_inches = min(target_w_inches, 12)
+        target_h_inches = orig_h * (target_w_inches / orig_w)
+        target_h_inches = min(target_h_inches, 10)
+
+        fig.set_size_inches(target_w_inches, target_h_inches, forward=True)
+        fig.tight_layout()
+
         canvas = FigureCanvas(fig)
-        canvas.sizeHint = lambda size_hint_hack=QSize(100, 200): size_hint_hack
-        canvas.minimumSizeHint = lambda: QSize(0, 0)
-        canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        canvas.setMinimumSize(0, 0)
+        px_w = int(target_w_inches * dpi)
+        px_h = int(target_h_inches * dpi)
+        canvas.resize(px_w, px_h)
+
+        canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        canvas.setMinimumHeight(px_h)
         canvas.setStyleSheet("background: white;")
         layout.addWidget(canvas)
         container.setVisible(True)
@@ -4661,11 +4797,16 @@ class StatisticsAnalysisTab(QWidget):
                 "color: rgba(255,255,255,0.9); font-size: 8px; background: transparent;"
             )
         self._pipeline_status_label.setText("分析完成")
+        self._auto_generate_charts_if_ready(report)
         self._populate_results_table(report)
         md_text = self._report_generator.export_to_markdown(report)
         self._report_preview.setMarkdown(md_text)
         self._update_overview_dashboard(report)
         self._populate_profile_visualization(report)
+        try:
+            self._populate_contrast_profile(report)
+        except Exception as e:
+            self.logger.warning(f"对比基线卡片填充失败: {e}")
         self._populate_condition_overview(report)
         self._populate_behavior_events(report)
 
@@ -4698,8 +4839,7 @@ class StatisticsAnalysisTab(QWidget):
 
         self._fill_indicator_comparison_data(report)
         self._populate_contrast_data_table(report)
-        # ── 自动触发高级图表生成 ──
-        self._auto_generate_charts_if_ready(report)
+        # ── 高级图表已提前调度，此处仅置基础分组可见 ──
         self._overview_group.setVisible(True)
         self._profile_group.setVisible(True)
         self._contrast_group.setVisible(True)
@@ -4803,6 +4943,7 @@ class StatisticsAnalysisTab(QWidget):
             self._worker.deleteLater()
             self._worker = None
         self._worker_thread = None
+        QTimer.singleShot(50, self._constrain_content_width)
 
     def _on_analysis_failed(self, error_msg: str):
         QMessageBox.critical(self, "分析失败", error_msg)
@@ -5372,17 +5513,20 @@ class StatisticsAnalysisTab(QWidget):
                 else:
                     delta_str = f"{delta:.1f}%"
 
+                direction = meta.direction.name if meta else 'LOWER_IS_BETTER'
+                is_better = delta < 0 if direction in ('LOWER_IS_BETTER', 'LOWER_BETTER') else delta > 0
+
                 delta_item = QTableWidgetItem(delta_str)
                 if abs(delta) > 40:
-                    delta_item.setForeground(QColor('#E74C3C' if delta > 0 else '#27AE60'))
+                    delta_item.setForeground(QColor('#27AE60' if is_better else '#E74C3C'))
                 elif abs(delta) > 15:
                     delta_item.setForeground(QColor('#F39C12'))
                 else:
-                    delta_item.setForeground(QColor('#27AE60' if delta <= 0 else '#95A5A6'))
+                    delta_item.setForeground(QColor('#27AE60' if is_better else '#95A5A6'))
 
-                if delta < 0:
+                if is_better:
                     total_improved += 1
-                elif delta > 0:
+                else:
                     total_degraded += 1
             else:
                 delta_item = QTableWidgetItem('--')
@@ -5402,7 +5546,7 @@ class StatisticsAnalysisTab(QWidget):
             # ── 裁决 (专家级衰减判定) ──
             if delta_pct is not None:
                 delta = float(delta_pct)
-                # 根据 evaluation_direction 反转符号
+                # 根据 direction 反转符号
                 direction = meta.direction.name if meta else 'LOWER_BETTER'
                 if direction in ('HIGHER_BETTER',):
                     atten = delta  # 正值=改善
@@ -5426,7 +5570,7 @@ class StatisticsAnalysisTab(QWidget):
             # 改进方向
             if delta_pct is not None:
                 delta = float(delta_pct)
-                direction = meta.evaluation_direction.name if meta else 'LOWER_BETTER'
+                direction = meta.direction.name if meta else 'LOWER_BETTER'
                 if direction in ('HIGHER_BETTER',):
                     improved = delta > 0
                 else:
@@ -5648,13 +5792,13 @@ class StatisticsAnalysisTab(QWidget):
         pct_item = QTableWidgetItem(f"{delta_pct:+.1f}%" if delta_pct is not None else "--")
         pct_item.setTextAlignment(Qt.AlignCenter)
         if delta_pct is not None and meta:
-            improve = meta.direction == EvaluationDirection.LOWER_BETTER if meta else True
+            improve = meta.direction.name in ('LOWER_IS_BETTER', 'LOWER_BETTER') if meta else True
             is_better = delta_pct < 0 if improve else delta_pct > 0
             pct_item.setForeground(QColor('#27AE60') if is_better else QColor('#E74C3C'))
         self._indicator_comp_table.setItem(row, 7, pct_item)
 
         if delta_pct is not None and meta:
-            lower_better = meta.direction == EvaluationDirection.LOWER_BETTER
+            lower_better = meta.direction.name in ('LOWER_IS_BETTER', 'LOWER_BETTER')
             dir_text = "↓改善" if ((delta_pct < 0 and lower_better) or (delta_pct > 0 and not lower_better)) else "↑退步"
             dir_color = '#27AE60' if "改善" in dir_text else '#E74C3C'
         else:
@@ -5834,134 +5978,426 @@ class StatisticsAnalysisTab(QWidget):
         if report:
             self._generate_advanced_charts(report)
 
+    def _create_chart_canvas(self, fig, min_height=300):
+        """创建带尺寸约束的图表canvas"""
+        dpi = fig.get_dpi()
+        orig_w, orig_h = fig.get_size_inches()
+
+        viewport = self._scroll_area.viewport()
+        if viewport is not None and viewport.width() > 50:
+            max_px_w = viewport.width() - 40
+        else:
+            max_px_w = max(600, self.width() - 80)
+
+        target_w_inches = min(orig_w, max_px_w / dpi)
+        target_w_inches = max(4, target_w_inches)
+        target_w_inches = min(target_w_inches, 12)
+        target_h_inches = orig_h * (target_w_inches / orig_w)
+        target_h_inches = min(target_h_inches, 10)
+        target_h_inches = max(target_h_inches, min_height / dpi)
+
+        fig.set_size_inches(target_w_inches, target_h_inches, forward=True)
+        fig.tight_layout()
+
+        canvas = FigureCanvas(fig)
+        px_w = int(target_w_inches * dpi)
+        px_h = int(target_h_inches * dpi)
+        canvas.resize(px_w, px_h)
+
+        canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        canvas.setMinimumHeight(px_h)
+        canvas.setStyleSheet("background: white;")
+
+        return canvas
+
+    def _create_chart_placeholder(self, title: str, key: str, group_key: str, min_height: int = 300):
+        card = QFrame()
+        card.setObjectName("proCard")
+        card.setStyleSheet(CARD_STYLE)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        card.setMinimumWidth(0)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setSpacing(6)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            f"font-size: 12px; font-weight: 700; color: {LC['text_primary']}; "
+            f"padding-bottom: 4px; border-bottom: 1px solid {LC['border_light']};"
+        )
+        card_layout.addWidget(title_label)
+
+        placeholder = QLabel("等待数据加载...")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder.setMinimumHeight(min_height)
+        placeholder.setStyleSheet(
+            f"color: {LC['text_muted']}; font-size: 13px; "
+            f"background: {LC['bg_input']}; border-radius: 4px;"
+        )
+        card_layout.addWidget(placeholder)
+
+        self._chart_slots[key] = {
+            'card': card,
+            'layout': card_layout,
+            'placeholder': placeholder,
+            'group': group_key,
+            'title': title,
+            'min_height': min_height,
+            'filled': False,
+        }
+
+        group_layout = self._group_chart_layouts.get(group_key)
+        if group_layout:
+            group_layout.addWidget(card)
+
+    def _fill_chart_slot(self, key: str, fig):
+        slot = self._chart_slots.get(key)
+        if not slot:
+            return False
+        canvas = self._create_chart_canvas(fig, min_height=slot['min_height'])
+        old_widget = slot['placeholder']
+        slot['layout'].replaceWidget(old_widget, canvas)
+        old_widget.deleteLater()
+        slot['placeholder'] = canvas
+        slot['filled'] = True
+        return True
+
+    def _reset_chart_slots(self):
+        for key, slot in self._chart_slots.items():
+            if slot['filled']:
+                old_widget = slot['placeholder']
+                new_placeholder = QLabel("暂无数据")
+                new_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                new_placeholder.setMinimumHeight(slot['min_height'])
+                new_placeholder.setStyleSheet(
+                    f"color: {LC['text_muted']}; font-size: 13px; "
+                    f"background: {LC['bg_input']}; border-radius: 4px;"
+                )
+                slot['layout'].replaceWidget(old_widget, new_placeholder)
+                old_widget.deleteLater()
+                slot['placeholder'] = new_placeholder
+                slot['filled'] = False
+            else:
+                slot['placeholder'].setText("暂无数据")
+
+    def _clear_group_chart_layouts(self):
+        self._reset_chart_slots()
+
     def _generate_advanced_charts(self, report: Dict):
-        """生成全部高级图表并嵌入到图表 Tab"""
-        # 清空旧图表
-        while self._charts_layout.count():
-            item = self._charts_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._clear_group_chart_layouts()
 
         overview = report.get('_overview_data', {})
         channel_data_map = report.get('_channel_data_map', {})
-        events = report.get('behavior_summary', {}).get('events', []) or \
-                 getattr(self, '_behavior_events_for_timeline', [])
+        full_ts = report.get('_full_timeseries', {})
+        ft_results = full_ts.get('results', {}) if isinstance(full_ts, dict) else {}
+        self.logger.info(f"[图表诊断] _full_timeseries存在={isinstance(full_ts,dict) and bool(full_ts)}, "
+                         f"results_keys={list(ft_results.keys()) if isinstance(ft_results,dict) else 'N/A'}, "
+                         f"channel_data_map count={len(channel_data_map)}, "
+                         f"overview_data keys={list(overview.keys()) if overview else 'EMPTY'}")
 
         charts_generated = 0
+        failed_charts = []
 
-        # ── 图表1: 事件时间线 ──
-        if overview:
-            timestamps = np.array(overview.get('timestamps', []))
-            speed_arr = np.array(overview.get('speed', []))
-            wheel_arr = np.array(overview.get('wheel', []))
-            if len(timestamps) > 10 and len(speed_arr) > 10:
-                try:
-                    fig = create_event_timeline(timestamps, speed_arr, wheel_arr, events)
-                    canvas = FigureCanvas(fig)
-                    canvas.sizeHint = lambda size_hint_hack=QSize(100, 200): size_hint_hack
-                    canvas.minimumSizeHint = lambda: QSize(0, 0)
-                    canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-                    canvas.setMinimumSize(0, 0)
-                    canvas.setMinimumHeight(320)
-                    self._charts_layout.addWidget(canvas)
-                    charts_generated += 1
-                except Exception as e:
-                    self.logger.warning(f"事件时间线生成失败: {e}")
-
-        # ── 图表2: PSD 功率谱对比 ──
         if channel_data_map:
             exp_imus = [k for k in channel_data_map.keys() if k.endswith('-1')]
             ctrl_imus = [k for k in channel_data_map.keys() if k.endswith('-2')]
             if len(exp_imus) >= 2 and len(ctrl_imus) >= 2:
                 try:
                     fig = create_psd_comparison(channel_data_map, exp_imus, ctrl_imus, axis='Z')
-                    if fig:
-                        canvas = FigureCanvas(fig)
-                        canvas.sizeHint = lambda size_hint_hack=QSize(100, 200): size_hint_hack
-                        canvas.minimumSizeHint = lambda: QSize(0, 0)
-                        canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-                        canvas.setMinimumSize(0, 0)
-                        canvas.setMinimumHeight(320)
-                        self._charts_layout.addWidget(canvas)
+                    if fig and self._fill_chart_slot("psd_comparison", fig):
                         charts_generated += 1
+                    else:
+                        failed_charts.append("PSD频谱对比(create_psd_comparison返回None)")
                 except Exception as e:
                     self.logger.warning(f"PSD图表生成失败: {e}")
+                    failed_charts.append(f"PSD频谱对比({e})")
+            else:
+                failed_charts.append(f"PSD频谱对比(exp={len(exp_imus)},ctrl={len(ctrl_imus)})")
+        else:
+            failed_charts.append("PSD频谱对比(无channel_data_map)")
 
-        # ── 图表3: 衰减效率柱状图 ──
         comparison = self._build_comparison_dict(report)
         if comparison:
             try:
                 fig = create_attenuation_bar(comparison)
-                if fig:
-                    canvas = FigureCanvas(fig)
-                    canvas.sizeHint = lambda size_hint_hack=QSize(100, 200): size_hint_hack
-                    canvas.minimumSizeHint = lambda: QSize(0, 0)
-                    canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-                    canvas.setMinimumSize(0, 0)
-                    canvas.setMinimumHeight(300)
-                    self._charts_layout.addWidget(canvas)
+                if fig and self._fill_chart_slot("attenuation_bar", fig):
                     charts_generated += 1
+                else:
+                    failed_charts.append("衰减柱状图(create_attenuation_bar返回None)")
             except Exception as e:
                 self.logger.warning(f"衰减柱状图生成失败: {e}")
+                failed_charts.append(f"衰减柱状图({e})")
 
-            # ── 图表4: 雷达对比图 ──
             try:
                 fig = create_comparison_radar(comparison)
-                if fig:
-                    canvas = FigureCanvas(fig)
-                    canvas.sizeHint = lambda size_hint_hack=QSize(100, 200): size_hint_hack
-                    canvas.minimumSizeHint = lambda: QSize(0, 0)
-                    canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-                    canvas.setMinimumSize(0, 0)
-                    canvas.setMinimumHeight(420)
-                    self._charts_layout.addWidget(canvas)
+                if fig and self._fill_chart_slot("comparison_radar", fig):
                     charts_generated += 1
+                else:
+                    failed_charts.append("雷达对比图(create_comparison_radar返回None)")
             except Exception as e:
                 self.logger.warning(f"雷达图生成失败: {e}")
+                failed_charts.append(f"雷达对比图({e})")
+        else:
+            failed_charts.append("衰减柱状图(comparison为空)")
+            failed_charts.append("雷达对比图(comparison为空)")
 
-        # ── 图表5: 三轴加速度波形 ──
         exp_imus_1 = [k for k in channel_data_map.keys() if k.endswith('-1')]
-        if len(exp_imus_1) >= 2:
+        ctrl_imus_2 = [k for k in channel_data_map.keys() if k.endswith('-2')]
+        if len(exp_imus_1) >= 1 and len(ctrl_imus_2) >= 1:
             try:
-                fig = create_acceleration_waveform(channel_data_map, exp_imus_1[:3])
-                if fig:
-                    canvas = FigureCanvas(fig)
-                    canvas.sizeHint = lambda size_hint_hack=QSize(100, 200): size_hint_hack
-                    canvas.minimumSizeHint = lambda: QSize(0, 0)
-                    canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-                    canvas.setMinimumSize(0, 0)
-                    canvas.setMinimumHeight(450)
-                    self._charts_layout.addWidget(canvas)
+                fig = create_acceleration_waveform(channel_data_map, exp_imus_1[:3], ctrl_imus_2[:3])
+                if fig and self._fill_chart_slot("acceleration_waveform", fig):
                     charts_generated += 1
+                else:
+                    failed_charts.append("加速度波形(create_acceleration_waveform返回None)")
             except Exception as e:
                 self.logger.warning(f"加速度波形生成失败: {e}")
+                failed_charts.append(f"加速度波形({e})")
+        else:
+            failed_charts.append(f"加速度波形(exp={len(exp_imus_1)},ctrl={len(ctrl_imus_2)})")
 
-        # ── 图表6: SRS 冲击响应谱 ──
         head_exp = next((k for k in channel_data_map if '头部' in k and k.endswith('-1')), None)
         head_ctrl = next((k for k in channel_data_map if '头部' in k and k.endswith('-2')), None)
         if head_exp and head_ctrl:
             try:
                 fig = create_srs_comparison(channel_data_map, head_exp, head_ctrl,
                                            location_name='头部眉心', axis='X')
-                if fig:
-                    canvas = FigureCanvas(fig)
-                    canvas.sizeHint = lambda size_hint_hack=QSize(100, 200): size_hint_hack
-                    canvas.minimumSizeHint = lambda: QSize(0, 0)
-                    canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-                    canvas.setMinimumSize(0, 0)
-                    canvas.setMinimumHeight(300)
-                    self._charts_layout.addWidget(canvas)
+                if fig and self._fill_chart_slot("srs_comparison", fig):
                     charts_generated += 1
+                else:
+                    failed_charts.append("SRS冲击响应谱(create_srs_comparison返回None)")
             except Exception as e:
                 self.logger.warning(f"SRS图表生成失败: {e}")
-
-        if charts_generated > 0:
-            self.logger.info(f"高级图表生成完成: {charts_generated} 张")
-            # 自动切换到图表 Tab
-            self._output_tab_widget.setCurrentIndex(2)
+                failed_charts.append(f"SRS冲击响应谱({e})")
         else:
-            self._charts_layout.addWidget(
-                QLabel("当前数据不支持生成高级图表（需要包含 IMU 通道数据的评测结果）"))
+            failed_charts.append(f"SRS冲击响应谱(头部exp={head_exp},头部ctrl={head_ctrl})")
+
+        charts_generated += self._generate_viz_manager_charts(report)
+
+        _group_map = {
+            'overview': self._overview_group,
+            'timeline_behavior': self._timeline_behavior_group,
+            'contrast': self._contrast_group,
+            'fulltimeseries': self._fulltimeseries_group,
+            'spectrum': self._spectrum_group,
+            'statistics': self._statistics_group,
+        }
+        for _key, _group in _group_map.items():
+            _layout = self._group_chart_layouts.get(_key)
+            if _layout and _layout.count() > 0:
+                _group.setVisible(True)
+
+        self.logger.info(f"图表生成完成: {charts_generated} 张")
+        if failed_charts:
+            self.logger.info(f"未生成图表: {len(failed_charts)}张 — {', '.join(failed_charts)}")
+        QTimer.singleShot(50, self._constrain_content_width)
+
+    def _create_chart_card(self, title: str, fig, min_height: int = 300):
+        canvas = self._create_chart_canvas(fig, min_height=min_height)
+        card = QFrame()
+        card.setObjectName("proCard")
+        card.setStyleSheet(CARD_STYLE)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        card.setMinimumWidth(0)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 10, 12, 10)
+        card_layout.setSpacing(6)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            f"font-size: 12px; font-weight: 700; color: {LC['text_primary']}; "
+            f"padding-bottom: 4px; border-bottom: 1px solid {LC['border_light']};"
+        )
+        card_layout.addWidget(title_label)
+        card_layout.addWidget(canvas)
+        return card
+
+    def _generate_viz_manager_charts(self, report: Dict) -> int:
+        full_ts = report.get('_full_timeseries')
+        overview_data = report.get('_overview_data')
+        if not full_ts or not isinstance(full_ts, dict):
+            return 0
+        results = full_ts.get('results', {})
+        if not results:
+            return 0
+
+        viz = VisualizationManager()
+        generated = 0
+        failed_viz = []
+
+        events_list = full_ts.get('events', [])
+
+        if overview_data and overview_data.get('timestamps') and events_list:
+            try:
+                timestamps = np.array(overview_data['timestamps'])
+                speed_arr = np.array(overview_data['speed'])
+                wheel_arr = np.array(overview_data['wheel'])
+                if len(timestamps) > 10 and len(speed_arr) > 10:
+                    sw = np.column_stack([timestamps, speed_arr, wheel_arr])
+                    exp_head = np.column_stack([
+                        timestamps,
+                        np.array(overview_data.get('exp_ax', np.zeros_like(timestamps))),
+                        np.array(overview_data.get('exp_ay', np.zeros_like(timestamps))),
+                        np.array(overview_data.get('exp_az', np.zeros_like(timestamps))),
+                    ])
+                    ctrl_head = np.column_stack([
+                        timestamps,
+                        np.array(overview_data.get('ctrl_ax', np.zeros_like(timestamps))),
+                        np.array(overview_data.get('ctrl_ay', np.zeros_like(timestamps))),
+                        np.array(overview_data.get('ctrl_az', np.zeros_like(timestamps))),
+                    ])
+                    fig = viz.plot_overview(sw, exp_head, ctrl_head, events_list)
+                    if fig and self._fill_chart_slot("full_timeseries_overview", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("全时程概览图(plot_overview返回None)")
+                else:
+                    failed_viz.append(f"全时程概览图(timestamps={len(timestamps)},speed={len(speed_arr)})")
+            except Exception as e:
+                self.logger.warning(f"全时程概览图生成失败: {e}")
+                failed_viz.append(f"全时程概览图({e})")
+        else:
+            failed_viz.append("全时程概览图(无overview_data或events_list)")
+
+        if 'events' in results:
+            try:
+                df_events = results['events']
+                if hasattr(df_events, 'empty') and not df_events.empty:
+                    fig = viz.plot_event_comparison(df_events)
+                    if fig and self._fill_chart_slot("event_comparison", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("事件对比图(plot_event_comparison返回None)")
+                else:
+                    failed_viz.append("事件对比图(events DataFrame为空)")
+            except Exception as e:
+                self.logger.warning(f"事件对比图生成失败: {e}")
+                failed_viz.append(f"事件对比图({e})")
+        else:
+            failed_viz.append("事件对比图(结果中无events)")
+
+        if 'spectrum' in results:
+            try:
+                spec = results['spectrum']
+                if spec:
+                    fig = viz.plot_spectrum(spec)
+                    if fig and self._fill_chart_slot("spectrum_analysis", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("频谱分析图(plot_spectrum返回None)")
+                else:
+                    failed_viz.append("频谱分析图(spectrum为空)")
+            except Exception as e:
+                self.logger.warning(f"频谱分析图生成失败: {e}")
+                failed_viz.append(f"频谱分析图({e})")
+        else:
+            failed_viz.append("频谱分析图(结果中无spectrum)")
+
+        if 'spectrum' in results:
+            try:
+                spec = results['spectrum']
+                if spec:
+                    fig = viz.plot_spectrum_ratio(spec)
+                    if fig and self._fill_chart_slot("spectrum_ratio", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("频谱衰减比图(plot_spectrum_ratio返回None)")
+                else:
+                    failed_viz.append("频谱衰减比图(spectrum为空)")
+            except Exception as e:
+                self.logger.warning(f"频谱衰减比图生成失败: {e}")
+                failed_viz.append(f"频谱衰减比图({e})")
+        else:
+            failed_viz.append("频谱衰减比图(结果中无spectrum)")
+
+        if 'stft' in results:
+            try:
+                stft_data = results['stft']
+                if stft_data:
+                    fig = viz.plot_stft(stft_data)
+                    if fig and self._fill_chart_slot("stft_analysis", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("时频分析图(plot_stft返回None)")
+                else:
+                    failed_viz.append("时频分析图(stft为空)")
+            except Exception as e:
+                self.logger.warning(f"时频分析图生成失败: {e}")
+                failed_viz.append(f"时频分析图({e})")
+        else:
+            failed_viz.append("时频分析图(结果中无stft)")
+
+        if 'statistics' in results:
+            try:
+                stats_data = results['statistics']
+                if stats_data:
+                    fig = viz.plot_statistics(stats_data)
+                    if fig and self._fill_chart_slot("statistics_dashboard", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("统计仪表盘(plot_statistics返回None)")
+                else:
+                    failed_viz.append("统计仪表盘(statistics为空)")
+            except Exception as e:
+                self.logger.warning(f"统计仪表盘生成失败: {e}")
+                failed_viz.append(f"统计仪表盘({e})")
+        else:
+            failed_viz.append("统计仪表盘(结果中无statistics)")
+
+        if 'metrics' in results:
+            try:
+                metrics_data = results['metrics']
+                if metrics_data:
+                    fig = viz.plot_statistical_features(metrics_data)
+                    if fig and self._fill_chart_slot("statistical_features", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("统计特征图(plot_statistical_features返回None)")
+                else:
+                    failed_viz.append("统计特征图(metrics为空)")
+            except Exception as e:
+                self.logger.warning(f"统计特征图生成失败: {e}")
+                failed_viz.append(f"统计特征图({e})")
+        else:
+            failed_viz.append("统计特征图(结果中无metrics)")
+
+        if 'spectrum' in results:
+            try:
+                spec = results['spectrum']
+                if spec:
+                    fig = viz.plot_band_radar(spec)
+                    if fig and self._fill_chart_slot("band_radar", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("频段雷达图(plot_band_radar返回None)")
+                else:
+                    failed_viz.append("频段雷达图(spectrum为空)")
+            except Exception as e:
+                self.logger.warning(f"频段雷达图生成失败: {e}")
+                failed_viz.append(f"频段雷达图({e})")
+        else:
+            failed_viz.append("频段雷达图(结果中无spectrum)")
+
+        if 'windows' in results:
+            try:
+                df_windows = results['windows']
+                if hasattr(df_windows, 'empty') and not df_windows.empty:
+                    fig = viz.plot_window_attenuation(df_windows)
+                    if fig and self._fill_chart_slot("window_attenuation", fig):
+                        generated += 1
+                    else:
+                        failed_viz.append("滑动窗口衰减趋势图(plot_window_attenuation返回None)")
+                else:
+                    failed_viz.append("滑动窗口衰减趋势图(windows DataFrame为空)")
+            except Exception as e:
+                self.logger.warning(f"滑动窗口衰减趋势图生成失败: {e}")
+                failed_viz.append(f"滑动窗口衰减趋势图({e})")
+        else:
+            failed_viz.append("滑动窗口衰减趋势图(结果中无windows)")
+
+        if failed_viz:
+            self.logger.info(f"VizManager未生成图表: {len(failed_viz)}张 — {', '.join(failed_viz)}")
+
+        return generated
 
     def _build_comparison_dict(self, report: Dict) -> Dict[str, Dict]:
         """从报告中构建 comparison_data 字典，用于雷达图和衰减图"""

@@ -98,6 +98,13 @@ class MultiChannelSeatEvaluationEngine(QObject):
             
             detected_sr = multi_channel_data.get('_sample_rate', self.default_sample_rate)
             
+            channel_keys = [k for k in multi_channel_data if not k.startswith('_')]
+            logger.info(
+                f"evaluate_by_event: trigger_id={trigger_id}, group_tag={group_tag}, "
+                f"locations={locations}, channel_count={len(channel_keys)}, "
+                f"channels={channel_keys}"
+            )
+            
             if not metrics:
                 metrics = self._get_all_metrics()
             
@@ -112,14 +119,30 @@ class MultiChannelSeatEvaluationEngine(QObject):
 
                 channel_id = get_channel_by_location(location_id, group_tag)
                 if not channel_id or channel_id not in multi_channel_data:
+                    logger.warning(
+                        f"位置 {location_id} 通道映射失败: channel_id={channel_id}, "
+                        f"group_tag={group_tag}, multi_channel_keys={list(multi_channel_data.keys())[:15]}"
+                    )
                     continue
 
                 channel_data = multi_channel_data[channel_id]
+                ax_len = len(channel_data.get('ax', []))
+                ay_len = len(channel_data.get('ay', []))
+                az_len = len(channel_data.get('az', []))
+                logger.info(
+                    f"位置 {location_id} channel={channel_id} "
+                    f"数据长度: ax={ax_len}, ay={ay_len}, az={az_len}"
+                )
                 location_data_window = self._extract_channel_data_window(
                     channel_data, data_window, sample_rate=detected_sr
                 )
                 if location_data_window:
                     location_data_windows[location_id] = location_data_window
+                else:
+                    logger.warning(
+                        f"位置 {location_id} _extract_channel_data_window 返回None, "
+                        f"channel_data_keys={list(channel_data.keys())}"
+                    )
             
             floor_window = location_data_windows.get('seat_bottom')
             
@@ -168,8 +191,8 @@ class MultiChannelSeatEvaluationEngine(QObject):
                     location_name=location_config.location_name_cn,
                     channel_id=channel_id,
                     metrics=calculated_metrics,
-                    location_score=0.0,
-                    risk_level=RiskLevel.SAFE,
+                    location_score=self._calculate_location_score(calculated_metrics, location_id),
+                    risk_level=self._assess_location_risk(calculated_metrics, location_id),
                     profile=profile,
                     metadata={
                         'location_config': location_config,
@@ -199,8 +222,8 @@ class MultiChannelSeatEvaluationEngine(QObject):
                 event_type=event_type,
                 timestamp=timestamp,
                 metrics=overall_metrics,
-                overall_score=0.0,
-                risk_level=RiskLevel.SAFE,
+                overall_score=self._calculate_overall_score(overall_metrics, location_results),
+                risk_level=self._assess_overall_risk(location_results),
                 location_results=location_results,
                 metadata={
                     'source_behavior': source_behavior,
@@ -494,13 +517,13 @@ class MultiChannelSeatEvaluationEngine(QObject):
             srs_result = ops.srs.compute(az, sr)
             srs_features = ops.srs.extract_features(srs_result)
             if metric_id == 'SRS_MRS':
-                return srs_features.get('SRS_MRS', 0.0)
+                return float(srs_features.get('SRS_MRS', 0.0))
             elif metric_id == 'SRS_Q':
-                return srs_features.get('SRS_Q', 0.0)
+                return float(srs_features.get('SRS_Q', 0.0))
             elif metric_id == 'SRS_PV':
-                return srs_features.get('SRS_PV', 0.0)
+                return float(srs_features.get('SRS_PV', 0.0))
             elif metric_id == 'SRS_ATT':
-                return srs_features.get('SRS_ATT', 0.0)
+                return float(srs_features.get('SRS_ATT', 0.0))
         
         # 疲劳指标
         elif metric_id == 'RFC_CC':
@@ -511,20 +534,20 @@ class MultiChannelSeatEvaluationEngine(QObject):
             rf_result = ops.rainflow.count(az)
             fds_result = ops.fds.compute(rf_result)
             if metric_id == 'FDS_D':
-                return fds_result.get('FDS_D', 0.0)
+                return float(fds_result.get('FDS_D', 0.0))
             elif metric_id == 'FDS_R':
-                return fds_result.get('FDS_R', 0.0)
+                return float(fds_result.get('FDS_R', 0.0))
         
         # STFT时频指标
         elif metric_id.startswith('STFT_'):
             stft_result = ops.stft.compute(az, sr)
             stft_features = ops.stft.extract_features(stft_result)
             if metric_id == 'STFT_FC':
-                return stft_features.get('STFT_FC', 0.0)
+                return float(stft_features.get('STFT_FC', 0.0))
             elif metric_id == 'STFT_KT':
-                return stft_features.get('STFT_KT', 0.0)
+                return float(stft_features.get('STFT_KT', 0.0))
             elif metric_id == 'STFT_CE':
-                return stft_features.get('STFT_CE', 0.0)
+                return float(stft_features.get('STFT_CE', 0.0))
         
         elif metric_id == 'ACC_RMS':
             total = np.sqrt(ax**2 + ay**2 + az**2)
@@ -579,21 +602,21 @@ class MultiChannelSeatEvaluationEngine(QObject):
             poor = thresholds.get('poor')
 
             if excellent is not None and value <= excellent:
-                return 95.0 + (value / max(excellent, 0.001)) * 5.0
+                return max(0.0, min(100.0, 95.0 + (value / max(excellent, 0.001)) * 5.0))
             if good is not None and value <= good:
-                return 90.0 - (value - excellent) / max(good - excellent, 0.001) * 20.0
+                return max(0.0, min(100.0, 90.0 - (value - excellent) / max(good - excellent, 0.001) * 20.0))
             if fair is not None and value <= fair:
-                return 70.0 - (value - good) / max(fair - good, 0.001) * 20.0
+                return max(0.0, min(100.0, 70.0 - (value - good) / max(fair - good, 0.001) * 20.0))
             if poor is not None and value <= poor:
-                return max(0.0, 50.0 - (value - fair) / max(poor - fair, 0.001) * 50.0)
+                return max(0.0, min(100.0, 50.0 - (value - fair) / max(poor - fair, 0.001) * 50.0))
             fair_val = fair if fair is not None else value
-            return max(0.0, 50.0 - (value - fair_val) / max(fair_val, 0.001) * 50.0)
+            return max(0.0, min(100.0, 50.0 - (value - fair_val) / max(fair_val, 0.001) * 50.0))
 
         weighted_score = 0.0
         total_weight = 0.0
 
         for metric_id, weight in weights.items():
-            value = metrics[metric_id]
+            value = float(metrics[metric_id])
             thresholds = METRIC_THRESHOLDS.get(metric_id, {})
             if thresholds:
                 normalized_score = _threshold_score(value, thresholds)
@@ -617,9 +640,9 @@ class MultiChannelSeatEvaluationEngine(QObject):
         Returns:
             风险等级
         """
-        hic = metrics.get('HIC15', 0.0)
-        acc_peak = metrics.get('ACC_H_PEAK', 0.0)
-        fds = metrics.get('FDS_D', 0.0)
+        hic = float(metrics.get('HIC15', 0.0))
+        acc_peak = float(metrics.get('ACC_H_PEAK', 0.0))
+        fds = float(metrics.get('FDS_D', 0.0))
         
         if hic > 700 or acc_peak > 20 or fds > 1.0:
             return RiskLevel.DANGER

@@ -26,6 +26,8 @@ from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, Signal
 from PySide6.QtGui import (QFont, QColor, QPainter, QPen, QBrush,
                            QPainterPath, QLinearGradient, QPolygon)
 
+from core.core.analysis.clearable_registry import ClearableResource, ClearableRegistry
+
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -591,6 +593,9 @@ class IMUWaveformChannel(QWidget):
         self._max_points = 2000
         self._render_points = 100
         self._frozen = False
+        self._time_window = None  # None = 显示全部; 设置后裁剪 X 轴范围
+        self._view_start_time = None  # 视图跳转起始时间，渲染后自动清除
+        self._event_range: Optional[Tuple[float, float]] = None  # 事件高亮区间 (start, end)
 
         self._auto_range = False
         self._y_lo = float(self._fixed_y_lo)
@@ -633,8 +638,8 @@ class IMUWaveformChannel(QWidget):
                 series_name not in self._bias_offsets or
                 series_name not in self._bias_samples or
                 series_name not in self._bias_calibrated):
-            self._buffers[series_name] = deque(maxlen=self._max_points)
-            self._filtered_buffers[series_name] = deque(maxlen=self._max_points)
+            self._buffers[series_name] = deque() if self._max_points is None else deque(maxlen=self._max_points)
+            self._filtered_buffers[series_name] = deque() if self._max_points is None else deque(maxlen=self._max_points)
             self._raw_buffers[series_name] = deque(maxlen=self._sg_window * 2)
             self._prev_filtered[series_name] = None
             self._bias_samples[series_name] = []
@@ -697,8 +702,8 @@ class IMUWaveformChannel(QWidget):
                 series_name not in self._bias_offsets or
                 series_name not in self._bias_samples or
                 series_name not in self._bias_calibrated):
-            self._buffers[series_name] = deque(maxlen=self._max_points)
-            self._filtered_buffers[series_name] = deque(maxlen=self._max_points)
+            self._buffers[series_name] = deque() if self._max_points is None else deque(maxlen=self._max_points)
+            self._filtered_buffers[series_name] = deque() if self._max_points is None else deque(maxlen=self._max_points)
             self._raw_buffers[series_name] = deque(maxlen=self._sg_window * 2)
             self._prev_filtered[series_name] = None
             self._bias_samples[series_name] = []
@@ -711,7 +716,7 @@ class IMUWaveformChannel(QWidget):
         # 降采样：如果数据量超过显示容量，按步长抽取
         step = 1
         n = len(t_arr)
-        if n > self._max_points:
+        if self._max_points is not None and n > self._max_points:
             step = max(1, n // self._max_points)
 
         offset = self._bias_offsets[series_name]
@@ -774,6 +779,30 @@ class IMUWaveformChannel(QWidget):
 
     def set_frozen(self, frozen):
         self._frozen = frozen
+
+    def set_time_window(self, seconds):
+        """设置 X 轴视窗时长（秒），None 表示显示全部"""
+        self._time_window = seconds
+        self.update()
+
+    def set_max_points(self, n):
+        """设置缓冲区最大点数，None 表示无限制（全量累积不释放）"""
+        self._max_points = n
+
+    def set_view_start_time(self, start_time: float):
+        """设置视图起始时间（秒），用于跳转到指定时间范围。
+        设置后下一次 paintEvent 会从该时间开始渲染，然后自动清除。
+        """
+        self._view_start_time = start_time
+        self.update()
+
+    def set_event_range(self, start: Optional[float], end: Optional[float]):
+        """设置事件高亮区间，用于在波形图上标记事件起止时间"""
+        if start is not None and end is not None:
+            self._event_range = (start, end)
+        else:
+            self._event_range = None
+        self.update()
 
     def clear(self):
         self._buffers.clear()
@@ -960,6 +989,11 @@ class IMUWaveformChannel(QWidget):
         if abs(y_hi - y_lo) < 1e-9:
             y_hi = y_lo + 1.0
 
+        # 视图跳转：保存后单次使用，循环外清除，确保所有曲线一致
+        view_start = self._view_start_time
+        if view_start is not None:
+            self._view_start_time = None
+
         for name, cfg in self._series_config.items():
             buf = self._filtered_buffers.get(name, deque())
             if len(buf) < 2:
@@ -979,6 +1013,32 @@ class IMUWaveformChannel(QWidget):
             t_max = downsampled[-1].t
             if t_max - t_min < 1e-9:
                 t_max = t_min + 1.0
+
+            # 视图跳转：若设置了 view_start，从该时间开始渲染
+            if view_start is not None:
+                if self._time_window is not None and self._time_window > 0:
+                    view_end = view_start + self._time_window
+                else:
+                    view_end = t_max
+                if view_start < t_max and view_end > t_min:
+                    t_min = max(t_min, view_start)
+                    t_max = min(t_max, view_end)
+
+            # 视窗时长裁剪: 只显示最近 N 秒（仅在无 view_start 时生效）
+            if view_start is None and self._time_window is not None and self._time_window > 0:
+                clip_t_min = t_max - self._time_window
+                if clip_t_min > t_min:
+                    t_min = clip_t_min
+
+            # 事件高亮区间绘制（仅在第一条曲线时绘制，避免重复）
+            if name == list(self._series_config.keys())[0] and self._event_range:
+                ev_start, ev_end = self._event_range
+                if ev_end > t_min and ev_start < t_max:
+                    x1 = ml + pw * max(0.0, (ev_start - t_min) / (t_max - t_min))
+                    x2 = ml + pw * min(1.0, (ev_end - t_min) / (t_max - t_min))
+                    highlight = QColor("#00b8d4")
+                    highlight.setAlpha(20)
+                    painter.fillRect(QRectF(x1, mt, x2 - x1, ph), highlight)
 
             path = QPainterPath()
             fill_path = QPainterPath()
@@ -1133,7 +1193,7 @@ class IMUWaveformChannel(QWidget):
 # ============================================================
 # 主专业IMU可视化Tab
 # ============================================================
-class IMUVisualizationTab(QWidget):
+class IMUVisualizationTab(QWidget, ClearableResource):
     data_received = Signal(dict)
 
     def __init__(self):
@@ -1143,6 +1203,8 @@ class IMUVisualizationTab(QWidget):
         self._init_ui()
         self._init_timers()
         self.logger.info("IMU 专业可视化 v2.0 初始化完成")
+        # 注册到统一清除中心
+        ClearableRegistry.instance().register("IMU可视化", self)
 
     def _init_data(self):
         self.data_bridge = None
@@ -1312,28 +1374,77 @@ class IMUVisualizationTab(QWidget):
         self.channel_wheel.setMinimumHeight(150)
         content_layout.addWidget(self.channel_wheel)
 
+        # 初始化视窗时长（默认 5s），传播到所有通道
+        for ch in [self.channel_accel, self.channel_gyro,
+                   self.channel_vehicle, self.channel_wheel]:
+            ch.set_time_window(self._time_window)
+
         content_layout.addStretch()
 
-        tiles_grid = QGridLayout()
-        tiles_grid.setSpacing(4)
-        trend_params = [
-            ("AX 趋势", "m/s²", CLR_AX, ALARM_ACCEL_LO, ALARM_ACCEL_HI),
-            ("AY 趋势", "m/s²", CLR_AY, ALARM_ACCEL_LO, ALARM_ACCEL_HI),
-            ("AZ 趋势", "m/s²", CLR_AZ, ALARM_ACCEL_LO, ALARM_ACCEL_HI),
-            ("Speed 趋势", "km/h", CLR_SPEED, ALARM_SPEED_LO, ALARM_SPEED_HI),
-            ("Wheel 趋势", "°", CLR_WHEEL, ALARM_WHEEL_LO, ALARM_WHEEL_HI),
-            ("GX 趋势", "rad/s", CLR_GX, ALARM_GYRO_LO, ALARM_GYRO_HI),
-            ("GY 趋势", "rad/s", CLR_GY, ALARM_GYRO_LO, ALARM_GYRO_HI),
-            ("GZ 趋势", "rad/s", CLR_GZ, ALARM_GYRO_LO, ALARM_GYRO_HI),
-        ]
-        self.trend_tiles = {}
-        for i, (title, unit, color, lo, hi) in enumerate(trend_params):
-            key = title.split()[0]
-            tile = IMUParameterTile(title, unit, color)
-            self.trend_tiles[key] = (tile, lo, hi)
-            row, col = divmod(i, 4)
-            tiles_grid.addWidget(tile, row, col)
-        content_layout.addLayout(tiles_grid)
+        # ── 趋势通道：每个参数单独一行，视窗固定60秒 ──
+        self.trend_channel_ax = IMUWaveformChannel(
+            "AX 纵向加速度", "m/s²", DEFAULT_AX_RANGE,
+            {"AX": {"color": CLR_AX, "width": 1.5}}
+        )
+        self.trend_channel_ax.set_max_points(None)
+        self.trend_channel_ax.setMinimumHeight(100)
+        content_layout.addWidget(self.trend_channel_ax)
+
+        self.trend_channel_ay = IMUWaveformChannel(
+            "AY 横向加速度", "m/s²", DEFAULT_AX_RANGE,
+            {"AY": {"color": CLR_AY, "width": 1.5}}
+        )
+        self.trend_channel_ay.set_max_points(None)
+        self.trend_channel_ay.setMinimumHeight(100)
+        content_layout.addWidget(self.trend_channel_ay)
+
+        self.trend_channel_az = IMUWaveformChannel(
+            "AZ 垂向加速度", "m/s²", DEFAULT_AX_RANGE,
+            {"AZ": {"color": CLR_AZ, "width": 1.5}}
+        )
+        self.trend_channel_az.set_max_points(None)
+        self.trend_channel_az.setMinimumHeight(100)
+        content_layout.addWidget(self.trend_channel_az)
+
+        self.trend_channel_speed = IMUWaveformChannel(
+            "车速", "km/h", DEFAULT_SPEED_RANGE,
+            {"Speed": {"color": CLR_SPEED, "width": 1.8}}
+        )
+        self.trend_channel_speed.set_max_points(None)
+        self.trend_channel_speed.setMinimumHeight(100)
+        content_layout.addWidget(self.trend_channel_speed)
+
+        self.trend_channel_wheel = IMUWaveformChannel(
+            "方向盘转向角", "°", DEFAULT_WHEEL_RANGE,
+            {"Wheel": {"color": CLR_WHEEL, "width": 1.8}}
+        )
+        self.trend_channel_wheel.set_max_points(None)
+        self.trend_channel_wheel.setMinimumHeight(100)
+        content_layout.addWidget(self.trend_channel_wheel)
+
+        self.trend_channel_gx = IMUWaveformChannel(
+            "GX 横滚角速度", "rad/s", DEFAULT_GYRO_RANGE,
+            {"GX": {"color": CLR_GX, "width": 1.5}}
+        )
+        self.trend_channel_gx.set_max_points(None)
+        self.trend_channel_gx.setMinimumHeight(100)
+        content_layout.addWidget(self.trend_channel_gx)
+
+        self.trend_channel_gy = IMUWaveformChannel(
+            "GY 俯仰角速度", "rad/s", DEFAULT_GYRO_RANGE,
+            {"GY": {"color": CLR_GY, "width": 1.5}}
+        )
+        self.trend_channel_gy.set_max_points(None)
+        self.trend_channel_gy.setMinimumHeight(100)
+        content_layout.addWidget(self.trend_channel_gy)
+
+        self.trend_channel_gz = IMUWaveformChannel(
+            "GZ 偏航角速度", "rad/s", DEFAULT_GYRO_RANGE,
+            {"GZ": {"color": CLR_GZ, "width": 1.5}}
+        )
+        self.trend_channel_gz.set_max_points(None)
+        self.trend_channel_gz.setMinimumHeight(100)
+        content_layout.addWidget(self.trend_channel_gz)
 
         scroll_area.setWidget(content_widget)
         root.addWidget(scroll_area, stretch=1)
@@ -1402,35 +1513,41 @@ class IMUVisualizationTab(QWidget):
         if self.freeze_btn.isChecked():
             return
         
-        # 检查是否有数据要处理
         if not self._ring_buffer:
             return
         
-        # 如果缓冲区有数据但 is_running 是 False，自动启动
         if not self.is_running:
             self.start()
         
-        # 处理一批数据
         batch = []
         for _ in range(min(len(self._ring_buffer), 100)):
             batch.append(self._ring_buffer.popleft())
         
-        # 应用每一条记录
         for record in batch:
-            self._apply_record(record)
+            self._feed_channels(record)
         
-        # 总是 flush 所有通道，确保曲线刷新
+        if batch:
+            self._apply_tiles(batch[-1])
+        
         self.channel_accel.flush()
         self.channel_gyro.flush()
         self.channel_vehicle.flush()
         self.channel_wheel.flush()
+        # 趋势通道
+        if hasattr(self, 'trend_channel_ax'):
+            self.trend_channel_ax.flush()
+            self.trend_channel_ay.flush()
+            self.trend_channel_az.flush()
+            self.trend_channel_speed.flush()
+            self.trend_channel_wheel.flush()
+            self.trend_channel_gx.flush()
+            self.trend_channel_gy.flush()
+            self.trend_channel_gz.flush()
         
         self._fps_counter += 1
 
-    def _apply_record(self, record):
+    def _feed_channels(self, record):
         if not isinstance(record, dict):
-            return
-        if not getattr(self, 'value_tiles', None):
             return
 
         t = record.get('t', record.get('timestamp', 0.0))
@@ -1446,46 +1563,8 @@ class IMUVisualizationTab(QWidget):
         if self._start_time is None:
             self._start_time = t
 
-        t_rel = self._sample_count * 0.01
-
+        t_rel = t  # 使用真实时间戳，支持"右进左停"视窗裁剪
         self._sample_count += 1
-
-        tile_ax, lo_ax, hi_ax = self.value_tiles['AX']
-        tile_ax.set_value(ax, lo_ax, hi_ax)
-        tile_ay, lo_ay, hi_ay = self.value_tiles['AY']
-        tile_ay.set_value(ay, lo_ay, hi_ay)
-        tile_az, lo_az, hi_az = self.value_tiles['AZ']
-        tile_az.set_value(az, lo_az, hi_az)
-
-        tile_speed, lo_sp, hi_sp = self.value_tiles['Speed']
-        tile_speed.set_value(speed, lo_sp, hi_sp)
-        tile_wheel, lo_wh, hi_wh = self.value_tiles['Wheel']
-        tile_wheel.set_value(wheel, lo_wh, hi_wh)
-
-        tile_gx, lo_gx, hi_gx = self.value_tiles['GX']
-        tile_gx.set_value(gx, lo_gx, hi_gx)
-        tile_gy, lo_gy, hi_gy = self.value_tiles['GY']
-        tile_gy.set_value(gy, lo_gy, hi_gy)
-        tile_gz, lo_gz, hi_gz = self.value_tiles['GZ']
-        tile_gz.set_value(gz, lo_gz, hi_gz)
-
-        if hasattr(self, 'trend_tiles') and self.trend_tiles:
-            tr_ax, _, _ = self.trend_tiles['AX']
-            tr_ax.set_value(ax, lo_ax, hi_ax)
-            tr_ay, _, _ = self.trend_tiles['AY']
-            tr_ay.set_value(ay, lo_ay, hi_ay)
-            tr_az, _, _ = self.trend_tiles['AZ']
-            tr_az.set_value(az, lo_az, hi_az)
-            tr_speed, _, _ = self.trend_tiles['Speed']
-            tr_speed.set_value(speed, lo_sp, hi_sp)
-            tr_wheel, _, _ = self.trend_tiles['Wheel']
-            tr_wheel.set_value(wheel, lo_wh, hi_wh)
-            tr_gx, _, _ = self.trend_tiles['GX']
-            tr_gx.set_value(gx, lo_gx, hi_gx)
-            tr_gy, _, _ = self.trend_tiles['GY']
-            tr_gy.set_value(gy, lo_gy, hi_gy)
-            tr_gz, _, _ = self.trend_tiles['GZ']
-            tr_gz.set_value(gz, lo_gz, hi_gz)
 
         if ax is not None:
             self.channel_accel.feed("AX", ax, t_rel)
@@ -1507,8 +1586,61 @@ class IMUVisualizationTab(QWidget):
         if wheel is not None:
             self.channel_wheel.feed("Wheel", wheel, t_rel)
 
+        # 趋势通道（每参数独立一行，60秒视窗）
+        if hasattr(self, 'trend_channel_ax'):
+            if ax is not None:
+                self.trend_channel_ax.feed("AX", ax, t_rel)
+            if ay is not None:
+                self.trend_channel_ay.feed("AY", ay, t_rel)
+            if az is not None:
+                self.trend_channel_az.feed("AZ", az, t_rel)
+            if speed is not None:
+                self.trend_channel_speed.feed("Speed", speed, t_rel)
+            if wheel is not None:
+                self.trend_channel_wheel.feed("Wheel", wheel, t_rel)
+            if gx is not None:
+                self.trend_channel_gx.feed("GX", gx, t_rel)
+            if gy is not None:
+                self.trend_channel_gy.feed("GY", gy, t_rel)
+            if gz is not None:
+                self.trend_channel_gz.feed("GZ", gz, t_rel)
+
         if self._sample_count % 100 == 0:
             self.lbl_samples.setText(f"样本: {self._sample_count}")
+
+    def _apply_tiles(self, record):
+        if not isinstance(record, dict):
+            return
+        if not getattr(self, 'value_tiles', None):
+            return
+
+        ax = record.get('ax')
+        ay = record.get('ay')
+        az = record.get('az')
+        gx = record.get('gx')
+        gy = record.get('gy')
+        gz = record.get('gz')
+        speed = record.get('speed')
+        wheel = record.get('wheel')
+
+        tile_ax, lo_ax, hi_ax = self.value_tiles['AX']
+        tile_ax.set_value(ax, lo_ax, hi_ax)
+        tile_ay, lo_ay, hi_ay = self.value_tiles['AY']
+        tile_ay.set_value(ay, lo_ay, hi_ay)
+        tile_az, lo_az, hi_az = self.value_tiles['AZ']
+        tile_az.set_value(az, lo_az, hi_az)
+
+        tile_speed, lo_sp, hi_sp = self.value_tiles['Speed']
+        tile_speed.set_value(speed, lo_sp, hi_sp)
+        tile_wheel, lo_wh, hi_wh = self.value_tiles['Wheel']
+        tile_wheel.set_value(wheel, lo_wh, hi_wh)
+
+        tile_gx, lo_gx, hi_gx = self.value_tiles['GX']
+        tile_gx.set_value(gx, lo_gx, hi_gx)
+        tile_gy, lo_gy, hi_gy = self.value_tiles['GY']
+        tile_gy.set_value(gy, lo_gy, hi_gy)
+        tile_gz, lo_gz, hi_gz = self.value_tiles['GZ']
+        tile_gz.set_value(gz, lo_gz, hi_gz)
 
     def _update_fps(self):
         self.lbl_fps.setText(f"FPS: {self._fps_counter}")
@@ -1578,6 +1710,11 @@ class IMUVisualizationTab(QWidget):
         self.channel_gyro.clear()
         self.channel_vehicle.clear()
         self.channel_wheel.clear()
+        if hasattr(self, 'trend_channel_ax'):
+            for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az,
+                        self.trend_channel_speed, self.trend_channel_wheel,
+                        self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                ch.clear()
         self._sample_count = n
 
         # 3. 批量喂入各通道（feed_many 内部有降采样）
@@ -1593,11 +1730,32 @@ class IMUVisualizationTab(QWidget):
 
         self.channel_wheel.feed_many("Wheel", t_arr, wheel_arr)
 
+        # 趋势通道（每参数独立一行）
+        if hasattr(self, 'trend_channel_ax'):
+            self.trend_channel_ax.feed_many("AX", t_arr, ax_arr)
+            self.trend_channel_ay.feed_many("AY", t_arr, ay_arr)
+            self.trend_channel_az.feed_many("AZ", t_arr, az_arr)
+            self.trend_channel_speed.feed_many("Speed", t_arr, speed_arr)
+            self.trend_channel_wheel.feed_many("Wheel", t_arr, wheel_arr)
+            self.trend_channel_gx.feed_many("GX", t_arr, gx_arr)
+            self.trend_channel_gy.feed_many("GY", t_arr, gy_arr)
+            self.trend_channel_gz.feed_many("GZ", t_arr, gz_arr)
+
         # 4. 一次性 flush
         self.channel_accel.flush()
         self.channel_gyro.flush()
         self.channel_vehicle.flush()
         self.channel_wheel.flush()
+        # 趋势通道
+        if hasattr(self, 'trend_channel_ax'):
+            self.trend_channel_ax.flush()
+            self.trend_channel_ay.flush()
+            self.trend_channel_az.flush()
+            self.trend_channel_speed.flush()
+            self.trend_channel_wheel.flush()
+            self.trend_channel_gx.flush()
+            self.trend_channel_gy.flush()
+            self.trend_channel_gz.flush()
 
         elapsed = time.time() - t0
         self._start_time = t_arr[0]
@@ -1612,6 +1770,11 @@ class IMUVisualizationTab(QWidget):
         self.channel_gyro.set_frozen(checked)
         self.channel_vehicle.set_frozen(checked)
         self.channel_wheel.set_frozen(checked)
+        if hasattr(self, 'trend_channel_ax'):
+            for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az,
+                        self.trend_channel_speed, self.trend_channel_wheel,
+                        self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                ch.set_frozen(checked)
         self.status_label.setText("已冻结" if checked else "运行中")
 
     def _toggle_auto_range(self, checked):
@@ -1619,6 +1782,11 @@ class IMUVisualizationTab(QWidget):
         self.channel_gyro.set_auto_range(checked)
         self.channel_vehicle.set_auto_range(checked)
         self.channel_wheel.set_auto_range(checked)
+        if hasattr(self, 'trend_channel_ax'):
+            for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az,
+                        self.trend_channel_speed, self.trend_channel_wheel,
+                        self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                ch.set_auto_range(checked)
         self.auto_range_btn.setText("📐 自适应Y轴: ON" if checked else "📐 自适应Y轴: OFF")
         self.logger.info(f"IMU 自适应Y轴: {'启用' if checked else '禁用'}")
 
@@ -1627,6 +1795,11 @@ class IMUVisualizationTab(QWidget):
         self.channel_gyro.set_show_peaks(checked)
         self.channel_vehicle.set_show_peaks(checked)
         self.channel_wheel.set_show_peaks(checked)
+        if hasattr(self, 'trend_channel_ax'):
+            for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az,
+                        self.trend_channel_speed, self.trend_channel_wheel,
+                        self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                ch.set_show_peaks(checked)
         self.peaks_btn.setText("⚡ 显示峰值: ON" if checked else "⚡ 显示峰值: OFF")
         self.logger.info(f"IMU 峰值显示: {'启用' if checked else '禁用'}")
 
@@ -1635,6 +1808,11 @@ class IMUVisualizationTab(QWidget):
         self.channel_gyro.set_calibration_enabled(checked)
         self.channel_vehicle.set_calibration_enabled(checked)
         self.channel_wheel.set_calibration_enabled(checked)
+        if hasattr(self, 'trend_channel_ax'):
+            for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az,
+                        self.trend_channel_speed, self.trend_channel_wheel,
+                        self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                ch.set_calibration_enabled(checked)
         self.calib_btn.setText("🎯 零偏校准: ON" if checked else "🎯 零偏校准: OFF")
         self.logger.info(f"IMU 零偏校准: {'启用' if checked else '禁用'} (采集{self.channel_accel._bias_sample_count}样本计算均值)")
 
@@ -1642,13 +1820,31 @@ class IMUVisualizationTab(QWidget):
         if checked:
             self.channel_accel.set_y_range(*PRECISION_AX_RANGE)
             self.channel_gyro.set_y_range(*PRECISION_GYRO_RANGE)
+            if hasattr(self, 'trend_channel_ax'):
+                for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az]:
+                    ch.set_y_range(*PRECISION_AX_RANGE)
+                for ch in [self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                    ch.set_y_range(*PRECISION_GYRO_RANGE)
         else:
             self.channel_accel.set_y_range(*DEFAULT_AX_RANGE)
             self.channel_gyro.set_y_range(*DEFAULT_GYRO_RANGE)
+            if hasattr(self, 'trend_channel_ax'):
+                for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az]:
+                    ch.set_y_range(*DEFAULT_AX_RANGE)
+                for ch in [self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                    ch.set_y_range(*DEFAULT_GYRO_RANGE)
         self.precision_btn.setText("🔬 精密Y轴: ON" if checked else "🔬 精密Y轴: OFF")
         self.logger.info(f"IMU 精密Y轴: {'启用 AX=±1.0 GYRO=±0.5' if checked else '禁用 (恢复默认)'}")
 
     def _on_clear(self):
+        self.clear()
+
+    def clear(self):
+        """清除数据（向后兼容旧接口）"""
+        self.clear_all()
+
+    def clear_all(self):
+        """清除所有IMU可视化数据（实现 ClearableResource 协议）"""
         self._sample_count = 0
         self._start_time = None
         self._ring_buffer.clear()
@@ -1664,10 +1860,11 @@ class IMUVisualizationTab(QWidget):
             for key in self.value_tiles:
                 tile, _, _ = self.value_tiles[key]
                 tile.reset()
-        if hasattr(self, 'trend_tiles') and self.trend_tiles:
-            for key in self.trend_tiles:
-                tile, _, _ = self.trend_tiles[key]
-                tile.reset()
+        if hasattr(self, 'trend_channel_ax'):
+            for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az,
+                        self.trend_channel_speed, self.trend_channel_wheel,
+                        self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                ch.clear()
         self.lbl_samples.setText("样本: 0")
         self.lbl_fps.setText("FPS: 0")
         self.logger.info("IMU 可视化已清除")
@@ -1677,6 +1874,11 @@ class IMUVisualizationTab(QWidget):
         self._time_window = t
         self.lbl_time.setText(f"时间窗口: {t:.1f} s")
         self.logger.info(f"IMU 时间窗口切换为: {t:.1f} s")
+        # 传播到所有波形通道
+        for ch_attr in ['channel_accel', 'channel_gyro', 'channel_vehicle', 'channel_wheel']:
+            ch = getattr(self, ch_attr, None)
+            if ch:
+                ch.set_time_window(t)
 
     def _on_speed_changed(self, text):
         multiplier = float(text.replace("x", ""))
@@ -1696,6 +1898,11 @@ class IMUVisualizationTab(QWidget):
         self.channel_gyro.set_smooth_mode(mode)
         self.channel_vehicle.set_smooth_mode(mode)
         self.channel_wheel.set_smooth_mode(mode)
+        if hasattr(self, 'trend_channel_ax'):
+            for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az,
+                        self.trend_channel_speed, self.trend_channel_wheel,
+                        self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                ch.set_smooth_mode(mode)
         self.logger.info(f"IMU 滤波模式切换为: {mode.value}")
 
     def set_replay_mode(self, enabled):
@@ -1720,3 +1927,15 @@ class IMUVisualizationTab(QWidget):
             self.freeze_btn.setEnabled(True)
         if hasattr(self, 'clear_btn'):
             self.clear_btn.setEnabled(True)
+
+    def seek_to_time(self, start_time: float):
+        """跳转 IMU 可视化视图到指定时间（秒），用于事件跳转联动"""
+        for ch in [self.channel_accel, self.channel_gyro,
+                   self.channel_vehicle, self.channel_wheel]:
+            ch.set_time_window(self._time_window)
+        if hasattr(self, 'trend_channel_ax'):
+            for ch in [self.trend_channel_ax, self.trend_channel_ay, self.trend_channel_az,
+                       self.trend_channel_speed, self.trend_channel_wheel,
+                       self.trend_channel_gx, self.trend_channel_gy, self.trend_channel_gz]:
+                ch.set_time_window(self._time_window)
+        self.logger.info(f"IMU 可视化视图跳转到: {start_time:.1f}s")

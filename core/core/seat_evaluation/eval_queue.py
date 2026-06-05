@@ -7,6 +7,7 @@
 
 import logging
 import time as _time
+import traceback
 from typing import Dict, Any, Optional, Callable, List, Set
 from collections import deque
 
@@ -102,6 +103,7 @@ class EvaluationQueue(QObject):
         self._trip_summary: Optional[TripSummary] = None
         self._evaluation_engine = None
         self._data_bridge = None
+        self._data_cache = None
         self._comparative_engine = None
         self._auto_evaluate = False
         self._processing = False
@@ -127,6 +129,9 @@ class EvaluationQueue(QObject):
 
     def set_data_bridge(self, data_bridge):
         self._data_bridge = data_bridge
+
+    def set_data_cache(self, cache):
+        self._data_cache = cache
 
     def set_comparative_engine(self, engine):
         self._comparative_engine = engine
@@ -374,14 +379,21 @@ class EvaluationQueue(QObject):
             multi_channel_data = {}
             if self._data_bridge and hasattr(self._data_bridge, '_build_multi_channel_data'):
                 multi_channel_data = self._data_bridge._build_multi_channel_data(
-                    eval_start, eval_end
+                    eval_start, eval_end, cache=self._data_cache
                 )
 
             if not multi_channel_data:
-                logger.warning(f"事件 {record.event_id} 没有多通道数据，标记为失败")
+                fail_reason = f"时间窗口 [{eval_start:.3f}, {eval_end:.3f}] 无多通道数据"
+                if self._data_bridge:
+                    recent_count = len(getattr(self._data_bridge, '_recent_raw_records', []))
+                    cache_status = "已注入" if self._data_cache else "未注入"
+                    fail_reason += (
+                        f" (近期记录: {recent_count}条, 缓存状态: {cache_status})"
+                    )
+                logger.warning(f"事件 {record.event_id} {fail_reason}")
                 record.status = 'failed'
                 self.record_status_changed.emit(record.event_id, 'failed')
-                self.evaluation_failed.emit(record.event_id, '没有多通道数据')
+                self.evaluation_failed.emit(record.event_id, fail_reason)
                 return
 
             exp_imus = multi_channel_data.get('_exp_imu_set', set())
@@ -397,8 +409,21 @@ class EvaluationQueue(QObject):
             any_success = False
             fail_errors = []
 
+            def _extract_raw_data(mc_data, imu_channels):
+                raw = {'ax': [], 'ay': [], 'az': []}
+                for ch in imu_channels:
+                    ch_data = mc_data.get(ch, {})
+                    if ch_data:
+                        raw['ax'] = ch_data.get('ax', [])
+                        raw['ay'] = ch_data.get('ay', [])
+                        raw['az'] = ch_data.get('az', [])
+                        if len(raw['ax']) > 0:
+                            break
+                return raw
+
             if 'experimental' in record.active_groups:
                 try:
+                    exp_raw = _extract_raw_data(multi_channel_data, exp_channels)
                     exp_trigger = {
                         'event_id': record.event_id,
                         'event_type': record.event_type,
@@ -406,6 +431,7 @@ class EvaluationQueue(QObject):
                         'timestamp': record.start_ts,
                         'metrics': [],
                         'data_window': data_window,
+                        'raw_data': exp_raw,
                         'multi_channel_data': multi_channel_data,
                         'group_tag': 'experimental',
                     }
@@ -416,10 +442,11 @@ class EvaluationQueue(QObject):
                         any_success = True
                 except Exception as e:
                     fail_errors.append(f"实验组: {e}")
-                    logger.warning(f"实验组评测异常: {record.event_id}, {e}")
+                    logger.warning(f"实验组评测异常: {record.event_id}, {e}\n{traceback.format_exc()}")
 
             if 'control' in record.active_groups:
                 try:
+                    ctrl_raw = _extract_raw_data(multi_channel_data, ctrl_channels)
                     ctrl_trigger = {
                         'event_id': record.event_id,
                         'event_type': record.event_type,
@@ -427,6 +454,7 @@ class EvaluationQueue(QObject):
                         'timestamp': record.start_ts,
                         'metrics': [],
                         'data_window': data_window,
+                        'raw_data': ctrl_raw,
                         'multi_channel_data': multi_channel_data,
                         'group_tag': 'control',
                     }
@@ -437,7 +465,7 @@ class EvaluationQueue(QObject):
                         any_success = True
                 except Exception as e:
                     fail_errors.append(f"对照组: {e}")
-                    logger.warning(f"对照组评测异常: {record.event_id}, {e}")
+                    logger.warning(f"对照组评测异常: {record.event_id}, {e}\n{traceback.format_exc()}")
 
             if any_success:
                 record.status = 'evaluated'
@@ -453,8 +481,18 @@ class EvaluationQueue(QObject):
                     f"实验组={exp_score}, 对照组={ctrl_score}")
             else:
                 record.status = 'failed'
+                fail_errs = fail_errors or ['评测引擎返回空结果']
+                fail_msg = '; '.join(fail_errs)
+                if not fail_errors:
+                    has_exp_imu = bool(exp_imus or False)
+                    has_ctrl_imu = bool(ctrl_imus or False)
+                    fail_msg += (
+                        f" (多通道数据已就绪, exp_imus={has_exp_imu}, "
+                        f"ctrl_imus={has_ctrl_imu}, "
+                        f"active_groups={record.active_groups})"
+                    )
                 self.record_status_changed.emit(record.event_id, 'failed')
-                self.evaluation_failed.emit(record.event_id, '; '.join(fail_errors) or '评测引擎返回空结果')
+                self.evaluation_failed.emit(record.event_id, fail_msg)
 
         except Exception as e:
             record.status = 'failed'

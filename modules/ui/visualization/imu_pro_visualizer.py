@@ -303,6 +303,8 @@ class IMUProWaveformChannel(QWidget):
         self._max_points = 3000
         self._render_points = 800
         self._frozen = False
+        self._time_window = None  # None = 显示全部; 设置后裁剪 X 轴范围
+        self._view_start_time = None  # 视图起始时间（用于跳转到指定时间范围），渲染后自动清除
 
         self._auto_range = True
         self._y_lo = float(self._fixed_y_lo)
@@ -395,6 +397,18 @@ class IMUProWaveformChannel(QWidget):
     def set_show_peaks(self, show):
         self._show_peaks = show
 
+    def set_time_window(self, seconds):
+        """设置 X 轴视窗时长（秒），None 表示显示全部"""
+        self._time_window = seconds
+        self.update()
+
+    def set_view_start_time(self, start_time: float):
+        """设置视图起始时间（秒），用于跳转到指定时间范围。
+        设置后下一次 paintEvent 会从该时间开始渲染，然后自动清除。
+        """
+        self._view_start_time = start_time
+        self.update()
+
     def set_y_range(self, lo, hi):
         self._fixed_y_lo = lo
         self._fixed_y_hi = hi
@@ -475,6 +489,11 @@ class IMUProWaveformChannel(QWidget):
         if abs(y_hi - y_lo) < 1e-9:
             y_hi = y_lo + 1.0
 
+        # 视图跳转：保存后单次使用，循环外清除，确保所有曲线一致
+        view_start = self._view_start_time
+        if view_start is not None:
+            self._view_start_time = None
+
         for name, cfg in self._series_config.items():
             buf = self._filtered_buffers.get(name, deque())
             if len(buf) < 2:
@@ -494,6 +513,22 @@ class IMUProWaveformChannel(QWidget):
             t_max = downsampled[-1].t
             if t_max - t_min < 1e-9:
                 t_max = t_min + 1.0
+
+            # 视图跳转：若设置了 view_start，从该时间开始渲染
+            if view_start is not None:
+                if self._time_window is not None and self._time_window > 0:
+                    view_end = view_start + self._time_window
+                else:
+                    view_end = t_max
+                if view_start < t_max and view_end > t_min:
+                    t_min = max(t_min, view_start)
+                    t_max = min(t_max, view_end)
+
+            # 视窗时长裁剪: 只显示最近 N 秒（仅在无 view_start 时生效）
+            if view_start is None and self._time_window is not None and self._time_window > 0:
+                clip_t_min = t_max - self._time_window
+                if clip_t_min > t_min:
+                    t_min = clip_t_min
 
             path = QPainterPath()
             first = True
@@ -718,6 +753,11 @@ class IMUProVisualizer(QWidget):
 
         root.addWidget(splitter, 10)
 
+        # 初始化视窗时长（默认 5s）
+        for ch in [self.channel_ax, self.channel_ayaz, self.channel_gyro,
+                   self.channel_vehicle, self.channel_wheel]:
+            ch.set_time_window(self._time_window)
+
         # 底部信息栏
         info_bar = QHBoxLayout()
         info_bar.setSpacing(16)
@@ -787,7 +827,10 @@ class IMUProVisualizer(QWidget):
             batch.append(self._ring_buffer.popleft())
 
         for record in batch:
-            self._apply_record(record)
+            self._apply_record_fast(record)
+
+        if batch:
+            self._apply_tile_from_record(batch[-1])
 
         self.channel_ax.flush()
         self.channel_ayaz.flush()
@@ -795,12 +838,14 @@ class IMUProVisualizer(QWidget):
         self.channel_vehicle.flush()
         self.channel_wheel.flush()
 
+        if self._sample_count % 100 == 0:
+            self.lbl_samples.setText(f"样本: {self._sample_count}")
+
         self._fps_counter += 1
 
-    def _apply_record(self, record):
+    def _apply_record_fast(self, record):
+        """快速数据注入：只喂波形通道，不更新瓦片UI（避免QLabel.setText()卡死）"""
         if not isinstance(record, dict):
-            return
-        if not getattr(self, 'all_tiles', None):
             return
 
         t = record.get('t', 0.0)
@@ -817,8 +862,38 @@ class IMUProVisualizer(QWidget):
             self._start_time = t
 
         t_rel = t - self._start_time
-
         self._sample_count += 1
+
+        if ax is not None:
+            self.channel_ax.feed("AX", ax, t_rel)
+        if ay is not None:
+            self.channel_ayaz.feed("AY", ay, t_rel)
+        if az is not None:
+            self.channel_ayaz.feed("AZ", az, t_rel)
+        if gx is not None:
+            self.channel_gyro.feed("GX", gx, t_rel)
+        if gy is not None:
+            self.channel_gyro.feed("GY", gy, t_rel)
+        if gz is not None:
+            self.channel_gyro.feed("GZ", gz, t_rel)
+        if speed is not None:
+            self.channel_vehicle.feed("Speed", speed, t_rel)
+        if wheel is not None:
+            self.channel_wheel.feed("Wheel", wheel, t_rel)
+
+    def _apply_tile_from_record(self, record):
+        """每帧更新一次瓦片UI（仅从最后一条记录更新8个瓦片）"""
+        if not isinstance(record, dict) or not getattr(self, 'all_tiles', None):
+            return
+
+        ax = record.get('ax')
+        ay = record.get('ay')
+        az = record.get('az')
+        gx = record.get('gx')
+        gy = record.get('gy')
+        gz = record.get('gz')
+        speed = record.get('speed')
+        wheel = record.get('wheel')
 
         tile_ax, lo_ax, hi_ax = self.all_tiles['AX']
         tile_ax.set_value(ax, lo_ax, hi_ax)
@@ -838,29 +913,6 @@ class IMUProVisualizer(QWidget):
         tile_gy.set_value(gy, lo_gy, hi_gy)
         tile_gz, lo_gz, hi_gz = self.all_tiles['GZ']
         tile_gz.set_value(gz, lo_gz, hi_gz)
-
-        if ax is not None:
-            self.channel_ax.feed("AX", ax, t_rel)
-        if ay is not None:
-            self.channel_ayaz.feed("AY", ay, t_rel)
-        if az is not None:
-            self.channel_ayaz.feed("AZ", az, t_rel)
-
-        if gx is not None:
-            self.channel_gyro.feed("GX", gx, t_rel)
-        if gy is not None:
-            self.channel_gyro.feed("GY", gy, t_rel)
-        if gz is not None:
-            self.channel_gyro.feed("GZ", gz, t_rel)
-
-        if speed is not None:
-            self.channel_vehicle.feed("Speed", speed, t_rel)
-
-        if wheel is not None:
-            self.channel_wheel.feed("Wheel", wheel, t_rel)
-
-        if self._sample_count % 100 == 0:
-            self.lbl_samples.setText(f"样本: {self._sample_count}")
 
     def _update_fps(self):
         self.lbl_fps.setText(f"FPS: {self._fps_counter}")
@@ -912,6 +964,14 @@ class IMUProVisualizer(QWidget):
         self.peaks_btn.setText("⚡ 显示峰值: ON" if checked else "⚡ 显示峰值: OFF")
         self.logger.info(f"IMU Pro 峰值显示: {'启用' if checked else '禁用'}")
 
+    def seek_to_time(self, start_time: float):
+        """跳转视图到指定时间（秒），所有波形通道同时跳转"""
+        for ch in [self.channel_ax, self.channel_ayaz, self.channel_gyro,
+                   self.channel_vehicle, self.channel_wheel]:
+            if ch:
+                ch.set_view_start_time(start_time)
+        self.logger.info(f"IMU Pro 视图跳转到: {start_time:.1f}s")
+
     def _on_clear(self):
         self._sample_count = 0
         self._start_time = None
@@ -934,6 +994,11 @@ class IMUProVisualizer(QWidget):
         self._time_window = t
         self.lbl_time.setText(f"时间窗口: {t:.1f} s")
         self.logger.info(f"IMU Pro 时间窗口切换为: {t:.1f} s")
+        # 传播到所有波形通道
+        for ch in [self.channel_ax, self.channel_ayaz, self.channel_gyro,
+                   self.channel_vehicle, self.channel_wheel]:
+            if ch:
+                ch.set_time_window(t)
 
     def _on_speed_changed(self, text):
         multiplier = float(text.replace("x", ""))

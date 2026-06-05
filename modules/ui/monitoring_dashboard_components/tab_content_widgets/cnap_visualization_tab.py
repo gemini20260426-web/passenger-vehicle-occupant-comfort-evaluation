@@ -25,6 +25,8 @@ from PySide6.QtCore import Qt, QTimer, QRectF, Signal
 from PySide6.QtGui import (QFont, QColor, QPainter, QPen, QBrush,
                            QPainterPath, QLinearGradient, QFontDatabase)
 
+from core.core.analysis.clearable_registry import ClearableResource, ClearableRegistry
+
 # ============================================================
 # 设计系统
 # ============================================================
@@ -488,7 +490,7 @@ class VitalTrendPanel(QWidget):
 # ============================================================
 # 主 CNAP 可视化 Tab
 # ============================================================
-class CNAPVisualizationTab(QWidget):
+class CNAPVisualizationTab(QWidget, ClearableResource):
     """CNAP 专业可视化 — 医用监护仪风格"""
 
     data_received = Signal(dict)
@@ -501,6 +503,8 @@ class CNAPVisualizationTab(QWidget):
         self._init_ui()
         self._init_timers()
         self.logger.info("CNAP 医用监护仪可视化初始化完成")
+        # 注册到统一清除中心
+        ClearableRegistry.instance().register("CNAP可视化", self)
 
     def _init_data(self):
         self.data_bridge = None
@@ -802,6 +806,14 @@ class CNAPVisualizationTab(QWidget):
             self.logger.warning(f"设置播放速度失败: {e}")
 
     def _on_clear(self):
+        self.clear()
+
+    def clear(self):
+        """清除数据（向后兼容旧接口）"""
+        self.clear_all()
+
+    def clear_all(self):
+        """清除所有CNAP可视化数据（实现 ClearableResource 协议）"""
         self.waveform.clear()
         self._sample_count = 0
         self._beat_sbps.clear()

@@ -21,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class SeatEvaluationEngine(QObject):
-    """座椅评测引擎核心"""
+    """座椅评测引擎 v1.0 — [已弃用] 请使用 engine_v2.MultiChannelSeatEvaluationEngine
+
+    自 v3.5 起，本引擎已弃用。所有新代码应直接使用 engine_v2.MultiChannelSeatEvaluationEngine。
+    本引擎保留仅为向后兼容，内部指标计算为简化实现，存在已知缺陷。
+    """
 
     _DEPRECATED = True
 
@@ -31,6 +35,10 @@ class SeatEvaluationEngine(QObject):
     
     def __init__(self, config_manager=None, data_storage=None):
         super().__init__()
+        warnings.warn(
+            "SeatEvaluationEngine is deprecated. Use MultiChannelSeatEvaluationEngine from engine_v2 instead.",
+            DeprecationWarning, stacklevel=2
+        )
         self.config_manager = config_manager
         self.data_storage = data_storage
         
