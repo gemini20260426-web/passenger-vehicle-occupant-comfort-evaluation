@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ML 训练面板 — Phase 1+2 完整 UI
+ML 训练面板 — 驾驶行为模型训练
 ═══════════════════════════════════════════════════════════
 集成到 RealTimeMonitoringTab 的第5个标签页 "🧠 ML训练"
 
@@ -110,7 +110,7 @@ class MLTrainingThread(QThread):
 # ═══════════════════════════════════════════════════════════
 
 class MLTrainingPanel(QWidget):
-    """ML 训练面板 — Phase 1+2 完整 UI
+    """ML 训练面板 — 驾驶行为模型训练
 
     用法:
         panel = MLTrainingPanel(config_manager)
@@ -199,7 +199,7 @@ class MLTrainingPanel(QWidget):
 
         # ——— 顶栏 ———
         top_bar = QHBoxLayout()
-        title = QLabel("🧠 驾驶行为 ML 训练与推理 — Phase 1+2")
+        title = QLabel("驾驶行为 ML 训练与推理")
         title.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
         title.setStyleSheet("color: #2F5496;")
         top_bar.addWidget(title)
@@ -474,7 +474,7 @@ class MLTrainingPanel(QWidget):
         self.status_indicator.setText("● 训练中...")
         self.status_indicator.setStyleSheet("color: #f39c12; font-size: 13px; font-weight: bold;")
         self._log("=" * 50)
-        self._log("开始 Phase 1+2 训练...")
+        self._log("开始 ML 模型训练...")
 
         config = {
             'data_path': csv_path if csv_path else 'training_data.npz',
