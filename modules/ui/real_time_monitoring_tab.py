@@ -3061,14 +3061,22 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 # A/B 模型对比
                 from modules.ui.ab_model_comparison import ABModelComparisonWidget
                 self.ab_comparison_view = ABModelComparisonWidget()
-                self.main_tabs.insertTab(6, self.ab_comparison_view, "A/B对比")
+                ab_scroll = QScrollArea()
+                ab_scroll.setWidgetResizable(True)
+                ab_scroll.setWidget(self.ab_comparison_view)
+                ab_scroll.setFrameShape(QFrame.NoFrame)
+                self.main_tabs.insertTab(6, ab_scroll, "A/B对比")
                 self.main_tabs.removeTab(7)
                 self.logger.info("A/B模型对比组件已初始化")
             elif index == 7:
                 # 事件回放
                 from modules.ui.event_replay_widget import EventReplayWidget
                 self.event_replay_view = EventReplayWidget()
-                self.main_tabs.insertTab(7, self.event_replay_view, "事件回放")
+                replay_scroll = QScrollArea()
+                replay_scroll.setWidgetResizable(True)
+                replay_scroll.setWidget(self.event_replay_view)
+                replay_scroll.setFrameShape(QFrame.NoFrame)
+                self.main_tabs.insertTab(7, replay_scroll, "事件回放")
                 self.main_tabs.removeTab(8)
                 if self._data_bridge:
                     self.event_replay_view.replay_position.connect(
