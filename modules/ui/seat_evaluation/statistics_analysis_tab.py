@@ -4725,6 +4725,7 @@ class StatisticsAnalysisTab(QWidget):
         preprocess_level = self._preprocess_combo.currentData()
 
         # ── 清除旧的行为事件和时间轴，避免不同数据集间事件串扰 ──
+        self._trip_summary = None
         self._behavior_events_for_timeline = []
         self._clear_timeline_widgets()
         self._show_timeline_empty()
@@ -5862,7 +5863,8 @@ class StatisticsAnalysisTab(QWidget):
 
     def set_trip_summary(self, trip_summary):
         self._trip_summary = trip_summary
-        self._update_timeline()
+        # 不自动触发 _update_timeline(): 数据源尚未确定时不应渲染时间轴
+        # _trip_summary 仅作为 _update_timeline() 中的兼容回退路径
 
     def set_behavior_events_for_timeline(self, events: list, duration_s: float = 0):
         """从报告行为事件构建时间轴数据（替代 TripSummary）"""
@@ -5983,6 +5985,7 @@ class StatisticsAnalysisTab(QWidget):
             )
             self._analyze_btn.setEnabled(False)
             # ── 清除 SQLite 缓存模式遗留的行为事件和时间轴 ──
+            self._trip_summary = None
             self._behavior_events_for_timeline = []
             self._clear_timeline_widgets()
             self._show_timeline_empty()
@@ -6646,15 +6649,21 @@ class StatisticsAnalysisTab(QWidget):
     def _clear_timeline_widgets(self):
         while self._timeline_layout.count():
             item = self._timeline_layout.takeAt(0)
-            if item.widget():
+            w = item.widget()
+            if w is not None:
+                # 保留 _timeline_empty 占位控件，仅移除行为事件行
+                if w is self._timeline_empty:
+                    continue
                 try:
-                    item.widget().deleteLater()
+                    w.deleteLater()
                 except RuntimeError:
                     pass
 
     def _show_timeline_empty(self):
         self._ensure_timeline_empty()
-        self._timeline_layout.addWidget(self._timeline_empty)
+        # 避免重复添加
+        if self._timeline_empty.parent() is None:
+            self._timeline_layout.addWidget(self._timeline_empty)
 
     def _remove_timeline_empty(self):
         try:
@@ -6665,6 +6674,9 @@ class StatisticsAnalysisTab(QWidget):
             self._timeline_empty = None
 
     def _add_timeline_row(self, etype: str, segments: list, max_time: float):
+        # 使用参考宽度确保时间轴段在布局拉伸后可见
+        REF_WIDTH = 1000
+
         row_widget = QWidget()
         row_widget.setFixedHeight(28)
         row_layout = QHBoxLayout(row_widget)
@@ -6689,16 +6701,16 @@ class StatisticsAnalysisTab(QWidget):
         track_layout.setSpacing(0)
 
         for start_t, end_t, score in segments:
-            left_pct = max(0, int((start_t / max_time) * 100))
-            width_pct = max(2, int(((end_t - start_t) / max_time) * 100))
+            left_px = max(0, int((start_t / max_time) * REF_WIDTH))
+            width_px = max(2, int(((end_t - start_t) / max_time) * REF_WIDTH))
 
             spacer = QWidget()
-            spacer.setFixedWidth(left_pct)
+            spacer.setFixedWidth(left_px)
             spacer.setStyleSheet("background: transparent;")
             track_layout.addWidget(spacer)
 
             seg = QWidget()
-            seg.setFixedWidth(width_pct)
+            seg.setFixedWidth(width_px)
 
             if score is not None:
                 if score >= 90:
