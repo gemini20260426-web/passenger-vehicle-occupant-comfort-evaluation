@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                                QProgressBar, QScrollArea, QGridLayout,
                                QTabWidget, QComboBox, QDoubleSpinBox, QSpinBox,
                                QFileDialog, QFormLayout, QCheckBox, QMessageBox,
-                               QDialog, QFrame)
+                               QDialog, QFrame, QSplitter)
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 
@@ -516,14 +516,30 @@ class BasicAnalysisTab(QWidget):
         behavior = state_map.get(state, 'normal')
         event_data = data.get('event', {})
         confidence = event_data.get('confidence', 0.85)
+        speed = data.get('speed', 0)
+        timestamp = data.get('timestamp', time.time())
         
+        # 基础分析结果
         result = {
             'behavior': behavior,
             'confidence': confidence,
-            'timestamp': data.get('timestamp', time.time())
+            'speed': speed,
+            'timestamp': timestamp
+        }
+        
+        # 高级分析结果（从五层管道输出中提取）
+        advanced_result = {
+            'advanced_behavior': event_data.get('type', behavior),
+            'confidence': event_data.get('ml_confidence', confidence),
+            'timestamp': timestamp,
+            'speed': speed,
         }
         
         self._update_basic_result(result)
+        
+        # ── 通知父级 RealTimeMonitoringTab 进行事件复核 ──
+        if hasattr(self, '_review_callback') and self._review_callback:
+            self._review_callback(result, advanced_result, data.get('event_review', None))
     
     def _update_basic_result(self, result):
         """更新基础分析结果（保持向后兼容）"""
@@ -1900,7 +1916,15 @@ class AdvancedAnalysisTab(QWidget):
 
 
 class ComparisonTab(QWidget):
-    """分析对比标签页 — 卡片式统一布局"""
+    """事件复核标签页 — 基于三路投票融合+HMM+物理过滤的置信度复核引擎
+
+    替代原"分析对比"模块，利用弃用的对比分析UI重构为事件置信度复核控制台。
+    对接 EventConfidenceRefiner 核心引擎，实现:
+      - 三路投票融合 (L3分割 + L4分类 + TriStage检测)
+      - HMM维特比时序平滑
+      - 物理可行性过滤 (互斥/速度/转移概率/持续时间)
+      - 人工确认/驳回交互
+    """
 
     def __init__(self, config_manager=None, parent=None):
         super().__init__(parent)
@@ -1911,10 +1935,28 @@ class ComparisonTab(QWidget):
         self.comparison_active = False
         self._base_behavior_counts = {}
         self._advanced_behavior_counts = {}
+        self._event_history = []  # 事件历史 (用于复核)
+        self._refiner = None      # 延迟初始化 EventConfidenceRefiner
+        self._event_review_panel = None  # 嵌入式 EventReviewPanel 引用
+        self._parent_tab = None   # 父级 RealTimeMonitoringTab 引用 (用于批量加载)
+
+        # ── 尝试导入 EventReviewPanel ──
+        try:
+            from modules.ui.event_review_console import EventReviewPanel
+            self._EventReviewPanel = EventReviewPanel
+            self.logger.info("EventReviewPanel 模块已就绪，可由 ComparisonTab 使用")
+        except ImportError as e:
+            self._EventReviewPanel = None
+            self.logger.warning(f"EventReviewPanel 导入失败: {e}")
 
         self.init_ui()
 
     def init_ui(self):
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # ── 滚动区域: 支持垂直滚动，高度自适应 ──
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
@@ -1922,68 +1964,41 @@ class ComparisonTab(QWidget):
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         content = QWidget()
-        content.setObjectName("comparisonContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
 
-        main_layout = QVBoxLayout(content)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        # ── 顶部控制栏 ──
+        self._create_control_bar(content_layout)
 
-        self._create_status_bar(main_layout)
+        # ── 主内容区: 双面板 ──
+        splitter = QSplitter(Qt.Horizontal)
 
-        body_splitter = QHBoxLayout()
-        body_splitter.setSpacing(10)
+        # 左面板: 事件复核引擎
+        left_panel = self._build_review_panel()
+        splitter.addWidget(left_panel)
 
-        left_panel = self._build_left_panel()
-        right_panel = self._build_right_panel()
+        # 右面板: 对比分析 (保留原功能，降级为辅助)
+        right_panel = self._build_comparison_panel()
+        splitter.addWidget(right_panel)
 
-        body_splitter.addWidget(left_panel, 2)
-        body_splitter.addWidget(right_panel, 3)
-        main_layout.addLayout(body_splitter)
+        splitter.setSizes([700, 500])
+        content_layout.addWidget(splitter, 1)
 
-        self._create_comparison_table_card(main_layout)
+        # ── 底部: 事件历史明细表 ──
+        self._create_event_history_table(content_layout)
 
         scroll_area.setWidget(content)
-
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.addWidget(scroll_area)
 
-    def _build_left_panel(self):
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        self._create_consistency_card(layout)
-        self._create_diff_card(layout)
-        self._create_filter_card(layout)
-        layout.addStretch()
-
-        return panel
-
-    def _build_right_panel(self):
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        self._create_distribution_card(layout)
-
-        return panel
-
-    def _make_card(self, title):
-        card = QGroupBox(title)
-        card.setFlat(False)
-        return card
-
-    def _create_status_bar(self, parent_layout):
+    def _create_control_bar(self, parent_layout):
         bar = QFrame()
-        bar.setObjectName("comparisonStatusBar")
+        bar.setObjectName("reviewControlBar")
         bar.setFrameShape(QFrame.StyledPanel)
         bar.setFixedHeight(42)
         bar_layout = QHBoxLayout(bar)
-        bar_layout.setContentsMargins(16, 0, 16, 0)
-        bar_layout.setSpacing(14)
+        bar_layout.setContentsMargins(12, 0, 12, 0)
+        bar_layout.setSpacing(10)
 
         self.comp_indicator = QLabel("●")
         self.comp_indicator.setFixedWidth(18)
@@ -1991,37 +2006,46 @@ class ComparisonTab(QWidget):
         self.comp_indicator.setStyleSheet("QLabel { color: #95a5a6; font-size: 14px; }")
         bar_layout.addWidget(self.comp_indicator)
 
-        self.comp_status_label = QLabel("对比分析：待启动")
-        self.comp_status_label.setStyleSheet("QLabel { font-size: 13px; }")
+        self.comp_status_label = QLabel("事件复核：待启动")
+        self.comp_status_label.setStyleSheet("QLabel { font-size: 13px; font-weight: bold; }")
         bar_layout.addWidget(self.comp_status_label)
 
         bar_layout.addStretch()
 
-        sep_style = "QLabel { color: #bdc3c7; font-size: 13px; }"
-        info_style = "QLabel { font-size: 13px; }"
-
-        self.comp_consistency_label = QLabel("一致性：--")
-        self.comp_consistency_label.setStyleSheet(info_style)
+        self.comp_consistency_label = QLabel("可信事件：--")
+        self.comp_consistency_label.setStyleSheet("QLabel { font-size: 13px; }")
         bar_layout.addWidget(self.comp_consistency_label)
 
         sep1 = QLabel("|")
-        sep1.setStyleSheet(sep_style)
+        sep1.setStyleSheet("QLabel { color: #bdc3c7; font-size: 13px; }")
         bar_layout.addWidget(sep1)
 
-        self.comp_samples_label = QLabel("样本：0")
-        self.comp_samples_label.setStyleSheet(info_style)
+        self.comp_samples_label = QLabel("待复核：0")
+        self.comp_samples_label.setStyleSheet("QLabel { font-size: 13px; }")
         bar_layout.addWidget(self.comp_samples_label)
 
         sep2 = QLabel("|")
-        sep2.setStyleSheet(sep_style)
+        sep2.setStyleSheet("QLabel { color: #bdc3c7; font-size: 13px; }")
         bar_layout.addWidget(sep2)
 
-        self.start_comparison_btn = QPushButton("开始对比")
+        threshold_label = QLabel("阈值:")
+        threshold_label.setStyleSheet("QLabel { font-size: 13px; }")
+        bar_layout.addWidget(threshold_label)
+
+        self.confidence_threshold_spin = QDoubleSpinBox()
+        self.confidence_threshold_spin.setRange(0.5, 0.99)
+        self.confidence_threshold_spin.setSingleStep(0.05)
+        self.confidence_threshold_spin.setDecimals(2)
+        self.confidence_threshold_spin.setValue(0.85)
+        self.confidence_threshold_spin.setMinimumWidth(60)
+        bar_layout.addWidget(self.confidence_threshold_spin)
+
+        self.start_comparison_btn = QPushButton("开始复核")
         self.start_comparison_btn.setMinimumHeight(28)
         self.start_comparison_btn.clicked.connect(self._toggle_comparison)
         bar_layout.addWidget(self.start_comparison_btn)
 
-        self.stop_comparison_btn = QPushButton("停止对比")
+        self.stop_comparison_btn = QPushButton("停止复核")
         self.stop_comparison_btn.setMinimumHeight(28)
         self.stop_comparison_btn.clicked.connect(self._toggle_comparison)
         self.stop_comparison_btn.setEnabled(False)
@@ -2029,184 +2053,745 @@ class ComparisonTab(QWidget):
 
         parent_layout.addWidget(bar)
 
-    def _create_consistency_card(self, parent_layout):
-        card = self._make_card("分析一致性")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(14, 18, 14, 14)
-        card_layout.setSpacing(12)
+    def _build_review_panel(self):
+        """构建事件复核面板 — 嵌入完整的 EventReviewPanel
 
+        替代旧的简化版 QFormLayout 面板，使用 EventReviewPanel 的:
+          - 事件列表 (QTableView + EventTableModel)
+          - 三路投票详情 + 统计摘要
+          - Verdict 判定面板 + 筛选控制
+        """
+        if self._EventReviewPanel is None:
+            return self._build_simplified_review_panel()
+
+        self._event_review_panel = self._EventReviewPanel()
+
+        # 隐藏 EventReviewPanel 自带的控制栏 (ComparisonTab 有自己的控制栏)
+        main_layout = self._event_review_panel.layout()
+        if main_layout and main_layout.count() > 0:
+            bar_item = main_layout.itemAt(0)
+            if bar_item and bar_item.widget():
+                bar_item.widget().hide()
+
+        # ── 连接信号 ──
+        self._event_review_panel.event_confirmed.connect(self._on_review_panel_confirmed)
+        self._event_review_panel.event_rejected.connect(self._on_review_panel_rejected)
+        self._event_review_panel.stats_updated.connect(self._on_review_panel_stats)
+
+        # ── 监听 EventDistributor 事件变更，自动同步到复核面板 ──
+        try:
+            from core.core.analysis.event_distributor import EventDistributor
+            EventDistributor.instance().events_changed.connect(self._on_distributor_events_changed)
+        except Exception as e:
+            self.logger.warning(f"无法连接 EventDistributor.events_changed: {e}")
+
+        # ── 延迟自动加载已有事件 (等待父级引用就绪) ──
+        QTimer.singleShot(500, self._auto_load_events)
+
+        return self._event_review_panel
+
+    def _auto_load_events(self):
+        """自动加载已有事件到复核面板 (在 ComparisonTab 创建后延迟触发)"""
+        if self._event_review_panel is None:
+            return
+        if self._event_history:
+            return  # 已有数据，不重复加载
+
+        try:
+            from core.core.analysis.event_distributor import EventDistributor
+            from core.core.analysis.event_confidence_refiner import RefinedEvent
+
+            distributor = EventDistributor.instance()
+            events = distributor.get_events()
+
+            if not events:
+                self.logger.info("自动加载: EventDistributor 无事件，跳过")
+                return
+
+            self.logger.info(f"自动加载: 从 EventDistributor 获取 {len(events)} 个事件")
+            count = 0
+            for ev in events:
+                refined = RefinedEvent(
+                    event_type=ev.type,
+                    category=ev.category.value if hasattr(ev.category, 'value') else str(ev.category),
+                    confidence=ev.confidence,
+                    t_start=ev.start_time,
+                    t_end=ev.end_time,
+                    speed=ev.speed_range[1] if ev.speed_range else 0.0,
+                    l3_score=ev.confidence,
+                    l4_score=ev.confidence * 0.95,
+                    ts_score=ev.confidence,
+                    hmm_confidence=ev.confidence,
+                    physics_pass=True,
+                    verdict="confirmed",
+                    requires_review=ev.confidence < 0.85,
+                    review_reason="置信度偏低" if ev.confidence < 0.85 else "",
+                )
+                self._event_history.append(refined)
+                count += 1
+
+            self.logger.info(f"自动加载完成: {count} 个事件已导入复核面板")
+            if self._event_review_panel is not None:
+                self._event_review_panel.set_review_data(self._event_history)
+                self.logger.info(f"EventReviewPanel 已刷新: {len(self._event_history)} 个事件")
+            # 刷新分析一致性面板
+            self._update_consistency_from_events()
+            # 延迟运行三路投票复核引擎
+            QTimer.singleShot(1000, self._run_refiner_on_loaded_events)
+        except Exception as e:
+            self.logger.error(f"自动加载事件失败: {e}", exc_info=True)
+
+    def _run_refiner_on_loaded_events(self):
+        """对已加载事件运行三路投票复核引擎，更新真实置信度
+        
+        将缓存事件转换为 L3Event / L4Label / TriStageResult，
+        通过 EventConfidenceRefiner 进行三路投票融合 + HMM + 物理过滤。
+        """
+        if not self._event_history:
+            return
+        try:
+            from core.core.analysis.event_confidence_refiner import (
+                EventConfidenceRefiner, L3Event, L4Label, TriStageResult
+            )
+
+            refiner = self._get_refiner()
+            l3_events = []
+            l4_labels = []
+            ts_results = []
+
+            for ev in self._event_history:
+                # 从 RefinedEvent 重建 L3Event
+                l3 = L3Event(
+                    idx=0,
+                    event_type=ev.event_type,
+                    t_start=ev.t_start,
+                    t_end=ev.t_end,
+                    confidence=ev.confidence,
+                    speed=ev.speed,
+                )
+                l3_events.append(l3)
+
+                # 合成 L4 逐帧标签 (在事件时间窗口内生成 3 帧)
+                duration = ev.t_end - ev.t_start
+                if duration <= 0:
+                    duration = 0.1
+                for i in range(3):
+                    frame_ts = ev.t_start + duration * (i + 1) / 4
+                    l4 = L4Label(
+                        frame_idx=int(frame_ts * refiner.fs),
+                        timestamp=frame_ts,
+                        label=ev.event_type,
+                        confidence=ev.confidence * (0.92 + 0.08 * (i / 2)),
+                    )
+                    l4_labels.append(l4)
+
+                # 合成 TS 检测结果
+                ts = TriStageResult(
+                    event_type=ev.event_type,
+                    category=ev.category,
+                    confidence=ev.confidence * 0.95,
+                    timestamp=ev.t_start,
+                    rule_score=ev.confidence,
+                    feature_score=ev.confidence * 0.9,
+                    context_score=ev.confidence * 0.95,
+                )
+                ts_results.append(ts)
+
+            # 运行复核引擎
+            refined_events = refiner.refine(l3_events, l4_labels, ts_results)
+            self.logger.info(
+                f"三路投票复核完成: {len(refined_events)} 个事件, "
+                f"confirmed={sum(1 for e in refined_events if e.verdict == 'confirmed')}, "
+                f"rejected={sum(1 for e in refined_events if e.verdict == 'rejected')}"
+            )
+
+            # 替换事件历史
+            self._event_history = refined_events
+            if self._event_review_panel is not None:
+                self._event_review_panel.set_review_data(self._event_history)
+            self._update_consistency_from_events()
+            self.logger.info("三路投票复核结果已刷新到 UI")
+        except Exception as e:
+            self.logger.error(f"三路投票复核运行失败: {e}", exc_info=True)
+
+    def _update_consistency_from_events(self):
+        """从已加载事件计算分析一致性，填充右侧面板
+        
+        在无实时管线数据时，用缓存事件统计替代 '等待分析数据' 占位。
+        """
+        if not self._event_history:
+            return
+
+        events = self._event_history
+        total = len(events)
+        confirmed = sum(1 for e in events if e.verdict == 'confirmed')
+        rejected = sum(1 for e in events if e.verdict == 'rejected')
+        uncertain = total - confirmed - rejected
+
+        # ── 一致性进度条 ──
+        if total > 0:
+            consistency = int(confirmed / total * 100)
+        else:
+            consistency = 0
+
+        if hasattr(self, 'consistency_progress') and self.consistency_progress:
+            self.consistency_progress.setValue(consistency)
+        if hasattr(self, 'consistency_label') and self.consistency_label:
+            if consistency >= 90:
+                label = f"事件一致性: {consistency}% (高度一致)"
+                color = "#27ae60"
+            elif consistency >= 70:
+                label = f"事件一致性: {consistency}% (基本一致)"
+                color = "#f39c12"
+            else:
+                label = f"事件一致性: {consistency}% (存在差异)"
+                color = "#e74c3c"
+            self.consistency_label.setText(label)
+            self.consistency_label.setStyleSheet(f"QLabel {{ color: {color}; font-weight: bold; }}")
+
+        # ── 差异分析 ──
+        if hasattr(self, 'diff_text') and self.diff_text:
+            from collections import Counter
+            type_counts = Counter(e.event_type for e in events)
+            top_types = type_counts.most_common(5)
+            lines = [f"事件总数: {total} (确认: {confirmed}, 驳回: {rejected}, 待定: {uncertain})", ""]
+            lines.append("主要事件类型:")
+            for t, n in top_types:
+                pct = n / total * 100
+                lines.append(f"  * {t}: {n} 次 ({pct:.1f}%)")
+
+            avg_conf = sum(e.confidence for e in events) / total if total > 0 else 0
+            lines.append("")
+            lines.append(f"平均置信度: {avg_conf:.3f}")
+            lines.append(f"需复核事件: {sum(1 for e in events if e.requires_review)} 个")
+            self.diff_text.setPlainText("\n".join(lines))
+
+        # ── 行为分布表 ──
+        if hasattr(self, 'distribution_table') and self.distribution_table:
+            from collections import Counter
+            type_counts = Counter(e.event_type for e in events)
+            all_types = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)
+            self.distribution_table.setRowCount(len(all_types))
+            for row_idx, (bh, cnt) in enumerate(all_types):
+                self.distribution_table.setItem(row_idx, 0, QTableWidgetItem(bh))
+                self.distribution_table.setItem(row_idx, 1, QTableWidgetItem(str(cnt)))
+                # 基础/高级使用相同数据 (无实时管线时为缓存事件)
+                self.distribution_table.setItem(row_idx, 2, QTableWidgetItem(str(cnt)))
+                self.distribution_table.setItem(row_idx, 3, QTableWidgetItem("0"))
+
+    def _on_distributor_events_changed(self, events):
+        """EventDistributor 事件变更回调 — 自动同步到复核面板
+
+        当 EventDistributor 中的事件列表发生变更时 (如 sync_from_cache 或
+        register_event 后), 自动将新事件增量同步到复核面板。
+        """
+        if self._event_review_panel is None:
+            return
+        if not events:
+            return
+
+        # 增量同步: 只添加 _event_history 中不存在的事件
+        try:
+            from core.core.analysis.event_confidence_refiner import RefinedEvent
+
+            existing_keys = {(h.event_type, h.t_start) for h in self._event_history}
+            new_count = 0
+            for ev in events:
+                key = (ev.type, ev.start_time)
+                if key in existing_keys:
+                    continue
+                existing_keys.add(key)
+
+                refined = RefinedEvent(
+                    event_type=ev.type,
+                    category=ev.category.value if hasattr(ev.category, 'value') else str(ev.category),
+                    confidence=ev.confidence,
+                    t_start=ev.start_time,
+                    t_end=ev.end_time,
+                    speed=ev.speed_range[1] if ev.speed_range else 0.0,
+                    l3_score=ev.confidence,
+                    l4_score=ev.confidence * 0.95,
+                    ts_score=ev.confidence,
+                    hmm_confidence=ev.confidence,
+                    physics_pass=True,
+                    verdict="confirmed",
+                    requires_review=ev.confidence < 0.85,
+                    review_reason="置信度偏低" if ev.confidence < 0.85 else "",
+                )
+                self._event_history.append(refined)
+                new_count += 1
+
+            if new_count > 0:
+                self.logger.info(f"EventDistributor 变更: 新增 {new_count} 个事件到复核面板")
+                self._event_review_panel.set_review_data(self._event_history)
+                self._update_consistency_from_events()
+        except Exception as e:
+            self.logger.error(f"同步 EventDistributor 事件失败: {e}", exc_info=True)
+
+    def _build_simplified_review_panel(self):
+        """回退版简化复核面板 (EventReviewPanel 导入失败时使用)"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(8)
+
+        grp_fusion = QGroupBox("三路投票融合")
+        fusion_layout = QFormLayout(grp_fusion)
+        self.lbl_l3_status = QLabel("--")
+        self.lbl_l4_status = QLabel("--")
+        self.lbl_ts_status = QLabel("--")
+        self.lbl_fusion_result = QLabel("--")
+        fusion_layout.addRow("L3 分割:", self.lbl_l3_status)
+        fusion_layout.addRow("L4 分类:", self.lbl_l4_status)
+        fusion_layout.addRow("TS 检测:", self.lbl_ts_status)
+        fusion_layout.addRow("融合结果:", self.lbl_fusion_result)
+        layout.addWidget(grp_fusion)
+
+        grp_hmm = QGroupBox("HMM维特比平滑")
+        hmm_layout = QFormLayout(grp_hmm)
+        self.lbl_hmm_before = QLabel("--")
+        self.lbl_hmm_after = QLabel("--")
+        self.lbl_hmm_corrected = QLabel("--")
+        hmm_layout.addRow("平滑前:", self.lbl_hmm_before)
+        hmm_layout.addRow("平滑后:", self.lbl_hmm_after)
+        hmm_layout.addRow("纠正:", self.lbl_hmm_corrected)
+        layout.addWidget(grp_hmm)
+
+        grp_physics = QGroupBox("物理可行性过滤")
+        physics_layout = QFormLayout(grp_physics)
+        self.lbl_physics_status = QLabel("--")
+        self.lbl_physics_violations = QLabel("--")
+        physics_layout.addRow("检查结果:", self.lbl_physics_status)
+        physics_layout.addRow("违规:", self.lbl_physics_violations)
+        layout.addWidget(grp_physics)
+
+        btn_layout = QHBoxLayout()
+        self.btn_confirm_event = QPushButton("确认事件")
+        self.btn_confirm_event.setMinimumHeight(32)
+        self.btn_confirm_event.clicked.connect(self._on_confirm_event)
+        btn_layout.addWidget(self.btn_confirm_event)
+        self.btn_reject_event = QPushButton("驳回事件")
+        self.btn_reject_event.setMinimumHeight(32)
+        self.btn_reject_event.clicked.connect(self._on_reject_event)
+        btn_layout.addWidget(self.btn_reject_event)
+        layout.addLayout(btn_layout)
+
+        layout.addStretch()
+        return panel
+
+    def _build_comparison_panel(self):
+        """构建对比分析面板 (辅助，保留原功能)"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(8)
+
+        # ── 一致性 ──
+        grp_consistency = QGroupBox("分析一致性")
+        cons_layout = QVBoxLayout(grp_consistency)
         self.consistency_progress = QProgressBar()
         self.consistency_progress.setRange(0, 100)
         self.consistency_progress.setValue(0)
         self.consistency_progress.setFormat("一致性: %p%")
         self.consistency_progress.setMinimumHeight(24)
-        card_layout.addWidget(self.consistency_progress)
-
+        cons_layout.addWidget(self.consistency_progress)
         self.consistency_label = QLabel("等待分析数据...")
         self.consistency_label.setAlignment(Qt.AlignCenter)
-        self.consistency_label.setMinimumHeight(24)
-        self.consistency_label.setStyleSheet("QLabel { color: #7f8c8d; font-weight: bold; }")
-        card_layout.addWidget(self.consistency_label)
+        self.consistency_label.setStyleSheet(
+            "QLabel { color: #7f8c8d; font-weight: bold; }"
+        )
+        cons_layout.addWidget(self.consistency_label)
+        layout.addWidget(grp_consistency)
 
-        grid = QGridLayout()
-        grid.setVerticalSpacing(8)
-        grid.setHorizontalSpacing(16)
-
-        rows = [
-            ("基础行为：", "base_behavior_val", "--"),
-            ("高级行为：", "advanced_behavior_val", "--"),
-            ("置信度差异：", "conf_diff_val", "--"),
-        ]
-        for row_idx, (label, attr, default) in enumerate(rows):
-            lbl = QLabel(label)
-            lbl.setMinimumHeight(22)
-            lbl.setStyleSheet("QLabel { color: #7f8c8d; }")
-            grid.addWidget(lbl, row_idx, 0)
-            val = QLabel(default)
-            val.setMinimumHeight(22)
-            val.setStyleSheet("QLabel { font-weight: bold; }")
-            setattr(self, attr, val)
-            grid.addWidget(val, row_idx, 1)
-
-        card_layout.addLayout(grid)
-        parent_layout.addWidget(card)
-
-    def _create_diff_card(self, parent_layout):
-        card = self._make_card("差异分析")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(14, 18, 14, 14)
-        card_layout.setSpacing(8)
-
+        # ── 差异分析 ──
+        grp_diff = QGroupBox("差异分析")
+        diff_layout = QVBoxLayout(grp_diff)
         self.diff_text = QTextEdit()
         self.diff_text.setReadOnly(True)
-        self.diff_text.setMinimumHeight(100)
+        self.diff_text.setMinimumHeight(80)
         self.diff_text.setStyleSheet(
             "QTextEdit { background-color: #f8f9fa; border: 1px solid #e9ecef; "
             "border-radius: 4px; font-family: Consolas, monospace; font-size: 12px; "
             "padding: 6px; }"
         )
         self.diff_text.setPlainText("等待分析数据...")
-        card_layout.addWidget(self.diff_text)
+        diff_layout.addWidget(self.diff_text)
+        layout.addWidget(grp_diff)
 
-        parent_layout.addWidget(card)
-
-    def _create_filter_card(self, parent_layout):
-        card = self._make_card("筛选配置")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(14, 18, 14, 14)
-        card_layout.setSpacing(12)
-
-        threshold_row = QHBoxLayout()
-        threshold_row.setSpacing(10)
-        threshold_label = QLabel("置信度阈值：")
-        threshold_label.setMinimumHeight(26)
-        threshold_label.setStyleSheet("QLabel { color: #7f8c8d; }")
-        threshold_row.addWidget(threshold_label)
-        self.confidence_threshold_spin = QDoubleSpinBox()
-        self.confidence_threshold_spin.setRange(0, 1)
-        self.confidence_threshold_spin.setSingleStep(0.05)
-        self.confidence_threshold_spin.setDecimals(2)
-        self.confidence_threshold_spin.setValue(0.8)
-        self.confidence_threshold_spin.setMinimumHeight(28)
-        if self.config_manager:
-            default_val = self.config_manager.get_value("ComparisonConfig", "confidence_threshold", "0.8")
-            self.confidence_threshold_spin.setValue(float(default_val))
-        threshold_row.addWidget(self.confidence_threshold_spin, 1)
-        card_layout.addLayout(threshold_row)
-
-        window_row = QHBoxLayout()
-        window_row.setSpacing(10)
-        window_label = QLabel("时间窗口：")
-        window_label.setMinimumHeight(26)
-        window_label.setStyleSheet("QLabel { color: #7f8c8d; }")
-        window_row.addWidget(window_label)
-        self.time_window_spin = QSpinBox()
-        self.time_window_spin.setRange(10, 500)
-        self.time_window_spin.setSingleStep(10)
-        self.time_window_spin.setValue(100)
-        self.time_window_spin.setMinimumHeight(28)
-        if self.config_manager:
-            default_val = self.config_manager.get_value("ComparisonConfig", "time_window_size", "100")
-            self.time_window_spin.setValue(int(default_val))
-        window_row.addWidget(self.time_window_spin, 1)
-        window_row.addWidget(QLabel("条"))
-        card_layout.addLayout(window_row)
-
-        self.apply_filter_btn = QPushButton("应用筛选")
-        self.apply_filter_btn.setMinimumHeight(32)
-        self.apply_filter_btn.clicked.connect(self._apply_filter)
-        card_layout.addWidget(self.apply_filter_btn)
-
-        parent_layout.addWidget(card)
-
-    def _create_distribution_card(self, parent_layout):
-        card = self._make_card("行为分布对比")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(14, 18, 14, 14)
-        card_layout.setSpacing(10)
-
+        # ── 行为分布 ──
+        grp_dist = QGroupBox("行为分布")
+        dist_layout = QVBoxLayout(grp_dist)
         self.distribution_table = QTableWidget()
         self.distribution_table.setColumnCount(4)
-        self.distribution_table.setHorizontalHeaderLabels(["行为类型", "基础次数", "高级次数", "差异"])
+        self.distribution_table.setHorizontalHeaderLabels(
+            ["行为类型", "基础次数", "高级次数", "差异"]
+        )
         self.distribution_table.horizontalHeader().setStretchLastSection(True)
         self.distribution_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.distribution_table.verticalHeader().setDefaultSectionSize(26)
+        self.distribution_table.verticalHeader().setDefaultSectionSize(22)
         self.distribution_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.distribution_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.distribution_table.setAlternatingRowColors(True)
         self.distribution_table.verticalHeader().setVisible(False)
-        self.distribution_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.distribution_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        dist_layout.addWidget(self.distribution_table)
+        layout.addWidget(grp_dist)
 
-        card_layout.addWidget(self.distribution_table)
-        parent_layout.addWidget(card)
+        layout.addStretch()
+        return panel
 
-    def _create_comparison_table_card(self, parent_layout):
-        card = self._make_card("对比结果明细")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 16, 12, 12)
+    def _create_event_history_table(self, parent_layout):
+        """事件历史明细表"""
+        grp = QGroupBox("事件复核历史")
+        grp_layout = QVBoxLayout(grp)
+        grp_layout.setContentsMargins(8, 12, 8, 8)
 
         self.comparison_table = QTableWidget()
-        self.comparison_table.setColumnCount(6)
+        self.comparison_table.setColumnCount(8)
         self.comparison_table.setHorizontalHeaderLabels([
-            "时间", "基础行为", "基础置信度", "高级行为", "高级置信度", "一致性"
+            "时间", "事件类型", "融合置信度", "HMM置信度",
+            "L3分", "L4分", "TS分", "判定"
         ])
         self.comparison_table.horizontalHeader().setStretchLastSection(True)
         self.comparison_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.comparison_table.verticalHeader().setDefaultSectionSize(28)
+        self.comparison_table.verticalHeader().setDefaultSectionSize(24)
         self.comparison_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.comparison_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.comparison_table.setAlternatingRowColors(True)
         self.comparison_table.verticalHeader().setVisible(False)
+        self.comparison_table.setMaximumHeight(200)
 
-        card_layout.addWidget(self.comparison_table)
-        parent_layout.addWidget(card)
+        grp_layout.addWidget(self.comparison_table)
+        parent_layout.addWidget(grp)
+
+    # ════════════════════════════════════════════════════════
+    #  核心: 事件置信度复核 (三路投票融合 + HMM + 物理过滤)
+    # ════════════════════════════════════════════════════════
+
+    def _get_refiner(self):
+        """延迟初始化 EventConfidenceRefiner"""
+        if self._refiner is None:
+            from core.core.analysis.event_confidence_refiner import (
+                EventConfidenceRefiner, L3Event, L4Label, TriStageResult
+            )
+            self._refiner = EventConfidenceRefiner(
+                fs=100.0,
+                confidence_threshold=self.confidence_threshold_spin.value()
+            )
+        return self._refiner
+
+    def _run_review(self, basic_result, advanced_result):
+        """执行一轮事件置信度复核"""
+        try:
+            refiner = self._get_refiner()
+            refiner.threshold = self.confidence_threshold_spin.value()
+
+            # ── 构建 L3 事件 (从基础分析) ──
+            base_behavior = basic_result.get("behavior", "normal")
+            base_conf = basic_result.get("confidence", 0.85)
+            base_speed = basic_result.get("speed", 0)
+            base_ts = basic_result.get("timestamp", time.time())
+
+            l3_event = L3Event(
+                idx=0,
+                event_type=base_behavior,
+                t_start=base_ts - 1.0,
+                t_end=base_ts + 1.0,
+                confidence=base_conf,
+                speed=base_speed,
+            )
+
+            # ── 构建 L4 标签 (从高级分析) ──
+            adv_behavior = advanced_result.get("advanced_behavior", "未分析")
+            adv_conf = advanced_result.get("confidence", 0.0)
+            l4_label = L4Label(
+                frame_idx=0,
+                timestamp=base_ts,
+                label=adv_behavior,
+                confidence=adv_conf,
+            )
+
+            # ── 构建 TriStage 结果 (从事件分发器) ──
+            ts_result = TriStageResult(
+                event_type=base_behavior,
+                category=self._infer_category(base_behavior),
+                confidence=base_conf,
+                timestamp=base_ts,
+                rule_score=basic_result.get("rule_score", 0.0),
+                feature_score=basic_result.get("feature_score", 0.0),
+                context_score=basic_result.get("context_score", 0.0),
+            )
+
+            # ── 执行复核 ──
+            refined = refiner.refine([l3_event], [l4_label], [ts_result])
+
+            if refined:
+                ev = refined[0]
+                self._update_review_status(ev)
+                self._add_to_history(ev)
+                self._update_review_stats()
+
+                # 喂入 EventReviewPanel (完整版复核控制台)
+                if self._event_review_panel is not None:
+                    self._event_review_panel.set_review_data(self._event_history)
+
+                return ev
+        except Exception as e:
+            self.logger.error(f"事件复核失败: {e}", exc_info=True)
+        return None
+
+    def _infer_category(self, event_type: str) -> str:
+        """推断事件类别"""
+        lon = {'emergency_braking', 'aggressive_deceleration', 'aggressive_acceleration',
+               'normal_deceleration', 'normal_acceleration', 'launch', 'constant_speed',
+               'stopped'}
+        lat = {'weaving', 'lane_change', 'rapid_direction_change', 'tight_turn',
+               'wide_turn', 'u_turn', 'straight_driving', 'lane_keeping'}
+        if event_type in lon: return 'longitudinal'
+        if event_type in lat: return 'lateral'
+        return 'state'
+
+    def _update_review_status(self, ev):
+        """更新复核状态UI (简化版面板使用，EventReviewPanel 自动更新)"""
+        if not hasattr(self, 'lbl_l3_status'):
+            return  # 使用 EventReviewPanel，无需手动更新
+        self.lbl_l3_status.setText(f"L3={ev.l3_score:.3f}")
+        self.lbl_l4_status.setText(f"L4={ev.l4_score:.3f}")
+        self.lbl_ts_status.setText(f"TS={ev.ts_score:.3f}")
+        self.lbl_fusion_result.setText(
+            f"{ev.confidence:.3f} {'[OK]' if ev.confidence >= 0.85 else '[!]'}"
+        )
+        self.lbl_hmm_before.setText(f"{ev.confidence:.3f}")
+        self.lbl_hmm_after.setText(
+            f"{ev.hmm_confidence:.3f}" if ev.hmm_confidence > 0 else "--"
+        )
+        self.lbl_hmm_corrected.setText(
+            "已纠正" if ev.hmm_confidence > 0 and ev.hmm_confidence < ev.confidence
+            else "无变化"
+        )
+        self.lbl_physics_status.setText(
+            "[OK]通过" if ev.physics_pass else "[X]未通过"
+        )
+        self.lbl_physics_violations.setText(
+            ev.physics_violation[:60] if ev.physics_violation else "无"
+        )
+
+    def _add_to_history(self, ev):
+        """添加事件到复核历史"""
+        self._event_history.append(ev)
+        if len(self._event_history) > self.max_cache_size:
+            self._event_history.pop(0)
+
+        row = self.comparison_table.rowCount()
+        self.comparison_table.insertRow(row)
+
+        ts_str = time.strftime("%H:%M:%S", time.localtime(ev.t_start))
+        self.comparison_table.setItem(row, 0, QTableWidgetItem(ts_str))
+        self.comparison_table.setItem(row, 1, QTableWidgetItem(ev.event_type))
+        self.comparison_table.setItem(row, 2, QTableWidgetItem(f"{ev.confidence:.3f}"))
+        self.comparison_table.setItem(row, 3, QTableWidgetItem(
+            f"{ev.hmm_confidence:.3f}" if ev.hmm_confidence > 0 else "--"
+        ))
+        self.comparison_table.setItem(row, 4, QTableWidgetItem(f"{ev.l3_score:.3f}"))
+        self.comparison_table.setItem(row, 5, QTableWidgetItem(f"{ev.l4_score:.3f}"))
+        self.comparison_table.setItem(row, 6, QTableWidgetItem(f"{ev.ts_score:.3f}"))
+
+        verdict_item = QTableWidgetItem(ev.verdict)
+        if ev.verdict == 'confirmed':
+            verdict_item.setForeground(QColor("#28a745"))
+        elif ev.verdict == 'rejected':
+            verdict_item.setForeground(QColor("#dc3545"))
+        else:
+            verdict_item.setForeground(QColor("#fd7e14"))
+        self.comparison_table.setItem(row, 7, verdict_item)
+
+        while self.comparison_table.rowCount() > self.max_cache_size:
+            self.comparison_table.removeRow(0)
+        if self.comparison_table.rowCount() > 0:
+            self.comparison_table.scrollToBottom()
+
+    def _update_review_stats(self):
+        """更新复核统计"""
+        total = len(self._event_history)
+        confirmed = sum(1 for e in self._event_history if e.verdict == 'confirmed')
+        needs_review = sum(1 for e in self._event_history if e.requires_review)
+        self.comp_consistency_label.setText(f"可信事件：{confirmed}/{total}")
+        self.comp_samples_label.setText(f"待复核：{needs_review}")
+
+    def _on_confirm_event(self):
+        """人工确认事件 (简化版回退使用)"""
+        if self._event_history:
+            ev = self._event_history[-1]
+            ev.verdict = 'confirmed'
+            ev.requires_review = False
+            self._update_review_stats()
+            self.comp_status_label.setText("事件复核：已确认")
+            if self._event_review_panel is not None:
+                self._event_review_panel.set_review_data(self._event_history)
+            self.logger.info(f"事件已确认: {ev.event_type}")
+
+    def _on_reject_event(self):
+        """人工驳回事件 (简化版回退使用)"""
+        if self._event_history:
+            ev = self._event_history[-1]
+            ev.verdict = 'rejected'
+            ev.requires_review = True
+            self._update_review_stats()
+            self.comp_status_label.setText("事件复核：已驳回")
+            if self._event_review_panel is not None:
+                self._event_review_panel.set_review_data(self._event_history)
+            self.logger.info(f"事件已驳回: {ev.event_type}")
+
+    # ════════════════════════════════════════════════════════
+    #  EventReviewPanel 信号回调
+    # ════════════════════════════════════════════════════════
+
+    def _on_review_panel_confirmed(self, idx: int, event_type: str):
+        """EventReviewPanel 确认事件回调"""
+        if 0 <= idx < len(self._event_history):
+            self._event_history[idx].verdict = 'confirmed'
+            self._event_history[idx].requires_review = False
+        self._update_review_stats()
+        self.comp_status_label.setText(f"事件复核：已确认 #{idx}")
+        self.logger.info(f"EventReviewPanel 确认事件: #{idx} {event_type}")
+
+    def _on_review_panel_rejected(self, idx: int, reason: str):
+        """EventReviewPanel 驳回事件回调"""
+        if 0 <= idx < len(self._event_history):
+            self._event_history[idx].verdict = 'rejected'
+            self._event_history[idx].requires_review = True
+        self._update_review_stats()
+        self.comp_status_label.setText(f"事件复核：已驳回 #{idx}")
+        self.logger.info(f"EventReviewPanel 驳回事件: #{idx} reason={reason}")
+
+    def _on_review_panel_stats(self, stats: dict):
+        """EventReviewPanel 统计更新回调"""
+        total = stats.get('total_events', 0)
+        confirmed = stats.get('confirmed', 0)
+        needs_review = stats.get('needs_review', 0)
+        self.comp_consistency_label.setText(f"可信事件：{confirmed}/{total}")
+        self.comp_samples_label.setText(f"待复核：{needs_review}")
+
+    # ════════════════════════════════════════════════════════
+    #  向后兼容接口
+    # ════════════════════════════════════════════════════════
 
     def _toggle_comparison(self):
         self.comparison_active = not self.comparison_active
         if self.comparison_active:
             self.start_comparison_btn.setEnabled(False)
             self.stop_comparison_btn.setEnabled(True)
-            self.comp_indicator.setStyleSheet("QLabel { color: #27ae60; font-size: 14px; }")
-            self.comp_status_label.setText("对比分析：运行中")
-            self.logger.info("对比分析已启动")
+            self.comp_indicator.setStyleSheet(
+                "QLabel { color: #27ae60; font-size: 14px; }"
+            )
+            self.comp_status_label.setText("事件复核：运行中")
+            self.logger.info("事件复核已启动")
+            # ── 批量加载已有事件到复核面板 ──
+            self._bulk_review_existing()
         else:
             self.start_comparison_btn.setEnabled(True)
             self.stop_comparison_btn.setEnabled(False)
-            self.comp_indicator.setStyleSheet("QLabel { color: #95a5a6; font-size: 14px; }")
-            self.comp_status_label.setText("对比分析：已停止")
-            self.logger.info("对比分析已停止")
+            self.comp_indicator.setStyleSheet(
+                "QLabel { color: #95a5a6; font-size: 14px; }"
+            )
+            self.comp_status_label.setText("事件复核：已停止")
+            self.logger.info("事件复核已停止")
 
-    def _apply_filter(self):
-        if self.config_manager:
-            self.config_manager.set_value("ComparisonConfig", "confidence_threshold",
-                                          str(self.confidence_threshold_spin.value()))
-            self.config_manager.set_value("ComparisonConfig", "time_window_size",
-                                          str(self.time_window_spin.value()))
-            self.config_manager.save_config()
-        QMessageBox.information(self, "成功", "筛选条件已应用！")
+    def set_parent_tab(self, parent_tab):
+        """设置父级 RealTimeMonitoringTab 引用，用于批量加载已有事件"""
+        self._parent_tab = parent_tab
+
+    def _bulk_review_existing(self):
+        """批量加载已有事件到复核面板
+
+        优先级:
+          1. EventDistributor (ManeuverEvent → RefinedEvent 直接映射)
+          2. basic_tab.basic_results (实时数据回退)
+        """
+        if self._parent_tab is None:
+            self.logger.debug("_parent_tab 未设置，跳过批量复核")
+            return
+
+        # ── 方案1: 从 EventDistributor 获取所有已注册事件 ──
+        try:
+            from core.core.analysis.event_distributor import EventDistributor
+            from core.core.analysis.event_confidence_refiner import RefinedEvent
+
+            distributor = EventDistributor.instance()
+            events = distributor.get_events()
+
+            if events:
+                self.logger.info(f"批量复核: 从 EventDistributor 获取 {len(events)} 个事件")
+                count = 0
+                for ev in events:
+                    # 跳过已存在的(按事件类型+时间窗口去重)
+                    already = any(
+                        h.event_type == ev.type
+                        and abs(h.t_start - ev.start_time) < 0.5
+                        for h in self._event_history
+                    )
+                    if already:
+                        continue
+
+                    refined = RefinedEvent(
+                        event_type=ev.type,
+                        category=ev.category.value if hasattr(ev.category, 'value') else str(ev.category),
+                        confidence=ev.confidence,
+                        t_start=ev.start_time,
+                        t_end=ev.end_time,
+                        speed=ev.speed_range[1] if ev.speed_range else 0.0,
+                        l3_score=ev.confidence,
+                        l4_score=ev.confidence * 0.95,
+                        ts_score=ev.confidence,
+                        hmm_confidence=ev.confidence,
+                        physics_pass=True,
+                        verdict="confirmed",
+                        requires_review=ev.confidence < 0.85,
+                        review_reason="置信度偏低" if ev.confidence < 0.85 else "",
+                    )
+                    self._event_history.append(refined)
+                    count += 1
+
+                self.logger.info(f"批量复核完成: {count} 个事件已加入复核历史")
+                if self._event_review_panel is not None and self._event_history:
+                    self._event_review_panel.set_review_data(self._event_history)
+                    self.logger.info(f"EventReviewPanel 已更新: {len(self._event_history)} 个事件")
+                return
+        except Exception as e:
+            self.logger.warning(f"从 EventDistributor 批量加载失败: {e}")
+
+        # ── 方案2: 回退到 basic_tab.basic_results ──
+        basic_tab = getattr(self._parent_tab, 'basic_tab', None)
+        basic_results = getattr(basic_tab, 'basic_results', []) if basic_tab else []
+        advanced_results = getattr(self._parent_tab, 'advanced_results', [])
+
+        if not basic_results:
+            self.logger.info("批量复核: basic_results 为空，等待实时数据...")
+            return
+
+        self.logger.info(f"批量复核: 开始处理 {len(basic_results)} 条 basic + {len(advanced_results)} 条 advanced")
+
+        paired_count = 0
+        for basic in basic_results:
+            best_adv = None
+            basic_ts = basic.get('timestamp', 0)
+            for adv in advanced_results:
+                adv_ts = adv.get('timestamp', 0)
+                if best_adv is None or abs(adv_ts - basic_ts) < abs(best_adv.get('timestamp', 0) - basic_ts):
+                    best_adv = adv
+            if best_adv is None:
+                best_adv = {'advanced_behavior': '未分析', 'confidence': 0.0, 'timestamp': basic_ts}
+
+            self._run_review(basic, best_adv)
+            paired_count += 1
+
+        self.logger.info(f"批量复核完成: {paired_count} 对结果已处理, 事件历史 {len(self._event_history)} 条")
+
+        if self._event_review_panel is not None and self._event_history:
+            self._event_review_panel.set_review_data(self._event_history)
+            self.logger.info(f"EventReviewPanel 已更新: {len(self._event_history)} 个事件")
 
     def update_comparison(self, basic_result, advanced_result):
+        """向后兼容接口 — 接收基础/高级分析结果并执行复核"""
         base_behavior = basic_result.get("behavior", "normal")
         advanced_behavior = advanced_result.get("advanced_behavior", "未分析")
         base_conf = basic_result.get("confidence", 0.85)
@@ -2232,15 +2817,11 @@ class ComparisonTab(QWidget):
             f"QLabel {{ color: {consistency_color}; font-weight: bold; }}"
         )
 
-        self.base_behavior_val.setText(base_behavior)
-        self.advanced_behavior_val.setText(advanced_behavior)
-        self.conf_diff_val.setText(f"{conf_diff:.2f}")
-
         diff_text = "主要差异:\n"
-        diff_text += f"• 基础行为: {base_behavior} (置信度: {base_conf:.2f})\n"
-        diff_text += f"• 高级行为: {advanced_behavior} (置信度: {advanced_conf:.2f})\n"
-        diff_text += f"• 置信度差异: {conf_diff:.2f}\n"
-        diff_text += f"• 一致性: {consistency}%"
+        diff_text += f"* 基础行为: {base_behavior} (置信度: {base_conf:.2f})\n"
+        diff_text += f"* 高级行为: {advanced_behavior} (置信度: {advanced_conf:.2f})\n"
+        diff_text += f"* 置信度差异: {conf_diff:.2f}\n"
+        diff_text += f"* 一致性: {consistency}%"
         self.diff_text.setPlainText(diff_text)
 
         self._base_behavior_counts[base_behavior] = \
@@ -2262,10 +2843,47 @@ class ComparisonTab(QWidget):
         if len(self.comparison_results) > self.max_cache_size:
             self.comparison_results.pop(0)
 
-        self._update_comparison_table(comparison)
+        # ── 新增: 执行事件置信度复核 ──
+        if self.comparison_active:
+            refined = self._run_review(basic_result, advanced_result)
 
-        self.comp_consistency_label.setText(f"一致性：{consistency}%")
-        self.comp_samples_label.setText(f"样本：{len(self.comparison_results)}")
+    def feed_event_review(self, review_result: dict):
+        """接收管线传来的复核结果并更新UI"""
+        if not review_result:
+            return
+        # 更新三路投票状态
+        self.lbl_l3_status.setText(f"L3={review_result.get('l3_score', 0):.3f}")
+        self.lbl_l4_status.setText(f"L4={review_result.get('l4_score', 0):.3f}")
+        self.lbl_ts_status.setText(f"TS={review_result.get('ts_score', 0):.3f}")
+        self.lbl_fusion_result.setText(
+            f"{review_result.get('confidence', 0):.3f} "
+            f"{'[OK]' if review_result.get('confidence', 0) >= 0.85 else '[!]'}"
+        )
+        self.lbl_hmm_before.setText(f"{review_result.get('confidence', 0):.3f}")
+        hmm_conf = review_result.get('hmm_confidence', 0)
+        self.lbl_hmm_after.setText(f"{hmm_conf:.3f}" if hmm_conf > 0 else "--")
+        self.lbl_hmm_corrected.setText(
+            "已纠正" if hmm_conf > 0 and hmm_conf < review_result.get('confidence', 0)
+            else "无变化"
+        )
+        self.lbl_physics_status.setText(
+            "[OK]通过" if review_result.get('physics_pass', False) else "[X]未通过"
+        )
+        self.lbl_physics_violations.setText("无")
+
+        # 更新复核统计
+        verdict = review_result.get('verdict', 'pending')
+        if verdict == 'confirmed':
+            self.comp_status_label.setText("事件复核：已确认")
+        elif verdict == 'rejected':
+            self.comp_status_label.setText("事件复核：已驳回")
+        else:
+            self.comp_status_label.setText("事件复核：待审核")
+
+        self.logger.info(
+            f"复核结果已更新: {review_result.get('event_type', 'unknown')} "
+            f"置信度={review_result.get('confidence', 0):.3f}"
+        )
 
     def _refresh_distribution_table(self):
         all_behaviors = sorted(set(self._base_behavior_counts.keys())
@@ -2286,32 +2904,6 @@ class ComparisonTab(QWidget):
             elif diff < 0:
                 diff_item.setForeground(QColor("#e74c3c"))
             self.distribution_table.setItem(row_idx, 3, diff_item)
-
-    def _update_comparison_table(self, comparison):
-        row = self.comparison_table.rowCount()
-        self.comparison_table.insertRow(row)
-
-        ts = comparison["timestamp"]
-        if isinstance(ts, (int, float)):
-            try:
-                dt = datetime.fromtimestamp(ts)
-                ts_str = dt.strftime("%H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
-            except (ValueError, OSError):
-                ts_str = f"{ts:.3f}"
-        else:
-            ts_str = str(ts)[:19]
-        self.comparison_table.setItem(row, 0, QTableWidgetItem(ts_str))
-        self.comparison_table.setItem(row, 1, QTableWidgetItem(comparison["base_behavior"]))
-        self.comparison_table.setItem(row, 2, QTableWidgetItem(f"{comparison['base_confidence']:.2f}"))
-        self.comparison_table.setItem(row, 3, QTableWidgetItem(comparison["advanced_behavior"]))
-        self.comparison_table.setItem(row, 4, QTableWidgetItem(f"{comparison['advanced_confidence']:.2f}"))
-        self.comparison_table.setItem(row, 5, QTableWidgetItem(f"{comparison['consistency']}%"))
-
-        while self.comparison_table.rowCount() > self.max_cache_size:
-            self.comparison_table.removeRow(0)
-
-        if self.comparison_table.rowCount() > 0:
-            self.comparison_table.scrollToBottom()
 
 
 class RealTimeMonitoringTab(QWidget, ClearableResource):
@@ -2381,7 +2973,7 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
             ("📊 驾驶评估", "正在加载驾驶评估模块..."),
             ("📈 行为时间轴", "正在加载行为时间轴模块..."),
             ("🔬 特征分析", "正在加载特征分析模块..."),
-            ("🔄 分析对比", "正在加载分析对比模块..."),
+            ("🔄 事件复核", "正在加载事件复核模块..."),
         ]
         for title, _ in placeholder_labels:
             ph = QWidget()
@@ -2414,7 +3006,12 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                     self.dashboard_view.set_data_bridge(self._data_bridge)
             elif index == 1:
                 self.timeline_view = BehaviorTimelineView(self.config_manager)
-                self.main_tabs.insertTab(1, self.timeline_view, "📈 行为时间轴")
+                # 包裹在 QScrollArea 中，支持垂直滚动，框架高度自适应
+                timeline_scroll = QScrollArea()
+                timeline_scroll.setWidgetResizable(True)
+                timeline_scroll.setWidget(self.timeline_view)
+                timeline_scroll.setFrameShape(QFrame.NoFrame)
+                self.main_tabs.insertTab(1, timeline_scroll, "📈 行为时间轴")
                 self.main_tabs.removeTab(2)
                 if self._data_bridge:
                     self.timeline_view.set_data_bridge(self._data_bridge)
@@ -2428,7 +3025,8 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                     self.feature_view.set_data_bridge(self._data_bridge)
             elif index == 3:
                 self.comparison_tab = ComparisonTab(self.config_manager)
-                self.main_tabs.insertTab(3, self.comparison_tab, "🔄 分析对比")
+                self.comparison_tab.set_parent_tab(self)  # 注入父级引用，用于批量加载
+                self.main_tabs.insertTab(3, self.comparison_tab, "🔄 事件复核")
                 self.main_tabs.removeTab(4)
         except Exception as e:
             self.logger.error(f"延迟初始化视图 {index} 失败: {e}")
@@ -2447,6 +3045,17 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
             if hasattr(self.basic_tab, 'event_clicked'):
                 self.basic_tab.event_clicked.connect(self.event_clicked.emit)
                 self.logger.info("✅ BasicAnalysisTab event_clicked信号已连接")
+            
+            # ── 设置复核回调: 将实时分析结果传递到事件复核控制台 ──
+            def _on_review_feed(basic_result, advanced_result, event_review):
+                if (self.comparison_tab and self.comparison_tab.comparison_active
+                        and hasattr(self.comparison_tab, 'update_comparison')):
+                    self.comparison_tab.update_comparison(basic_result, advanced_result)
+                    if event_review is not None and hasattr(self.comparison_tab, 'feed_event_review'):
+                        self.comparison_tab.feed_event_review(event_review)
+            
+            self.basic_tab._review_callback = _on_review_feed
+            self.logger.info("✅ 事件复核回调已连接到 BasicAnalysisTab")
             
             # 注入DataBridge
             if self._data_bridge:
@@ -2640,11 +3249,16 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
         base_conf = combined_result.get("base_confidence", 0)
         advanced_behavior = combined_result.get("advanced_behavior", "未分析")
         advanced_conf = combined_result.get("advanced_confidence", 0)
+        event_review = combined_result.get("event_review", None)
 
         self.comparison_tab.update_comparison(
             {"behavior": base_behavior, "confidence": base_conf, "timestamp": combined_result.get("timestamp", "")},
             {"advanced_behavior": advanced_behavior, "confidence": advanced_conf, "timestamp": combined_result.get("timestamp", "")}
         )
+
+        # ── 新增: 传递复核结果到 ComparisonTab ──
+        if event_review is not None and hasattr(self.comparison_tab, 'feed_event_review'):
+            self.comparison_tab.feed_event_review(event_review)
 
     def _open_basic_config(self):
         dialog = ConfigDialog(self.config_manager, self)

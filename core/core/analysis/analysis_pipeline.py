@@ -13,6 +13,7 @@ class DataAnalysisPipeline(QObject):
     pipeline_updated = Signal(str, dict)    # 流水线状态更新 (driver_id, status)
     pipeline_completed = Signal(str, dict)  # 流水线完成 (driver_id, result)
     error_occurred = Signal(str)            # 错误发生
+    event_reviewed = Signal(str, dict)      # 事件复核完成 (driver_id, review_result)
 
     def __init__(self, config: Dict[str, Any], core_services: Any, base_analyzer=None):
         super().__init__()
@@ -55,6 +56,63 @@ class DataAnalysisPipeline(QObject):
         except Exception as e:
             self.logger.error(f"清理行为事件分发器失败: {e}")
 
+    def _review_with_refiner(self, base_result: Dict[str, Any],
+                              advanced_result: Dict[str, Any]) -> Dict[str, Any]:
+        """辅助方法: 封装事件置信度复核逻辑 (三路投票融合 + HMM + 物理过滤)"""
+        try:
+            from .event_confidence_refiner import (
+                EventConfidenceRefiner, L3Event, L4Label, TriStageResult
+            )
+            refiner = EventConfidenceRefiner(fs=100.0, confidence_threshold=0.85)
+
+            # L3: 基础分析结果
+            l3_ev = L3Event(
+                idx=0,
+                event_type=base_result.get("behavior", "normal"),
+                t_start=base_result.get("timestamp", time.time()) - 1.0,
+                t_end=base_result.get("timestamp", time.time()) + 1.0,
+                confidence=base_result.get("confidence", 0.85),
+                speed=base_result.get("speed", 0),
+            )
+
+            # L4: 高级分析标签
+            l4_label = L4Label(
+                frame_idx=0,
+                timestamp=base_result.get("timestamp", 0),
+                label=advanced_result.get("advanced_behavior", "未分析"),
+                confidence=advanced_result.get("confidence", 0.0),
+            )
+
+            # TS: 行为事件检测
+            ts_result = TriStageResult(
+                event_type=base_result.get("behavior", "normal"),
+                category="state",
+                confidence=base_result.get("confidence", 0.85),
+                timestamp=base_result.get("timestamp", 0),
+                rule_score=base_result.get("rule_score", 0.0),
+                feature_score=base_result.get("feature_score", 0.0),
+                context_score=base_result.get("context_score", 0.0),
+            )
+
+            refined = refiner.refine([l3_ev], [l4_label], [ts_result])
+            if refined:
+                ev = refined[0]
+                return {
+                    "event_type": ev.event_type,
+                    "category": ev.category,
+                    "confidence": ev.confidence,
+                    "hmm_confidence": ev.hmm_confidence,
+                    "l3_score": ev.l3_score,
+                    "l4_score": ev.l4_score,
+                    "ts_score": ev.ts_score,
+                    "physics_pass": ev.physics_pass,
+                    "verdict": ev.verdict,
+                    "requires_review": ev.requires_review,
+                }
+        except ImportError:
+            pass  # 复核模块未就绪时静默跳过
+        return None
+
     def process_data(self, driver_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """处理单条驾驶数据"""
         try:
@@ -80,6 +138,12 @@ class DataAnalysisPipeline(QObject):
             self.behavior_event_dispatcher.on_imu_data_received(data)
             behavior_result = self.behavior_event_dispatcher.get_latest_behavior()
             
+            # ── 事件置信度复核 (三路投票融合 + HMM + 物理过滤) ──
+            self.pipeline_updated.emit(driver_id, {"status": "processing", "stage": "event_review"})
+            review_result = self._review_with_refiner(base_result, advanced_result)
+            if review_result is not None:
+                self.event_reviewed.emit(driver_id, review_result)
+            
             # 整合结果
             final_result = {
                 "timestamp": data.get("timestamp"),
@@ -87,11 +151,22 @@ class DataAnalysisPipeline(QObject):
                 "base_analysis": base_result,
                 "advanced_analysis": advanced_result,
                 "behavior_events": behavior_result,
+                "event_review": review_result,  # 新增: 复核结果
                 "raw_data": data
             }
             
             # 发出完成信号
             self.pipeline_completed.emit(driver_id, final_result)
+
+            # ── 注入复核结果到全时域评估器 (如果可用) ──
+            if review_result is not None:
+                try:
+                    from core.core.seat_evaluation.full_timeseries_evaluator import FullTimeseriesEvaluator
+                    fte = self.core_services.get('full_timeseries_evaluator', None) if self.core_services else None
+                    if fte is not None and hasattr(fte, 'set_external_events'):
+                        fte.set_external_events([review_result])
+                except Exception:
+                    pass  # 全时域评估器未就绪时静默跳过
             
             return final_result
             

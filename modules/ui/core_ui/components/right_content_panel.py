@@ -334,6 +334,22 @@ class RightContentPanel(QWidget):
             except Exception as e:
                 self.logger.error(f"注入 DataBridge 到 real_time_monitoring_tab 失败: {e}")
 
+        # 确保 IMU 可视化标签页已创建（流式处理时需要接收 sensor_data_batch_received 信号来启动管线）
+        if not hasattr(self, 'imu_visualization_tab') or not self.imu_visualization_tab:
+            self._create_imu_visualization_tab()
+            self._tab_initialized[1] = True
+            self.logger.info("IMU可视化标签页已提前创建（流式处理模式）")
+
+        # 注入到 IMU 可视化标签页并连接信号
+        if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
+            try:
+                self.imu_visualization_tab.set_data_bridge(data_bridge)
+                self.imu_visualization_tab.start()
+                data_bridge.sensor_data_batch_received.connect(self._on_imu_sensor_batch)
+                self.logger.info("DataBridge 已注入到 IMU 可视化标签页，信号已连接")
+            except Exception as e:
+                self.logger.error(f"注入 DataBridge 到 IMU 可视化失败: {e}")
+
         # 注入到 CNAP 可视化标签页
         if hasattr(self, 'cnap_visualization_tab') and self.cnap_visualization_tab:
             try:
@@ -343,16 +359,6 @@ class RightContentPanel(QWidget):
                 self.logger.info("DataBridge 已注入到 CNAP 可视化标签页")
             except Exception as e:
                 self.logger.error(f"注入 DataBridge 到 CNAP 可视化失败: {e}")
-
-        # 注入到 IMU 可视化标签页
-        if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
-            try:
-                self.imu_visualization_tab.set_data_bridge(data_bridge)
-                self.imu_visualization_tab.start()
-                data_bridge.sensor_data_batch_received.connect(self._on_imu_sensor_batch)
-                self.logger.info("DataBridge 已注入到 IMU 可视化标签页")
-            except Exception as e:
-                self.logger.error(f"注入 DataBridge 到 IMU 可视化失败: {e}")
 
         if hasattr(self, 'can_full_tab') and self.can_full_tab:
             try:
@@ -645,16 +651,20 @@ class RightContentPanel(QWidget):
                 self.imu_visualization_tab.start()
             if hasattr(self, 'cnap_visualization_tab') and self.cnap_visualization_tab:
                 self.cnap_visualization_tab.start()
+
+            # SQLite 直读：一次性加载全部 IMU 数据（替代逐条 receive_imu_data）
+            # 快速回放和非快速回放都需要加载IMU可视化数据
+            cache = getattr(self._replay_controller, '_cache', None) if self._replay_controller else None
+            if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
+                if cache:
+                    self.logger.info(f"IMU可视化: 从缓存加载数据 (is_fast={is_fast})")
+                    self.imu_visualization_tab.load_from_cache(cache)
+
             if self._data_bridge and not is_fast:
                 try:
                     if not self._data_bridge.is_running:
                         self._data_bridge.start_processing()
                         self.logger.info("回放开始，自动启动 data_bridge 分析管线（重算模式）")
-                    # SQLite 直读：一次性加载全部 IMU 数据（替代逐条 receive_imu_data）
-                    cache = getattr(self._replay_controller, '_cache', None) if self._replay_controller else None
-                    if hasattr(self, 'imu_visualization_tab') and self.imu_visualization_tab:
-                        if cache:
-                            self.imu_visualization_tab.load_from_cache(cache)
 
                     # 批量分析：将全部记录喂入完整 SpeedPreprocessor + DrivingEventDetector 管线
                     if cache and not self._data_bridge.is_batch_analyzed:
@@ -1122,7 +1132,7 @@ class RightContentPanel(QWidget):
                     self._data_bridge.feed_parsed_batch(cnap_records)
                 except Exception as e:
                     self.logger.error(f"喂入CNAP数据到data_bridge失败: {e}")
-        if self._cnap_batch_count <= 3 or self._cnap_batch_count % 50 == 0:
+        if cnap_count > 0 and (self._cnap_batch_count <= 3 or self._cnap_batch_count % 50 == 0):
             self.logger.info(f"CNAP batch #{self._cnap_batch_count}: {len(batch)}条, CNAP={cnap_count}条")
 
     def _on_cnap_sensor_data(self, sensor_data):
@@ -1141,6 +1151,13 @@ class RightContentPanel(QWidget):
             return
         self._last_imu_batch_time = now
 
+        if self._imu_batch_count <= 3:
+            sample_keys = []
+            for s in batch[:3]:
+                if isinstance(s, dict):
+                    sample_keys.append(list(s.keys())[:10])
+            self.logger.info(f"[IMU_BATCH] #{self._imu_batch_count}: {len(batch)}条, sample_keys={sample_keys}")
+
         imu_count = 0
         last_imu = None
         processed_records = []
@@ -1149,6 +1166,47 @@ class RightContentPanel(QWidget):
             if not isinstance(sensor_data, dict):
                 continue
             source_type = sensor_data.get('_source_type', '')
+
+            # ── raw CSV 格式回退（CANFullParser 失败产物） ──
+            # 数据格式: {'raw': 'HH:MM:SS.ffffff,speed_kmh,wheel_angle,,,,,...', '_source_type': 'can_wide'}
+            if 'raw' in sensor_data:
+                parts = sensor_data['raw'].split(',')
+                # 解析时间戳
+                ts_str = parts[0].strip() if parts else ''
+                try:
+                    h, m, s = ts_str.split(':')
+                    ts_abs = float(h) * 3600 + float(m) * 60 + float(s)
+                except (ValueError, AttributeError):
+                    ts_abs = 0.0
+                if not hasattr(self, '_raw_csv_t0'):
+                    self._raw_csv_t0 = ts_abs
+                ts = ts_abs - self._raw_csv_t0
+
+                raw_speed = float(parts[1].strip()) if len(parts) > 1 and parts[1].strip() else 0.0
+                raw_wheel = float(parts[2].strip()) if len(parts) > 2 and parts[2].strip() else 0.0
+
+                pipeline_data = {
+                    'timestamp': ts,
+                    't': ts,
+                    'ax': 0.0,
+                    'ay': 0.0,
+                    'az': 0.0,
+                    'gx': 0.0,
+                    'gy': 0.0,
+                    'gz': 0.0,
+                    'speed': raw_speed * 0.277778,  # km/h → m/s
+                    'wheel': raw_wheel,
+                    'loc1': 0.0,
+                    'loc2': 0.0,
+                    '_source_type': 'can_wide',
+                    '_source_id': sensor_data.get('source_id', sensor_data.get('_source_id', '')),
+                    '_source_name': sensor_data.get('_source_name', ''),
+                    '_normalized_from': 'raw_csv',
+                }
+                imu_count += 1
+                last_imu = pipeline_data
+                processed_records.append(pipeline_data)
+                continue
 
             # can_long 解析器输出同时有 ax/ay/az/gx/gy/gz 和 can_long 标识字段，
             # 必须优先于 imu_standalone 分支处理，否则 speed 不会被转换为 m/s
@@ -1284,7 +1342,7 @@ class RightContentPanel(QWidget):
                     QTimer.singleShot(0, self._process_imu_viz_chunk)
 
         if self._imu_batch_count <= 3 or self._imu_batch_count % 50 == 0:
-            self.logger.debug(f"IMU batch #{self._imu_batch_count}: {len(batch)}条, IMU={imu_count}条")
+            self.logger.info(f"[IMU_BATCH] #{self._imu_batch_count}: {len(batch)}条, IMU={imu_count}条, processed={len(processed_records)}条")
 
     def _deferred_feed_bridge(self, recs):
         self._data_bridge.set_suppress_ui_signals(True)

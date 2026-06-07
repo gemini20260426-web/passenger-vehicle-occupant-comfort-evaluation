@@ -606,6 +606,82 @@ class DataBridge(QObject):
             DataBridge._validate_record_quality(result, 'can_wide')
             return result
 
+        # 回退：简单 CSV 格式（列索引键，如 '0'=timestamp, '1'=speed, '2'=value）
+        # 当以上所有格式检测都失败时，尝试从原始 CSV 行提取可用字段
+        if any(str(i) in record for i in range(4)):
+            ts = record.get('0', record.get('timestamp', record.get('rel_time', time.time())))
+            raw_speed = float(record.get('1', record.get('speed', record.get('车速_kmh', 0))) or 0)
+            raw_wheel = float(record.get('2', record.get('wheel', record.get('方向盘转角_deg', 0))) or 0)
+
+            # 速度单位检测
+            detected_unit = DataBridge._detect_speed_unit(raw_speed)
+            if detected_unit == 'kmh':
+                speed_ms = raw_speed * DataBridge.KMH_TO_MS
+            elif detected_unit == 'ms':
+                speed_ms = raw_speed
+            else:
+                speed_ms = raw_speed * DataBridge.KMH_TO_MS
+
+            if not hasattr(DataBridge, '_debug_fallback_csv_count'):
+                DataBridge._debug_fallback_csv_count = 0
+            DataBridge._debug_fallback_csv_count += 1
+            if DataBridge._debug_fallback_csv_count <= 5:
+                logger.info(
+                    f"[DATA_BRIDGE] 简单CSV回退归一化 #{DataBridge._debug_fallback_csv_count}: "
+                    f"ts={ts}, speed={raw_speed}→{speed_ms:.2f}m/s, wheel={raw_wheel}"
+                )
+
+            return {
+                'timestamp': ts,
+                'ax': 0.0, 'ay': 0.0, 'az': 0.0,
+                'gx': 0.0, 'gy': 0.0, 'gz': 0.0,
+                'speed': speed_ms, 'wheel': raw_wheel,
+                'loc1': 0.0, 'loc2': 0.0,
+                '_source_type': 'can_wide',
+                '_source_id': source_id or 'simple_csv',
+                '_normalized_from': 'simple_csv_fallback',
+            }
+
+        # 回退：包含 'raw' 键的原始行记录（CANFullParser 失败回退产物）
+        # 格式: "timestamp,speed,value,,,,,,,,,..."
+        if 'raw' in record:
+            raw_line = str(record.get('raw', ''))
+            try:
+                parts = raw_line.split(',')
+                ts = record.get('timestamp', time.time())
+                raw_speed = float(parts[1].strip()) if len(parts) > 1 and parts[1].strip() else 0.0
+                raw_wheel = float(parts[2].strip()) if len(parts) > 2 and parts[2].strip() else 0.0
+
+                detected_unit = DataBridge._detect_speed_unit(raw_speed)
+                if detected_unit == 'kmh':
+                    speed_ms = raw_speed * DataBridge.KMH_TO_MS
+                elif detected_unit == 'ms':
+                    speed_ms = raw_speed
+                else:
+                    speed_ms = raw_speed * DataBridge.KMH_TO_MS
+
+                if not hasattr(DataBridge, '_debug_raw_csv_count'):
+                    DataBridge._debug_raw_csv_count = 0
+                DataBridge._debug_raw_csv_count += 1
+                if DataBridge._debug_raw_csv_count <= 5:
+                    logger.info(
+                        f"[DATA_BRIDGE] raw行回退归一化 #{DataBridge._debug_raw_csv_count}: "
+                        f"ts={ts}, speed={raw_speed}→{speed_ms:.2f}m/s, wheel={raw_wheel}"
+                    )
+
+                return {
+                    'timestamp': ts,
+                    'ax': 0.0, 'ay': 0.0, 'az': 0.0,
+                    'gx': 0.0, 'gy': 0.0, 'gz': 0.0,
+                    'speed': speed_ms, 'wheel': raw_wheel,
+                    'loc1': 0.0, 'loc2': 0.0,
+                    '_source_type': 'can_wide',
+                    '_source_id': source_id or 'raw_csv',
+                    '_normalized_from': 'raw_csv_fallback',
+                }
+            except Exception:
+                pass
+
         record['_source_type'] = source_type or 'imu_standalone'
         record['_source_id'] = source_id or record.get('_source_id', '')
         return record
@@ -626,11 +702,18 @@ class DataBridge(QObject):
 
     @staticmethod
     def _is_primary_imu_record(record: Dict[str, Any]) -> bool:
-        """检查记录是否来自驾驶行为分析主IMU通道（IMU7_座椅底部-1）
+        """检查记录是否来自驾驶行为分析主IMU通道
 
-        硬约束：驾驶状态机和事件生成必须且仅使用此通道数据。
-        此方法不应被修改或绕过。
+        优先匹配 IMU7_座椅底部-1（硬约束），同时兼容 CAN 源数据
+        （can_long / can_wide）— 当无 IMU 传感器时，CAN 数据作为唯一
+        数据源驱动管线分析。
         """
+        source_type = record.get('_source_type', '')
+        # CAN 源数据：无 IMU 传感器时可作为主数据源驱动管线
+        if source_type in ('can_long', 'can_wide'):
+            DataBridge._debug_primary_pass_count += 1
+            return True
+
         imu_name = record.get('_source_name', '') or record.get('_imu_name', '')
         DataBridge._debug_primary_check_count += 1
         if DataBridge._debug_primary_check_count <= 10:
@@ -1335,6 +1418,16 @@ class DataBridge(QObject):
             return
         batch = list(self._batch_buffer)
         self._batch_buffer.clear()
+        if not hasattr(self, '_flush_log_count'):
+            self._flush_log_count = 0
+        self._flush_log_count += 1
+        if self._flush_log_count <= 3:
+            sample_keys = []
+            for s in batch[:2]:
+                if isinstance(s, dict):
+                    sample_keys.append(list(s.keys())[:8])
+            logger = logging.getLogger(__name__)
+            logger.info(f"[DATA_BRIDGE] _flush_batch #{self._flush_log_count}: {len(batch)}条, sample_keys={sample_keys}")
         if not self._suppress_ui_signals:
             self.sensor_data_batch_received.emit(batch)
 

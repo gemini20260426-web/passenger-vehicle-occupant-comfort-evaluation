@@ -335,17 +335,51 @@ class MultiSourceCache:
 
     # ─────────── SQLite 直读 API（绕过 JSON 逐条解析，大幅提升性能）───────────
 
+    # can_wide 格式 gyro 单位转换常量: deg/s → rad/s
+    _DEG_TO_RAD = 3.141592653589793 / 180.0
+    # 速度单位转换: km/h → m/s
+    _KMH_TO_MS = 1000.0 / 3600.0
+
+    @staticmethod
+    def _extract_can_wide_value(d: Dict[str, Any], ch: str, field_patterns: List[str]) -> float:
+        """从 can_wide 格式字典中提取指定通道的字段值"""
+        for pat in field_patterns:
+            key = f'{ch}_{pat}'
+            if key in d:
+                return float(d.get(key, 0) or 0)
+        return 0.0
+
+    @staticmethod
+    def _parse_raw_csv_timestamp(ts_str: str) -> float:
+        """将原始 CSV 时间戳 (HH:MM:SS.ffffff) 转为绝对秒数"""
+        try:
+            parts = ts_str.strip().split(':')
+            if len(parts) == 3:
+                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+        except (ValueError, AttributeError):
+            pass
+        return 0.0
+
     def query_imu_numpy(self, start: float = None, end: float = None,
                         source_types: List[str] = None):
         """直接查询 SQLite 并返回 numpy 数组。
         返回 (t, ax, ay, az, gx, gy, gz, speed, wheel) 各为 1D array。
         用于 IMU 可视化一键加载，避免 json.loads × 10 万次。
+        支持 raw CSV / can_wide / can_long / pipeline 四种数据格式。
         """
         import numpy as np
 
         t_list, ax_list, ay_list, az_list = [], [], [], []
         gx_list, gy_list, gz_list = [], [], []
         speed_list, wheel_list = [], []
+
+        # 格式检测缓存：只检测前若干条记录，后续复用
+        _format_detected = None  # 'raw_csv' | 'can_wide' | 'standard'
+        _can_wide_ch = None
+        _format_check_count = 0
+        _FORMAT_CHECK_MAX = 50
+        _t0 = None  # 首条记录绝对时间，用于计算相对时间
+        _speed_kmh = None  # 速度单位检测
 
         with self._lock:
             conn = self._get_conn()
@@ -381,15 +415,93 @@ class MultiSourceCache:
                 except json.JSONDecodeError:
                     continue
 
-                t_list.append(rel_time)
-                ax_list.append(float(d.get('ax', d.get('Ax_m_s2', 0)) or 0))
-                ay_list.append(float(d.get('ay', d.get('Ay_m_s2', 0)) or 0))
-                az_list.append(float(d.get('az', d.get('Az_m_s2', 0)) or 0))
-                gx_list.append(float(d.get('gx', d.get('Gx_rad_s', 0)) or 0))
-                gy_list.append(float(d.get('gy', d.get('Gy_rad_s', 0)) or 0))
-                gz_list.append(float(d.get('gz', d.get('Gz_rad_s', 0)) or 0))
-                speed_list.append(float(d.get('speed', d.get('车速_kmh', 0)) or 0))
-                wheel_list.append(float(d.get('wheel', d.get('方向盘转角_deg', 0)) or 0))
+                # ── 格式检测：前 N 条记录判断数据格式 ──
+                if _format_detected is None and _format_check_count < _FORMAT_CHECK_MAX:
+                    _format_check_count += 1
+                    # 1) raw CSV 格式（CANFullParser 失败回退产物）
+                    if 'raw' in d:
+                        _format_detected = 'raw_csv'
+                        logging.getLogger(__name__).info(
+                            "query_imu_numpy: 检测到 raw CSV 格式")
+                    # 2) can_wide 格式（ch*_ax 等字段）
+                    elif any(k.startswith('ch') and ('_ax' in k or '_f0_Accel' in k) for k in d):
+                        _format_detected = 'can_wide'
+                        for ch in ('ch1', 'ch3', 'ch4', 'ch5', 'ch2', 'ch6', 'ch7', 'ch8', 'ch9', 'ch10'):
+                            if f'{ch}_ax' in d or f'{ch}_f0_Accel_m/s2' in d:
+                                _can_wide_ch = ch
+                                logging.getLogger(__name__).info(
+                                    f"query_imu_numpy: 检测到 can_wide 格式，使用通道 {_can_wide_ch}")
+                                break
+                        if not _can_wide_ch:
+                            _can_wide_ch = 'ch1'
+                    # 3) 标准格式（can_long / pipeline / IMU standalone）
+                    else:
+                        _format_detected = 'standard'
+
+                # ── 提取数据 ──
+                if _format_detected == 'raw_csv':
+                    # raw CSV 格式: "HH:MM:SS.ffffff,speed_kmh,wheel_angle,,,,,..."
+                    # CAN 总线原始数据，速度单位为 km/h，需转换为 m/s
+                    parts = d['raw'].split(',')
+                    ts_abs = self._parse_raw_csv_timestamp(parts[0]) if parts else 0.0
+                    if _t0 is None:
+                        _t0 = ts_abs
+                    t_list.append(ts_abs - _t0)
+
+                    raw_speed_kmh = float(parts[1].strip()) if len(parts) > 1 and parts[1].strip() else 0.0
+                    raw_wheel = float(parts[2].strip()) if len(parts) > 2 and parts[2].strip() else 0.0
+
+                    # raw CSV 格式速度始终为 km/h，直接转换为 m/s
+                    speed_list.append(raw_speed_kmh * self._KMH_TO_MS)
+                    wheel_list.append(raw_wheel)
+                    ax_list.append(0.0)
+                    ay_list.append(0.0)
+                    az_list.append(0.0)
+                    gx_list.append(0.0)
+                    gy_list.append(0.0)
+                    gz_list.append(0.0)
+
+                elif _format_detected == 'can_wide' and _can_wide_ch:
+                    # ── can_wide 格式：从指定通道提取 ──
+                    t_list.append(rel_time)
+                    ch = _can_wide_ch
+                    ax_list.append(self._extract_can_wide_value(
+                        d, ch, ['f0_Accel_m/s2', 'ax', 'Ax_m_s2']))
+                    ay_list.append(self._extract_can_wide_value(
+                        d, ch, ['f1_Accel_m/s2', 'ay', 'Ay_m_s2']))
+                    az_list.append(self._extract_can_wide_value(
+                        d, ch, ['f2_Accel_m/s2', 'az', 'Az_m_s2', 'f11_AccelZ_m/s2']))
+                    gx_dps = self._extract_can_wide_value(
+                        d, ch, ['f3_Gyro_dps', 'gx', 'Gx_dps'])
+                    gy_dps = self._extract_can_wide_value(
+                        d, ch, ['f4_Gyro_dps', 'gy', 'Gy_dps'])
+                    gz_dps = self._extract_can_wide_value(
+                        d, ch, ['f5_Gyro_dps', 'gz', 'Gz_dps'])
+                    gx_list.append(gx_dps * self._DEG_TO_RAD)
+                    gy_list.append(gy_dps * self._DEG_TO_RAD)
+                    gz_list.append(gz_dps * self._DEG_TO_RAD)
+                    raw_speed = float(d.get('speed', d.get('车速_kmh', 0)) or 0)
+                    speed_list.append(raw_speed)
+                    wheel_list.append(float(d.get('steering', d.get('方向盘转角_deg', 0)) or 0))
+
+                else:
+                    # ── 标准格式：can_long / pipeline / IMU standalone ──
+                    t_list.append(rel_time)
+                    ax_list.append(float(d.get('ax', d.get('Ax_m_s2', 0)) or 0))
+                    ay_list.append(float(d.get('ay', d.get('Ay_m_s2', 0)) or 0))
+                    az_list.append(float(d.get('az', d.get('Az_m_s2', 0)) or 0))
+                    gx_list.append(float(d.get('gx', d.get('Gx_rad_s', 0)) or 0))
+                    gy_list.append(float(d.get('gy', d.get('Gy_rad_s', 0)) or 0))
+                    gz_list.append(float(d.get('gz', d.get('Gz_rad_s', 0)) or 0))
+                    speed_list.append(float(d.get('speed', d.get('车速_kmh', 0)) or 0))
+                    wheel_list.append(float(d.get('wheel', d.get('方向盘转角_deg', 0)) or 0))
+
+            # ── 若速度单位未确定，对全量数据做一次检测并统一转换 ──
+            if _speed_kmh is None and speed_list and _format_detected != 'raw_csv':
+                high_count = sum(1 for v in speed_list if v > 50)
+                _speed_kmh = high_count > len(speed_list) * 0.1
+                if _speed_kmh:
+                    speed_list = [v * self._KMH_TO_MS for v in speed_list]
 
         if not t_list:
             return (np.array([]), np.array([]), np.array([]), np.array([]),
@@ -411,6 +523,7 @@ class MultiSourceCache:
         """类似 query_time_range 但只返回完整记录，用于批量喂入 pipeline。
         返回的记录已展开 payload 字段到顶层（rel_time, speed, wheel, ax/ay/az/gx/gy/gz 等）。
         """
+        _t0 = None
         with self._lock:
             conn = self._get_conn()
             conditions = []
@@ -439,6 +552,33 @@ class MultiSourceCache:
                 try:
                     d = json.loads(payload)
                 except json.JSONDecodeError:
+                    continue
+
+                # ── raw CSV 格式回退 ──
+                if 'raw' in d:
+                    parts = d['raw'].split(',')
+                    ts_abs = self._parse_raw_csv_timestamp(parts[0]) if parts else 0.0
+                    if _t0 is None:
+                        _t0 = ts_abs
+                    t = ts_abs - _t0
+
+                    raw_speed = float(parts[1].strip()) if len(parts) > 1 and parts[1].strip() else 0.0
+                    raw_wheel = float(parts[2].strip()) if len(parts) > 2 and parts[2].strip() else 0.0
+
+                    record = {
+                        '_source_type': source_type,
+                        'channel': channel or '',
+                        'imu_name': imu_name or '',
+                        'rel_time': t,
+                        'timestamp': t,
+                        't': t,
+                        'ax': 0.0, 'ay': 0.0, 'az': 0.0,
+                        'gx': 0.0, 'gy': 0.0, 'gz': 0.0,
+                        'speed': raw_speed * self._KMH_TO_MS,
+                        'wheel': raw_wheel,
+                        '_source_name': '',
+                    }
+                    results.append(record)
                     continue
 
                 # 展开到顶层，保持与 _normalize_can_record 输出一致的字段名

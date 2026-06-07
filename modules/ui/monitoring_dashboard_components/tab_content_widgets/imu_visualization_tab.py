@@ -1720,6 +1720,13 @@ class IMUVisualizationTab(QWidget, ClearableResource):
         if getattr(self, '_loaded_from_cache', False):
             return
 
+        if not hasattr(self, '_receive_log_count'):
+            self._receive_log_count = 0
+        self._receive_log_count += 1
+        if self._receive_log_count <= 3:
+            keys = list(sensor_data.keys())[:15] if isinstance(sensor_data, dict) else 'NOT_DICT'
+            self.logger.info(f"[IMU_VIZ] receive_imu_data #{self._receive_log_count}: keys={keys}")
+
         # 确保数据同时有 t 和 timestamp 字段
         sensor_data = dict(sensor_data)
         if 't' not in sensor_data and 'timestamp' in sensor_data:
