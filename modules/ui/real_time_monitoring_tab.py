@@ -2970,7 +2970,7 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
         self.feature_view = None
         self.comparison_tab = None
 
-        self._view_initialized = [False, False, False, False, False]
+        self._view_initialized = [False, False, False, False, False, False, False, False]
 
         placeholder_labels = [
             ("📊 驾驶评估", "正在加载驾驶评估模块..."),
@@ -2978,6 +2978,9 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
             ("🔬 特征分析", "正在加载特征分析模块..."),
             ("🔄 事件复核", "正在加载事件复核模块..."),
             ("🧠 ML训练", "正在加载ML训练模块..."),
+            ("📈 波形滚动", "正在加载波形滚动模块..."),
+            ("🔬 A/B对比", "正在加载A/B对比模块..."),
+            ("⏪ 事件回放", "正在加载事件回放模块..."),
         ]
         for title, _ in placeholder_labels:
             ph = QWidget()
@@ -3044,13 +3047,38 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 self.main_tabs.removeTab(5)
                 if self._data_bridge:
                     self.ml_training_panel.set_data_bridge(self._data_bridge)
-                # 初始化 HybridBehaviorClassifier
                 self._init_hybrid_classifier()
+            elif index == 5:
+                # 波形滚动显示
+                from modules.ui.waveform_scroll_widget import WaveformScrollWidget
+                self.waveform_view = WaveformScrollWidget(window_seconds=10.0)
+                self.main_tabs.insertTab(5, self.waveform_view, "📈 波形滚动")
+                self.main_tabs.removeTab(6)
+                if self._data_bridge:
+                    self.waveform_view.set_data_bridge(self._data_bridge)
+                self.logger.info("波形滚动组件已初始化")
+            elif index == 6:
+                # A/B 模型对比
+                from modules.ui.ab_model_comparison import ABModelComparisonWidget
+                self.ab_comparison_view = ABModelComparisonWidget()
+                self.main_tabs.insertTab(6, self.ab_comparison_view, "🔬 A/B对比")
+                self.main_tabs.removeTab(7)
+                self.logger.info("A/B模型对比组件已初始化")
+            elif index == 7:
+                # 事件回放
+                from modules.ui.event_replay_widget import EventReplayWidget
+                self.event_replay_view = EventReplayWidget()
+                self.main_tabs.insertTab(7, self.event_replay_view, "⏪ 事件回放")
+                self.main_tabs.removeTab(8)
+                if self._data_bridge:
+                    self.event_replay_view.replay_position.connect(
+                        lambda pos: self.logger.debug(f"回放位置: {pos:.1f}s"))
+                self.logger.info("事件回放组件已初始化")
         except Exception as e:
             self.logger.error(f"延迟初始化视图 {index} 失败: {e}")
 
     def ensure_all_views_initialized(self):
-        for i in range(5):
+        for i in range(8):
             self._ensure_view_initialized(i)
 
     def _create_and_manage_basic_tab(self):
@@ -3100,6 +3128,8 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
         # Phase 1+2: 注入到 ML 训练面板
         if self.ml_training_panel:
             self.ml_training_panel.set_data_bridge(data_bridge)
+        if hasattr(self, 'waveform_view') and self.waveform_view:
+            self.waveform_view.set_data_bridge(data_bridge)
         if data_bridge:
             data_bridge.sensor_data_received.connect(self._on_sensor_data_received)
             data_bridge.frame_result_ready.connect(self.process_frame_result)
@@ -3357,6 +3387,12 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
             self.feature_view.reset()
         if self.ml_training_panel:
             self.ml_training_panel.clear_data()
+        if hasattr(self, 'waveform_view') and self.waveform_view:
+            self.waveform_view.clear()
+        if hasattr(self, 'ab_comparison_view') and self.ab_comparison_view:
+            self.ab_comparison_view.clear()
+        if hasattr(self, 'event_replay_view') and self.event_replay_view:
+            self.event_replay_view.clear()
         if self._hybrid_classifier:
             self._hybrid_classifier.reset()
         self.status_label.setText("数据已清空")
