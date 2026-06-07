@@ -88,7 +88,7 @@ class WaveformScrollWidget(QWidget):
         # ——— 控制栏 ———
         ctrl_layout = QHBoxLayout()
 
-        title = QLabel("📈 加速度波形")
+        title = QLabel("加速度波形")
         title.setFont(QFont("Microsoft YaHei", 11, QFont.Bold))
         title.setStyleSheet("color: #2F5496;")
         ctrl_layout.addWidget(title)

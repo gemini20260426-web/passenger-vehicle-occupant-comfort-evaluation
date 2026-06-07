@@ -2973,14 +2973,14 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
         self._view_initialized = [False, False, False, False, False, False, False, False]
 
         placeholder_labels = [
-            ("📊 驾驶评估", "正在加载驾驶评估模块..."),
-            ("📈 行为时间轴", "正在加载行为时间轴模块..."),
-            ("🔬 特征分析", "正在加载特征分析模块..."),
-            ("🔄 事件复核", "正在加载事件复核模块..."),
-            ("🧠 ML训练", "正在加载ML训练模块..."),
-            ("📈 波形滚动", "正在加载波形滚动模块..."),
-            ("🔬 A/B对比", "正在加载A/B对比模块..."),
-            ("⏪ 事件回放", "正在加载事件回放模块..."),
+            ("驾驶评估", "正在加载驾驶评估模块..."),
+            ("行为时间轴", "正在加载行为时间轴模块..."),
+            ("特征分析", "正在加载特征分析模块..."),
+            ("事件复核", "正在加载事件复核模块..."),
+            ("ML训练", "正在加载ML训练模块..."),
+            ("波形滚动", "正在加载波形滚动模块..."),
+            ("A/B对比", "正在加载A/B对比模块..."),
+            ("事件回放", "正在加载事件回放模块..."),
         ]
         for title, _ in placeholder_labels:
             ph = QWidget()
@@ -3007,7 +3007,7 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
         try:
             if index == 0:
                 self.dashboard_view = DrivingRiskDashboard(self.config_manager)
-                self.main_tabs.insertTab(0, self.dashboard_view, "📊 驾驶评估")
+                self.main_tabs.insertTab(0, self.dashboard_view, "驾驶评估")
                 self.main_tabs.removeTab(1)
                 if self._data_bridge:
                     self.dashboard_view.set_data_bridge(self._data_bridge)
@@ -3018,7 +3018,7 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 timeline_scroll.setWidgetResizable(True)
                 timeline_scroll.setWidget(self.timeline_view)
                 timeline_scroll.setFrameShape(QFrame.NoFrame)
-                self.main_tabs.insertTab(1, timeline_scroll, "📈 行为时间轴")
+                self.main_tabs.insertTab(1, timeline_scroll, "行为时间轴")
                 self.main_tabs.removeTab(2)
                 if self._data_bridge:
                     self.timeline_view.set_data_bridge(self._data_bridge)
@@ -3026,14 +3026,14 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 self._create_and_manage_basic_tab()
             elif index == 2:
                 self.feature_view = FeatureAnalysisView(self.config_manager)
-                self.main_tabs.insertTab(2, self.feature_view, "🔬 特征分析")
+                self.main_tabs.insertTab(2, self.feature_view, "特征分析")
                 self.main_tabs.removeTab(3)
                 if self._data_bridge:
                     self.feature_view.set_data_bridge(self._data_bridge)
             elif index == 3:
                 self.comparison_tab = ComparisonTab(self.config_manager)
                 self.comparison_tab.set_parent_tab(self)  # 注入父级引用，用于批量加载
-                self.main_tabs.insertTab(3, self.comparison_tab, "🔄 事件复核")
+                self.main_tabs.insertTab(3, self.comparison_tab, "事件复核")
                 self.main_tabs.removeTab(4)
             elif index == 4:
                 # Phase 1+2: ML 训练面板
@@ -3043,7 +3043,7 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 ml_scroll.setWidgetResizable(True)
                 ml_scroll.setWidget(self.ml_training_panel)
                 ml_scroll.setFrameShape(QFrame.NoFrame)
-                self.main_tabs.insertTab(4, ml_scroll, "🧠 ML训练")
+                self.main_tabs.insertTab(4, ml_scroll, "ML训练")
                 self.main_tabs.removeTab(5)
                 if self._data_bridge:
                     self.ml_training_panel.set_data_bridge(self._data_bridge)
@@ -3052,7 +3052,7 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 # 波形滚动显示
                 from modules.ui.waveform_scroll_widget import WaveformScrollWidget
                 self.waveform_view = WaveformScrollWidget(window_seconds=10.0)
-                self.main_tabs.insertTab(5, self.waveform_view, "📈 波形滚动")
+                self.main_tabs.insertTab(5, self.waveform_view, "波形滚动")
                 self.main_tabs.removeTab(6)
                 if self._data_bridge:
                     self.waveform_view.set_data_bridge(self._data_bridge)
@@ -3061,14 +3061,14 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 # A/B 模型对比
                 from modules.ui.ab_model_comparison import ABModelComparisonWidget
                 self.ab_comparison_view = ABModelComparisonWidget()
-                self.main_tabs.insertTab(6, self.ab_comparison_view, "🔬 A/B对比")
+                self.main_tabs.insertTab(6, self.ab_comparison_view, "A/B对比")
                 self.main_tabs.removeTab(7)
                 self.logger.info("A/B模型对比组件已初始化")
             elif index == 7:
                 # 事件回放
                 from modules.ui.event_replay_widget import EventReplayWidget
                 self.event_replay_view = EventReplayWidget()
-                self.main_tabs.insertTab(7, self.event_replay_view, "⏪ 事件回放")
+                self.main_tabs.insertTab(7, self.event_replay_view, "事件回放")
                 self.main_tabs.removeTab(8)
                 if self._data_bridge:
                     self.event_replay_view.replay_position.connect(

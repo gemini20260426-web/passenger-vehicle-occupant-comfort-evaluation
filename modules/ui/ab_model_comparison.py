@@ -60,13 +60,13 @@ class ABModelComparisonWidget(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
 
         # ——— 顶栏 ———
-        title = QLabel("🔬 A/B 模型对比")
+        title = QLabel("A/B 模型对比")
         title.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
         title.setStyleSheet("color: #2F5496;")
         layout.addWidget(title)
 
         # ——— 模型加载 ———
-        load_group = QGroupBox("📦 模型加载")
+        load_group = QGroupBox("模型加载")
         load_layout = QGridLayout(load_group)
 
         # Model A
@@ -87,7 +87,7 @@ class ABModelComparisonWidget(QWidget):
         btn_b.clicked.connect(self._load_model_b)
         load_layout.addWidget(btn_b, 1, 2)
 
-        btn_compare = QPushButton("⚡ 开始对比")
+        btn_compare = QPushButton("开始对比")
         btn_compare.setStyleSheet(
             "QPushButton { background: #9b59b6; color: white; font-weight: bold; "
             "padding: 8px; border-radius: 3px; } "
@@ -99,7 +99,7 @@ class ABModelComparisonWidget(QWidget):
         layout.addWidget(load_group)
 
         # ——— 对比结果表格 ———
-        result_group = QGroupBox("📊 对比结果")
+        result_group = QGroupBox("对比结果")
         result_layout = QVBoxLayout(result_group)
 
         self.comparison_table = QTableWidget(0, 6)
