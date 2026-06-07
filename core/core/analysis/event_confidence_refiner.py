@@ -140,10 +140,10 @@ _ALL_EVENT_TYPES = list(PHYSICS_TRANSITIONS.keys())
 @dataclass
 class L3Event:
     """L3 maneuver_segmentation 事件"""
-    idx: int
-    event_type: str
-    t_start: float
-    t_end: float
+    idx: int = -1
+    event_type: str = 'unknown'
+    t_start: float = 0.0
+    t_end: float = 0.0
     confidence: float = 0.0
     speed: float = 0.0
     metadata: dict = field(default_factory=dict)
@@ -152,19 +152,19 @@ class L3Event:
 @dataclass
 class L4Label:
     """L4 behavior_classification 逐帧标签"""
-    frame_idx: int
-    timestamp: float
-    label: str
+    frame_idx: int = -1
+    timestamp: float = 0.0
+    label: str = 'unknown'
     confidence: float = 0.0
 
 
 @dataclass
 class TriStageResult:
     """TriStageDetector 检测结果"""
-    event_type: str
-    category: str
-    confidence: float
-    timestamp: float
+    event_type: str = 'unknown'
+    category: str = 'unknown'
+    confidence: float = 0.0
+    timestamp: float = 0.0
     rule_score: float = 0.0
     feature_score: float = 0.0
     context_score: float = 0.0
@@ -173,16 +173,16 @@ class TriStageResult:
 @dataclass
 class RefinedEvent:
     """复核后事件 — 最终输出"""
-    event_type: str
-    category: str
-    confidence: float
-    t_start: float
-    t_end: float
-    speed: float
+    event_type: str = 'unknown'
+    category: str = 'unknown'
+    confidence: float = 0.0
+    t_start: float = 0.0
+    t_end: float = 0.0
+    speed: float = 0.0
     # 三路来源得分
-    l3_score: float
-    l4_score: float
-    ts_score: float
+    l3_score: float = 0.0
+    l4_score: float = 0.0
+    ts_score: float = 0.0
     # HMM平滑后置信
     hmm_confidence: float = 0.0
     # 物理过滤结果
@@ -192,6 +192,11 @@ class RefinedEvent:
     requires_review: bool = False
     review_reason: str = ""
     verdict: str = "confirmed"  # confirmed / disputed / rejected
+    # ── 上下文自动复核 (Phase 2: ContextReviewEngine) ──
+    auto_verdict: str = ""       # auto_confirm / auto_reject / "" (人工)
+    context_score: float = 0.0   # 上下文综合评分
+    # ── 增量ML优化 (Phase 3: RejectedEventCollector) ──
+    _features: Any = None        # 55维特征向量 (np.ndarray), 驳回采集用
 
 
 # ════════════════════════════════════════════════════════
@@ -202,12 +207,41 @@ class EventConfidenceRefiner:
     """事件置信度复核引擎 — 三路投票融合 + HMM + 物理过滤"""
 
     def __init__(self, fs: float = 100.0, confidence_threshold: float = 0.85,
-                 use_ml: bool = False):
+                 use_ml: bool = False, use_context_review: bool = True,
+                 use_rejected_collector: bool = True):
         self.fs = fs
         self.threshold = confidence_threshold
         self.use_ml = use_ml
         self._context_deque = deque(maxlen=10)
         self._state_log = []
+
+        # ── 上下文自动复核引擎 (Phase 2) ──
+        self._context_reviewer = None
+        if use_context_review:
+            try:
+                from .context_review_engine import ContextReviewEngine
+                self._context_reviewer = ContextReviewEngine()
+                logger.info("上下文自动复核引擎已集成 (ContextReviewEngine)")
+            except Exception as e:
+                logger.warning(f"上下文复核引擎加载失败: {e}")
+
+        # ── 驳回事件采集器 (Phase 3: 增量ML优化) ──
+        self._rejected_collector = None
+        self._incremental_trainer = None
+        if use_rejected_collector:
+            try:
+                from .rejected_event_collector import (
+                    RejectedEventCollector, FeedbackDataset, IncrementalTrainer,
+                )
+                self._rejected_collector = RejectedEventCollector()
+                self._feedback_dataset = FeedbackDataset()
+                self._incremental_trainer = IncrementalTrainer(
+                    collector=self._rejected_collector,
+                    feedback_dataset=self._feedback_dataset,
+                )
+                logger.info("驳回事件采集器已集成 (RejectedEventCollector + IncrementalTrainer)")
+            except Exception as e:
+                logger.warning(f"驳回事件采集器加载失败: {e}")
 
         # HMM平滑参数
         self._hmm_transition = self._build_hmm_transition_matrix()
@@ -220,6 +254,7 @@ class EventConfidenceRefiner:
     def fuse_3way(self, l3_events: List[L3Event],
                   l4_labels: List[L4Label],
                   ts_results: List[TriStageResult],
+                  features_list: Optional[List[np.ndarray]] = None,
                   ts_data_start: float = 0.0) -> List[RefinedEvent]:
         """三路投票融合 — 核心算法
 
@@ -228,7 +263,7 @@ class EventConfidenceRefiner:
         """
         refined = []
 
-        for l3_ev in l3_events:
+        for i, l3_ev in enumerate(l3_events):
             # ── L3得分: 事件分割置信度 ──
             l3_s = max(0.0, min(1.0, l3_ev.confidence))
 
@@ -264,6 +299,11 @@ class EventConfidenceRefiner:
                     f"三路不一致: L3={l3_ev.event_type}, L4={l4_votes}, TS={ts_match_type}"
                 )
 
+            # 绑定特征向量 (用于驳回事件采集)
+            ev_features = None
+            if features_list and i < len(features_list):
+                ev_features = features_list[i]
+
             ev = RefinedEvent(
                 event_type=l3_ev.event_type,
                 category=self._get_category(l3_ev.event_type),
@@ -277,6 +317,7 @@ class EventConfidenceRefiner:
                 requires_review=requires_review,
                 review_reason=review_reason,
                 verdict="confirmed" if not requires_review else "disputed",
+                _features=ev_features,
             )
             refined.append(ev)
 
@@ -517,13 +558,37 @@ class EventConfidenceRefiner:
 
     def refine(self, l3_events: List[L3Event],
                l4_labels: List[L4Label],
-               ts_results: List[TriStageResult]) -> List[RefinedEvent]:
-        """一键全流程: 融合 → HMM → 物理 → 最终输出"""
+               ts_results: List[TriStageResult],
+               features_list: Optional[List[np.ndarray]] = None) -> List[RefinedEvent]:
+        """一键全流程: 融合 → HMM → 物理 → 上下文自动复核 → 最终输出
+
+        Args:
+            l3_events: L3 maneuver_segmentation 事件
+            l4_labels: L4 behavior_classification 逐帧标签
+            ts_results: TriStage 检测结果
+            features_list: 55维特征向量列表 (可选, 用于驳回事件采集增量ML优化)
+        """
         t0 = time.perf_counter()
 
-        fused = self.fuse_3way(l3_events, l4_labels, ts_results)
+        fused = self.fuse_3way(l3_events, l4_labels, ts_results, features_list)
         smoothed = self.hmm_smooth(fused)
         filtered = self.physics_filter(smoothed)
+
+        # ── Phase 2: 上下文自动复核 ──
+        if self._context_reviewer is not None:
+            filtered = self._context_reviewer.review_sequence(filtered)
+            ctx_stats = self._context_reviewer.get_stats()
+        else:
+            ctx_stats = {'auto_confirm': 0, 'auto_reject': 0}
+
+        # ── Phase 3: 驳回事件采集 (增量ML优化) ──
+        if self._rejected_collector is not None:
+            rejected_count = self._rejected_collector.collect_batch(
+                filtered, features_list=features_list, dataset_id="analysis"
+            )
+            self._rejected_collector.flush()
+        else:
+            rejected_count = 0
 
         elapsed = (time.perf_counter() - t0) * 1000
         n_confirmed = sum(1 for e in filtered if e.verdict == 'confirmed')
@@ -532,9 +597,53 @@ class EventConfidenceRefiner:
 
         logger.info(
             f"[Refiner] {len(l3_events)}事件复核完成 in {elapsed:.1f}ms: "
-            f"confirmed={n_confirmed}, review={n_review}, rejected={n_rejected}"
+            f"confirmed={n_confirmed}, review={n_review}, rejected={n_rejected} | "
+            f"上下文自动: confirm={ctx_stats['auto_confirm']}, reject={ctx_stats['auto_reject']} | "
+            f"驳回采集: {rejected_count}"
         )
         return filtered
+
+    def try_incremental_training(self, classifier: Any = None,
+                                  original_X: Optional[np.ndarray] = None,
+                                  original_y: Optional[np.ndarray] = None) -> bool:
+        """尝试触发增量训练 (Phase 3: 驳回事件达标时自动重训练)
+
+        在 refine() 之后调用，检查驳回事件是否达到阈值并触发 LightGBM 重训练。
+
+        Args:
+            classifier: LightGBMClassifier 实例 (可选, 不传则仅检查不训练)
+            original_X: 原始训练特征 (可选)
+            original_y: 原始训练标签 (可选)
+
+        Returns:
+            True 如果执行了重训练
+        """
+        if self._incremental_trainer is None:
+            logger.debug("[Refiner] 增量训练器未初始化, 跳过")
+            return False
+
+        stats = self._rejected_collector.get_stats() if self._rejected_collector else {}
+        if not stats.get('ready_for_retrain', False):
+            logger.debug(
+                f"[Refiner] 驳回样本不足, 跳过增量训练 "
+                f"({stats.get('total_rejected', 0)}/{stats.get('min_for_retrain', 50)})"
+            )
+            return False
+
+        if classifier is None:
+            logger.info(
+                f"[Refiner] 驳回事件已达阈值 ({stats['total_rejected']}个), "
+                f"但未提供分类器, 跳过重训练"
+            )
+            return False
+
+        logger.info(
+            f"[Refiner] 驳回事件已达阈值 ({stats['total_rejected']}个), "
+            f"开始增量训练..."
+        )
+        return self._incremental_trainer.retrain_if_needed(
+            classifier, original_X, original_y
+        )
 
     # ════════════════════════════════════════════════════════
     #  统计信息
@@ -545,7 +654,7 @@ class EventConfidenceRefiner:
         total = len(events)
         if total == 0:
             return {'total_events': 0, 'confirmed': 0, 'confirmation_rate': 0}
-        return {
+        stats = {
             'total_events': total,
             'confirmed': sum(1 for e in events if e.verdict == 'confirmed'),
             'disputed': sum(1 for e in events if e.verdict == 'disputed'),
@@ -554,6 +663,82 @@ class EventConfidenceRefiner:
             'mean_confidence': float(np.mean([e.confidence for e in events])),
             'physics_violations': sum(1 for e in events if not e.physics_pass),
         }
+        # ── 上下文自动复核统计 ──
+        if self._context_reviewer is not None:
+            ctx_summary = self._context_reviewer.get_review_summary(events)
+            stats['context_review'] = ctx_summary
+        return stats
+
+    @property
+    def context_reviewer(self):
+        """获取上下文复核引擎 (供外部调试)"""
+        return self._context_reviewer
+
+    @property
+    def rejected_collector(self):
+        """获取驳回事件采集器 (供外部调试和增量训练)"""
+        return self._rejected_collector
+
+    @property
+    def incremental_trainer(self):
+        """获取增量训练器 (供外部触发增量训练)"""
+        return self._incremental_trainer
+
+    # ════════════════════════════════════════════════════════
+    #  F3: 单事件置信度精炼 — 供 hybrid_classifier 轻量集成
+    # ════════════════════════════════════════════════════════
+
+    def refine_single(
+        self,
+        event_type: str,
+        confidence: float,
+        context_history: Optional[List[Tuple[str, str, float]]] = None,
+        speed: Optional[float] = None,
+    ) -> float:
+        """F3: 单事件置信度精炼 — 轻量级接口
+
+        基于上下文序列约束和速度范围约束调整置信度:
+          - 上下文一致性: 与历史事件序列一致时加成
+          - 速度约束: 超出物理范围时降权
+          - 转移概率: 非法状态转移时降权
+
+        Args:
+            event_type: 事件类型名称
+            confidence: 原始置信度 (0-1)
+            context_history: 上下文历史 [(type, category, confidence), ...]
+            speed: 当前速度 (km/h)
+
+        Returns:
+            精炼后的置信度 (0-1)
+        """
+        refined = confidence
+
+        # 1. 速度范围约束
+        if speed is not None and event_type in EVENT_SPEED_RANGE:
+            v_min, v_max = EVENT_SPEED_RANGE[event_type]
+            if speed < v_min * 0.8 or speed > v_max * 1.2:
+                refined *= 0.85  # 速度不匹配，降权 15%
+
+        # 2. 上下文一致性 (基于历史)
+        if context_history and len(context_history) >= 2:
+            # 检查最近两个事件是否与当前事件一致
+            recent_types = [h[0] for h in context_history[-2:]]
+            if recent_types[-1] == event_type:
+                refined = min(0.995, refined + 0.03)  # 连续同类事件，小幅加成
+            elif all(t == recent_types[0] for t in recent_types) and recent_types[0] != event_type:
+                refined *= 0.95  # 与连续历史不一致，略微降权
+
+        # 3. 互斥约束
+        if context_history:
+            last_type = context_history[-1][0]
+            if (last_type, event_type) in EVENT_MUTUAL_EXCLUSIONS or \
+               (event_type, last_type) in EVENT_MUTUAL_EXCLUSIONS:
+                refined *= 0.80  # 互斥事件，显著降权
+
+        # 4. 保底: 不低于 0.55
+        refined = max(0.55, min(0.995, refined))
+
+        return round(refined, 4)
 
 
 # ════════════════════════════════════════════════════════
@@ -757,7 +942,7 @@ class ReviewConsoleData:
     def get_statistics(self) -> Dict[str, Any]:
         """复核统计数据 (供仪表盘显示)"""
         total = len(self.events)
-        return {
+        stats = {
             'total_events': total,
             'confirmed': len(self._confirmed),
             'confirmation_rate': len(self._confirmed) / max(total, 1),
@@ -775,6 +960,17 @@ class ReviewConsoleData:
             'events_by_type': self._count_by_field('event_type'),
             'events_by_category': self._count_by_field('category'),
         }
+        # ── 上下文自动复核统计 ──
+        auto_confirm = [e for e in self.events if e.auto_verdict == 'auto_confirm']
+        auto_reject = [e for e in self.events if e.auto_verdict == 'auto_reject']
+        stats['context_review'] = {
+            'auto_confirm': len(auto_confirm),
+            'auto_reject': len(auto_reject),
+            'auto_rate': (len(auto_confirm) + len(auto_reject)) / max(total, 1),
+            'sequence_matches': sum(1 for e in auto_confirm if '序列模式' in (e.review_reason or '')),
+            'mutual_exclusions': sum(1 for e in auto_reject if '互斥' in (e.review_reason or '')),
+        }
+        return stats
 
     def filter_needs_review(self) -> List[RefinedEvent]:
         return self._needs_review
@@ -833,6 +1029,9 @@ if __name__ == '__main__':
         L3Event(4, 'stopped', 33, 40, 0.90, speed=2),
     ]
 
+    # 模拟特征向量 (55维)
+    l3_features = [np.random.randn(55).astype(np.float32) for _ in range(5)]
+
     l4 = [L4Label(i, i / 10.0, l3[min(i // 200, 4)].event_type, 0.90)
           for i in range(4000)]
     ts = [TriStageResult(l3[i % 5].event_type,
@@ -841,7 +1040,7 @@ if __name__ == '__main__':
           for i in range(5)]
 
     refiner = EventConfidenceRefiner(fs=100.0)
-    result = refiner.refine(l3, l4, ts)
+    result = refiner.refine(l3, l4, ts, features_list=l3_features)
 
     console = ReviewConsoleData(result)
     stats = console.get_statistics()
@@ -850,8 +1049,12 @@ if __name__ == '__main__':
           f"mean_conf={stats['mean_confidence']:.3f}, "
           f"violations={stats['physics_violations']}")
 
+    n_with_features = sum(1 for e in result if e._features is not None)
+    print(f"特征绑定: {n_with_features}/{len(result)} 事件携带特征向量")
+
     for e in result:
         flag = "[!]" if e.requires_review else "[OK]"
+        has_feat = " [F]" if e._features is not None else ""
         print(f"  {flag} {e.event_type:<20s} conf={e.confidence:.3f} "
-              f"hmm={e.hmm_confidence:.3f} verdict={e.verdict} "
+              f"hmm={e.hmm_confidence:.3f} verdict={e.verdict}{has_feat} "
               f"reason={e.review_reason[:50]}")

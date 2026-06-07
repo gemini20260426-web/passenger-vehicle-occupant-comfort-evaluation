@@ -46,12 +46,12 @@ logger = logging.getLogger(__name__)
 
 _COLUMN_HEADERS = [
     "#", "事件类型", "置信度", "HMM置信", "开始(s)", "结束(s)",
-    "速度(km/h)", "L3分", "L4分", "TS分", "物理", "判定", "原因"
+    "速度(km/h)", "L3分", "L4分", "TS分", "物理", "上下文分", "判定", "auto判定", "原因"
 ]
 _COLUMN_FIELDS = [
     'idx', 'event_type', 'confidence', 'hmm_confidence',
     't_start', 't_end', 'speed', 'l3_score', 'l4_score',
-    'ts_score', 'physics_pass', 'verdict', 'review_reason'
+    'ts_score', 'physics_pass', 'context_score', 'verdict', 'auto_verdict', 'review_reason'
 ]
 
 
@@ -86,12 +86,22 @@ class EventTableModel(QAbstractTableModel):
             if field == 'idx':
                 return str(row + 1)
             val = getattr(ev, field, '')
-            if field in ('confidence', 'hmm_confidence'):
-                return f"{val:.3f}" if isinstance(val, float) else str(val)
+            if field in ('confidence', 'hmm_confidence', 'context_score'):
+                if isinstance(val, float) and val > 0:
+                    return f"{val:.3f}"
+                return str(val) if val else "--"
             if field in ('t_start', 't_end'):
                 return f"{val:.1f}s" if isinstance(val, float) else str(val)
             if field == 'physics_pass':
                 return "[OK]" if val else "[X]"
+            if field == 'auto_verdict':
+                if val == 'auto_confirm':
+                    return "[自动确认]"
+                if val == 'auto_reject':
+                    return "[自动驳回]"
+                return "" if not val else str(val)
+            if field == 'verdict':
+                return str(val)
             if field == 'review_reason':
                 return str(val)[:60]
             return str(val)
@@ -101,13 +111,18 @@ class EventTableModel(QAbstractTableModel):
                 return QBrush(QColor('#dc3545'))
             if ev.requires_review:
                 return QBrush(QColor('#fd7e14'))
+            if ev.auto_verdict == 'auto_confirm':
+                return QBrush(QColor('#1a7a2e'))
             if ev.confidence >= 0.95:
                 return QBrush(QColor('#28a745'))
             return None
 
-        if role == Qt.BackgroundRole and ev.requires_review:
-            return QBrush(QColor('#fff3cd'))
-        return None
+        if role == Qt.BackgroundRole:
+            if ev.auto_verdict == 'auto_confirm':
+                return QBrush(QColor('#e6f7ee'))
+            if ev.requires_review:
+                return QBrush(QColor('#fff3cd'))
+            return None
 
     def update_data(self, console_data: ReviewConsoleData):
         self.beginResetModel()
@@ -210,7 +225,9 @@ class EventReviewPanel(QWidget):
             8: 48,   # L4分
             9: 48,   # TS分
             10: 40,  # 物理
-            11: 50,  # 判定
+            11: 64,  # 上下文分
+            12: 50,  # 判定
+            13: 80,  # auto判定
         }
         for col, width in _col_widths.items():
             header.resizeSection(col, width)
@@ -248,6 +265,17 @@ class EventReviewPanel(QWidget):
         self.lbl_violations = QLabel("--"); stats_layout.addRow("物理违规:", self.lbl_violations)
         self.grp_stats.setLayout(stats_layout)
         mid_layout.addWidget(self.grp_stats)
+
+        # 上下文自动复核统计
+        self.grp_ctx_stats = QGroupBox("上下文自动复核")
+        ctx_layout = QFormLayout()
+        self.lbl_auto_confirm = QLabel("--"); ctx_layout.addRow("自动确认:", self.lbl_auto_confirm)
+        self.lbl_auto_reject = QLabel("--"); ctx_layout.addRow("自动驳回:", self.lbl_auto_reject)
+        self.lbl_auto_rate = QLabel("--"); ctx_layout.addRow("自动处理率:", self.lbl_auto_rate)
+        self.lbl_seq_match = QLabel("--"); ctx_layout.addRow("序列匹配:", self.lbl_seq_match)
+        self.lbl_mutual = QLabel("--"); ctx_layout.addRow("互斥检测:", self.lbl_mutual)
+        self.grp_ctx_stats.setLayout(ctx_layout)
+        mid_layout.addWidget(self.grp_ctx_stats)
         mid_layout.addStretch()
         splitter.addWidget(mid_panel)
 
@@ -490,6 +518,10 @@ class EventReviewPanel(QWidget):
         status_parts = [f"#{row}: {ev.event_type}"]
         if ev.requires_review:
             status_parts.append("[!]需复核")
+        if ev.auto_verdict == 'auto_confirm':
+            status_parts.append("[自动确认]")
+        elif ev.auto_verdict == 'auto_reject':
+            status_parts.append("[自动驳回]")
         status_parts.append(f"裁决={ev.verdict}")
         self.lbl_status.setText("\n".join(status_parts))
 
@@ -510,6 +542,19 @@ class EventReviewPanel(QWidget):
         self.lbl_review.setText(str(s['needs_review']))
         self.lbl_mean.setText(f"{s['mean_confidence']:.3f}")
         self.lbl_violations.setText(str(s['physics_violations']))
+
+        # ── 上下文自动复核统计 ──
+        ctx = s.get('context_review', {})
+        if ctx:
+            self.lbl_auto_confirm.setText(str(ctx.get('auto_confirm', '--')))
+            self.lbl_auto_reject.setText(str(ctx.get('auto_reject', '--')))
+            self.lbl_auto_rate.setText(f"{ctx.get('auto_rate', 0):.0%}")
+            self.lbl_seq_match.setText(str(ctx.get('sequence_matches', '--')))
+            self.lbl_mutual.setText(str(ctx.get('mutual_exclusions', '--')))
+        else:
+            for lbl in [self.lbl_auto_confirm, self.lbl_auto_reject,
+                        self.lbl_auto_rate, self.lbl_seq_match, self.lbl_mutual]:
+                lbl.setText("--")
 
         self.stats_updated.emit(s)
 

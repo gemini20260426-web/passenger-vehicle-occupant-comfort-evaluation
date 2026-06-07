@@ -49,6 +49,7 @@ def load_training_data(
     max_samples: int = 50000,
     use_label_column: bool = False,
     data_dir: Optional[str] = None,
+    supplement_missing: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """加载训练数据
 
@@ -66,9 +67,23 @@ def load_training_data(
     # 优先级: data_dir > csv_path > data_path > 合成数据
     if data_dir and os.path.isdir(data_dir):
         from core.core.analysis.batch_training_data_generator import BatchTrainingDataGenerator
+        from core.core.analysis.core_types import BEHAVIOR_TYPES_V2
         gen = BatchTrainingDataGenerator(data_output_dir=data_dir, max_windows_per_file=max_samples)
         X, y, stats = gen.generate_all(output_path=data_path or 'training_data_real.npz')
         logger.info(f"从 data_output 批量生成训练数据: {X.shape[0]} 样本, {X.shape[1]} 特征")
+
+        # P0-2: 补充缺失的事件类别
+        if supplement_missing:
+            present_classes = set(y)
+            all_classes = set(range(len(BEHAVIOR_TYPES_V2)))
+            missing_classes = all_classes - present_classes
+            if missing_classes:
+                logger.info(f"检测到 {len(missing_classes)} 个缺失类别: "
+                            f"{[BEHAVIOR_TYPES_V2[i] for i in sorted(missing_classes)]}")
+                X, y = supplement_missing_classes(X, y, missing_classes, BEHAVIOR_TYPES_V2)
+                logger.info(f"补充后: {X.shape[0]} 样本, {len(set(y))} 类")
+            else:
+                logger.info(f"所有 {len(BEHAVIOR_TYPES_V2)} 类已覆盖，无需补充")
         return X, y
 
     if csv_path and os.path.exists(csv_path):
@@ -179,6 +194,54 @@ def _kurtosis(x: np.ndarray) -> float:
     if std < 1e-8:
         return 0.0
     return float(np.mean((x - np.mean(x))**4) / std**4 - 3)
+
+
+def supplement_missing_classes(
+    X: np.ndarray,
+    y: np.ndarray,
+    missing_classes: set,
+    class_names: list,
+    samples_per_class: int = 200,
+    random_state: int = 42,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """用合成数据补充真实数据中缺失的事件类别 (P0-2)
+
+    Args:
+        X: 特征矩阵 (n_samples, n_features)
+        y: 标签数组 (n_samples,)
+        missing_classes: 缺失的类别索引集合
+        class_names: 所有类别名称列表 (BEHAVIOR_TYPES_V2)
+        samples_per_class: 每类合成的样本数
+        random_state: 随机种子
+
+    Returns:
+        (X_augmented, y_augmented) 补充后的数据
+    """
+    from core.core.analysis.generate_synthetic_data import generate_synthetic_data
+
+    logger.info(f"补充缺失类别: {len(missing_classes)} 类, 每类 {samples_per_class} 个合成样本")
+
+    X_synth, y_synth = generate_synthetic_data(
+        samples_per_class=samples_per_class,
+        random_state=random_state,
+    )
+
+    # 只取缺失的类别
+    missing_mask = np.isin(y_synth, list(missing_classes))
+    X_supplement = X_synth[missing_mask]
+    y_supplement = y_synth[missing_mask]
+
+    if len(X_supplement) == 0:
+        logger.warning("合成数据中未找到缺失类别，跳过补充")
+        return X, y
+
+    missing_names = [class_names[i] for i in missing_classes if i < len(class_names)]
+    logger.info(f"补充样本: {len(X_supplement)} 个, 类别: {missing_names}")
+
+    X_augmented = np.vstack([X, X_supplement])
+    y_augmented = np.concatenate([y, y_supplement])
+
+    return X_augmented, y_augmented
 
 
 def train_model(

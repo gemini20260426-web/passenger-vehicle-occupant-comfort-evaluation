@@ -1521,6 +1521,12 @@ class StatisticsAnalysisTab(QWidget):
         self._export_csv_btn.setEnabled(False)
         ec_layout.addWidget(self._export_csv_btn)
 
+        self._export_pdf_btn = QPushButton("导出 PDF")
+        self._export_pdf_btn.setStyleSheet(self._export_btn_style())
+        self._export_pdf_btn.clicked.connect(self._on_export_pdf_clicked)
+        self._export_pdf_btn.setEnabled(False)
+        ec_layout.addWidget(self._export_pdf_btn)
+
         rp_layout.addWidget(export_control)
 
         self._report_preview = QTextEdit()
@@ -4718,6 +4724,11 @@ class StatisticsAnalysisTab(QWidget):
 
         preprocess_level = self._preprocess_combo.currentData()
 
+        # ── 清除旧的行为事件和时间轴，避免不同数据集间事件串扰 ──
+        self._behavior_events_for_timeline = []
+        self._clear_timeline_widgets()
+        self._show_timeline_empty()
+
         self._analyze_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
         self._browse_btn.setEnabled(False)
@@ -4727,6 +4738,7 @@ class StatisticsAnalysisTab(QWidget):
         self._export_json_btn.setEnabled(False)
         self._export_md_btn.setEnabled(False)
         self._export_csv_btn.setEnabled(False)
+        self._export_pdf_btn.setEnabled(False)
         self._overview_group.setVisible(False)
         self._profile_group.setVisible(True)
         self._contrast_group.setVisible(False)
@@ -4836,6 +4848,11 @@ class StatisticsAnalysisTab(QWidget):
                 duration_s = ds
         if behavior_events:
             self.set_behavior_events_for_timeline(behavior_events, duration_s)
+        else:
+            # ── 离线文件模式下无行为事件时，确保时间轴已清空 ──
+            self._behavior_events_for_timeline = []
+            self._clear_timeline_widgets()
+            self._show_timeline_empty()
 
         self._fill_indicator_comparison_data(report)
         self._populate_contrast_data_table(report)
@@ -4968,6 +4985,7 @@ class StatisticsAnalysisTab(QWidget):
         self._export_json_btn.setEnabled(True)
         self._export_md_btn.setEnabled(True)
         self._export_csv_btn.setEnabled(True)
+        self._export_pdf_btn.setEnabled(True)
 
     def _populate_results_table(self, report: Dict):
         self._current_report = report
@@ -5200,6 +5218,27 @@ class StatisticsAnalysisTab(QWidget):
             QMessageBox.information(self, "导出成功", f"报告已导出到:\n{file_path}")
             self._status_label.setText(f'报告已导出: {os.path.basename(file_path)}')
 
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def _on_export_pdf_clicked(self):
+        if not self._current_report:
+            QMessageBox.warning(self, "警告", "没有可导出的报告")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存PDF", "", "PDF (*.pdf)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            from modules.evaluation_report.report_exporter import ReportExporter
+            exporter = ReportExporter()
+            result_path = exporter.export(self._current_report, format='pdf', filename=file_path)
+            QMessageBox.information(self, "导出成功", f"报告已导出到:\n{result_path}")
+            self._status_label.setText(f'报告已导出: {os.path.basename(result_path)}')
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
@@ -5943,6 +5982,10 @@ class StatisticsAnalysisTab(QWidget):
                 f"background: #FFF9DB; border: 1px solid {LC['warning']}; border-radius: 10px;"
             )
             self._analyze_btn.setEnabled(False)
+            # ── 清除 SQLite 缓存模式遗留的行为事件和时间轴 ──
+            self._behavior_events_for_timeline = []
+            self._clear_timeline_widgets()
+            self._show_timeline_empty()
 
     def _on_time_range_changed(self, value):
         """时间范围变更回调"""

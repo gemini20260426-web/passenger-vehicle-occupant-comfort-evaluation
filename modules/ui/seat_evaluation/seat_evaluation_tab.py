@@ -212,6 +212,8 @@ class SeatEvaluationTab(QWidget, ClearableResource):
         if mode not in ('incremental', 'batch'):
             self.logger.warning(f"无效的评测模式: {mode}")
             return
+        if mode == self._evaluation_mode:
+            return
         self._evaluation_mode = mode
         self.logger.info(f"座椅评测模式: {mode}")
 

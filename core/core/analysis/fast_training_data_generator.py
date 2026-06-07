@@ -13,6 +13,7 @@
 """
 
 import sys
+import os
 import time
 import argparse
 import logging
@@ -95,6 +96,28 @@ class FastTrainingDataGenerator:
         self.step_size = step_size
         self.fs = fs
         self.max_windows = max_windows
+
+        # ── E2: CSV 格式预校验 ──
+        if not self._validate_csv(csv_path):
+            raise ValueError(f"跳过非 IMU 数据文件: {os.path.basename(csv_path)}")
+
+    @staticmethod
+    def _validate_csv(csv_path: str) -> bool:
+        """E2: 校验 CSV 是否包含 IMU 数据列"""
+        try:
+            df = pd.read_csv(csv_path, nrows=5)
+            required_cols = ['Ax_m_s2', 'Ay_m_s2', 'Az_m_s2']
+            has_imu = all(col in df.columns for col in required_cols)
+            if not has_imu:
+                cols_found = list(df.columns)[:8]
+                logger.warning(
+                    f"跳过文件 (非IMU数据): {os.path.basename(csv_path)}\n"
+                    f"  期望列: {required_cols}\n  实际列: {cols_found}..."
+                )
+            return has_imu
+        except Exception as e:
+            logger.error(f"CSV 读取失败: {csv_path} — {e}")
+            return False
 
     def generate(self) -> Tuple[np.ndarray, np.ndarray]:
         """生成训练数据"""

@@ -101,11 +101,44 @@ BEHAVIOR_LABELS_CN = {
     "severe_bump": "剧烈颠簸",
     "sensor_fault": "传感器异常",
     "normal": "正常驾驶",
+    "unknown": "未知",
     # ── 新增：来自DrivingEventDetector 的事件类型──
     "cruising": "恒速行驶",
     "parked": "驻车",
     "left_turn": "左转",
     "right_turn": "右转",
+}
+
+# ── Step 1: 统一事件类型定义 (25 种) ──
+# 废弃 FullTimeseriesEvaluator 的 4 种粗粒度分类，统一为 ML 25 类
+UNIFIED_EVENT_TYPES = {
+    # ── 纵向 (8) ──
+    'emergency_braking', 'aggressive_deceleration', 'normal_deceleration',
+    'aggressive_acceleration', 'normal_acceleration', 'launch',
+    'constant_speed', 'stopped',
+    # ── 侧向 (8) ──
+    'weaving', 'lane_change', 'rapid_direction_change',
+    'tight_turn', 'wide_turn', 'u_turn',
+    'straight_driving', 'lane_keeping',
+    # ── 复合 (3) ──
+    'cornering_acceleration', 'cornering_deceleration', 'cornering_braking',
+    # ── 异常 (4) ──
+    'severe_bump', 'skid_risk', 'rollover_risk', 'sensor_fault',
+    # ── 状态 (2) ──
+    'normal', 'unknown',
+}
+
+# 废弃旧映射: event_detector.py 独有的类型 → 归并到统一类型
+DEPRECATED_EVENT_MAPPING = {
+    'cruising': 'constant_speed',       # 恒速行驶 → 匀速直行
+    'parked': 'stopped',                # 驻车 → 停车
+    'left_turn': 'tight_turn',          # 左转 → 小半径转弯
+    'right_turn': 'wide_turn',          # 右转 → 大半径转弯
+    # FullTimeseriesEvaluator 粗粒度 → 统一类型
+    '制动减速': 'normal_deceleration',
+    '加速': 'normal_acceleration',
+    '转向/变道': 'lane_change',
+    '复合工况': 'normal',
 }
 
 

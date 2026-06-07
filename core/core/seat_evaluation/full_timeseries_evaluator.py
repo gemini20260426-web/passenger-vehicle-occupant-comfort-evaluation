@@ -54,7 +54,7 @@ CONFIG = {
 class FullTimeseriesEvaluator:
     """乘员运动响应全维度评测器"""
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, ml_classifier=None):
         self.cfg = config or CONFIG
         self.df_raw = None
         self.df_clean = None
@@ -66,6 +66,20 @@ class FullTimeseriesEvaluator:
         self.events = []
         self._external_events = None  # 外部注入的行为事件（优先级高于内部检测）
         self.results = {}  # 各级分析结果缓存
+
+        # ── F2: ML 分类器集成 (P0) ──
+        self._ml_classifier = ml_classifier
+        self._ml_events = []  # ML 检测的事件缓存
+        if ml_classifier is None:
+            # 尝试自动加载
+            try:
+                from core.core.analysis.layer4_behavior_classification.hybrid_classifier import (
+                    HybridBehaviorClassifier
+                )
+                self._ml_classifier = HybridBehaviorClassifier()
+                logger.info("ML 分类器已集成到全量统计分析 (HybridBehaviorClassifier)")
+            except Exception as e:
+                logger.debug(f"ML 分类器加载失败 (非致命): {e}")
 
     def load_from_dataframe(self, df: pd.DataFrame):
         """从DataFrame加载数据"""
@@ -177,63 +191,147 @@ class FullTimeseriesEvaluator:
         return np.array(result)
 
     def detect_events(self):
-        """事件检测: 制动/加速/转向/冲击"""
-        logger.info("[2/10] 事件检测...")
+        """Step 2: 统一事件检测 — ML 25种细粒度事件 (主力) + 规则回退 (22种)
+
+        优先级:
+          1. ML (hybrid_classifier) → 25 种, 85.7% 准确率
+          2. 规则回退 (DrivingEventDetector) → 22 种, 规则驱动
+          3. 废弃: 旧 4 种粗粒度阈值检测 (制动减速/加速/转向/变道/复合工况)
+        """
+        logger.info("[2/10] 事件检测 (统一 ML 25 类)...")
+
         if self.sw is None or len(self.sw) == 0:
             logger.warning("  无速度数据，跳过事件检测")
             return
 
-        speed = self.sw[:, 1]
-        wheel = self.sw[:, 2]
-        ds = np.diff(speed, prepend=speed[0])
-        dw = np.diff(np.abs(wheel), prepend=np.abs(wheel[0]))
-
-        exp_head = self.get_aligned(list(self.exp.keys())[0]) if self.exp else None
-        day = np.zeros(len(self.common_t))
-        if exp_head is not None:
-            ay_vals = exp_head[:, 2]
-            day = np.diff(ay_vals, prepend=ay_vals[0])
-
-        event_mask = (ds < self.cfg['ds_brake_thresh']) | (ds > self.cfg['ds_accel_thresh']) | \
-                     (dw > self.cfg['dw_steer_thresh']) | (np.abs(day) > self.cfg['da_shock_thresh'])
-        indices = np.where(event_mask)[0]
-
-        segments = []
-        if len(indices) > 0:
-            seg_start = indices[0]
-            for i in range(1, len(indices)):
-                if indices[i] - indices[i-1] > int(self.fs * 0.5):
-                    segments.append((int(seg_start), int(indices[i-1])))
-                    seg_start = indices[i]
-            segments.append((int(seg_start), int(indices[-1])))
-
-        self.events = []
-        for s, e in segments:
-            seg_speed = speed[s:e+1]
-            seg_wheel = wheel[s:e+1]
-            max_ds = seg_speed[-1] - seg_speed[0]
-            max_dw = np.max(np.abs(np.diff(np.abs(seg_wheel), prepend=np.abs(seg_wheel[0]))))
-
-            if max_ds < -5:
-                etype = '制动减速'
-            elif max_ds > 5:
-                etype = '加速'
-            elif max_dw > 10:
-                etype = '转向/变道'
-            else:
-                etype = '复合工况'
-
-            self.events.append({
-                't_start': self.common_t[s], 't_end': self.common_t[e],
-                'type': etype, 'speed_start': speed[s], 'speed_end': speed[e],
-                'wheel_change': max_dw, 'idx_start': s, 'idx_end': e,
-                'duration': self.common_t[e] - self.common_t[s]
-            })
+        # ── 优先级 1: ML 检测 (主力) ──
+        if self._ml_classifier and self._ml_classifier.ml_classifier.is_ready():
+            logger.info("  使用 ML 检测 (HybridBehaviorClassifier, 25 种)")
+            self._detect_by_ml()
+        else:
+            # ── 优先级 2: 规则回退 (DrivingEventDetector, 22 种) ──
+            logger.info("  ML 未就绪，使用规则回退 (DrivingEventDetector, 22 种)")
+            self._detect_by_rule_fallback()
 
         etype_counts = pd.Series([ev['type'] for ev in self.events]).value_counts()
         logger.info(f"  检测到 {len(self.events)} 个事件:")
         for t, c in etype_counts.items():
-            logger.info(f"    {t}: {c}次")
+            cn = self._cn_name(t)
+            logger.info(f"    {cn}({t}): {c}次")
+
+        self.results['events'] = self.events
+
+    def _detect_by_ml(self):
+        """ML 检测 — 25 种细粒度事件 (主力路径)
+
+        使用 HybridBehaviorClassifier 滑动窗口分类，
+        结果直接写入 self.events。
+        """
+        self.events = []
+        ml_events = self.detect_ml_events()
+
+        if not ml_events:
+            logger.warning("  ML 未检测到事件，回退到规则检测")
+            self._detect_by_rule_fallback()
+            return
+
+        # 将 ML 事件格式化为统一事件格式
+        for ml_ev in ml_events:
+            etype = ml_ev.get('type', 'unknown')
+            # 通过 DEPRECATED_EVENT_MAPPING 统一事件名
+            from core.core.analysis.core_types import DEPRECATED_EVENT_MAPPING
+            unified_type = DEPRECATED_EVENT_MAPPING.get(etype, etype)
+
+            self.events.append({
+                't_start': ml_ev['t_start'],
+                't_end': ml_ev['t_end'],
+                'type': unified_type,
+                'event_type': unified_type,
+                'confidence': ml_ev.get('confidence', 0.0),
+                'method': 'ml',
+                'idx_start': ml_ev.get('idx_start', 0),
+                'idx_end': ml_ev.get('idx_end', 0),
+                'duration': ml_ev.get('duration', 0.0),
+                'speed_start': 0.0,
+                'speed_end': 0.0,
+                'wheel_change': 0.0,
+            })
+
+    def _detect_by_rule_fallback(self):
+        """规则回退检测 — 22 种细粒度事件 (ML 不可用时)
+
+        使用 DrivingEventDetector 替代旧的 4 种粗粒度阈值检测。
+        """
+        self.events = []
+
+        try:
+            from core.core.analysis.layer3_maneuver_segmentation.event_detector import (
+                DrivingEventDetector, EVENT_TYPES
+            )
+            from core.core.analysis.core_types import DEPRECATED_EVENT_MAPPING
+
+            detector = DrivingEventDetector()
+
+            # 构建 records 数据
+            records = []
+            if self.sw is not None and len(self.sw) > 0:
+                for i in range(len(self.sw)):
+                    rec = {
+                        'rel_time': self.sw[i, 0],
+                        'speed': self.sw[i, 1],
+                        'wheel': self.sw[i, 2],
+                    }
+                    records.append(rec)
+
+            if not records:
+                logger.warning("  无法构建 records 数据，跳过规则回退")
+                return
+
+            # 使用 DrivingEventDetector 检测所有事件
+            rule_events = detector.detect_all(records)
+
+            for evt in rule_events:
+                etype = evt.event_type
+                # 通过 DEPRECATED_EVENT_MAPPING 统一 (cruising→constant_speed 等)
+                unified_type = DEPRECATED_EVENT_MAPPING.get(etype, etype)
+                cn_name = EVENT_TYPES.get(etype, etype)
+
+                # 计算 idx
+                t_start = evt.t_start
+                t_end = evt.t_end
+                if self.common_t and len(self.common_t) > 1:
+                    dt = self.common_t[1] - self.common_t[0]
+                    idx_start = max(0, int(t_start / dt))
+                    idx_end = min(len(self.common_t) - 1, int(t_end / dt))
+                else:
+                    idx_start = idx_end = 0
+
+                self.events.append({
+                    't_start': t_start,
+                    't_end': t_end,
+                    'type': unified_type,
+                    'event_type': unified_type,
+                    'cn_name': cn_name,
+                    'confidence': evt.confidence,
+                    'method': 'rule_fallback',
+                    'idx_start': idx_start,
+                    'idx_end': idx_end,
+                    'duration': evt.duration_s,
+                    'speed_start': evt.features.get('speed_from', 0.0),
+                    'speed_end': evt.features.get('speed_to', 0.0),
+                    'wheel_change': 0.0,
+                })
+
+            logger.info(f"  规则回退检测完成: {len(self.events)} 个事件")
+
+        except Exception as e:
+            logger.error(f"  规则回退检测失败: {e}", exc_info=True)
+
+    @staticmethod
+    def _cn_name(event_type: str) -> str:
+        """事件类型 → 中文名"""
+        from core.core.analysis.core_types import BEHAVIOR_LABELS_CN
+        return BEHAVIOR_LABELS_CN.get(event_type, event_type)
 
     def set_external_events(self, events: List[Dict]):
         from core.core.analysis.layer3_maneuver_segmentation.event_detector import EVENT_TYPES
@@ -270,6 +368,126 @@ class FullTimeseriesEvaluator:
         logger.info(f"  [外部事件] 注入 {len(self.events)} 个行为事件（{len(etype_counts)} 种类型）:")
         for t, c in etype_counts.items():
             logger.info(f"    {t}: {c}次")
+
+    def detect_ml_events(self) -> List[Dict]:
+        """F2: ML 滑动窗口检测 — 从全量时序数据中提取 ML 事件
+
+        使用 HybridBehaviorClassifier 对滑动窗口进行分类，
+        结果注入到 self.events 中，与规则检测事件合并。
+
+        Returns:
+            ML 检测到的事件列表
+        """
+        if not self._ml_classifier or not self._ml_classifier._ml_classifier.is_ready():
+            logger.info("ML 分类器未就绪，跳过 ML 检测")
+            return []
+
+        if not self.exp:
+            logger.warning("无实验组数据，跳过 ML 检测")
+            return []
+
+        ml_events = []
+        try:
+            from core.core.analysis.core_types import ManeuverEvent, FrameFeatures, BehaviorCategory
+
+            # 使用第一个实验组 IMU 作为主通道
+            primary_imu = list(self.exp.keys())[0]
+            aligned = self.get_aligned(primary_imu)
+            if aligned is None:
+                return []
+
+            window_samples = int(self.cfg['window_sec'] * self.fs)
+            step_samples = int(self.cfg['step_sec'] * self.fs)
+
+            for i in range(0, len(aligned) - window_samples, step_samples):
+                win = aligned[i:i + window_samples]
+                ax = win[:, 1] if win.shape[1] > 1 else win[:, 0]
+                ay = win[:, 2] if win.shape[1] > 2 else np.zeros_like(ax)
+                az = win[:, 3] if win.shape[1] > 3 else np.zeros_like(ax)
+
+                t_start = win[0, 0]
+
+                features = FrameFeatures(timestamp=t_start)
+                features.temporal['ax_mean'] = float(np.mean(ax))
+                features.temporal['ax_std'] = float(np.std(ax))
+                features.temporal['ax_rms'] = float(np.sqrt(np.mean(ax**2)))
+                features.temporal['ay_mean'] = float(np.mean(ay))
+                features.temporal['ay_std'] = float(np.std(ay))
+                features.temporal['ay_rms'] = float(np.sqrt(np.mean(ay**2)))
+                features.temporal['az_mean'] = float(np.mean(az))
+                features.temporal['az_std'] = float(np.std(az))
+                features.temporal['az_rms'] = float(np.sqrt(np.mean(az**2)))
+
+                event = ManeuverEvent(
+                    id=f'ml_fts_{i}',
+                    type='unknown',
+                    category=BehaviorCategory.LONGITUDINAL,
+                    start_time=t_start,
+                    end_time=win[-1, 0],
+                    duration=win[-1, 0] - t_start,
+                    confidence=0.0,
+                )
+
+                ml_event = self._ml_classifier.classify(event, features)
+                if ml_event.confidence >= 0.75:
+                    idx_start = int(t_start / (self.common_t[1] - self.common_t[0]))
+                    idx_end = idx_start + window_samples
+                    ml_events.append({
+                        't_start': t_start,
+                        't_end': win[-1, 0],
+                        'type': ml_event.type,
+                        'event_type': ml_event.type,
+                        'confidence': ml_event.confidence,
+                        'method': 'ml',
+                        'idx_start': idx_start,
+                        'idx_end': min(idx_end, len(self.common_t) - 1),
+                        'duration': win[-1, 0] - t_start,
+                    })
+
+            # 去重合并相邻同类事件
+            ml_events = self._deduplicate_ml_events(ml_events)
+
+            logger.info(f"ML 滑动窗口检测完成: {len(ml_events)} 个事件 (confidence≥0.75)")
+
+            # 合并到 events 列表
+            if ml_events:
+                existing_starts = set(
+                    (ev.get('t_start', 0), ev.get('type', '')) for ev in self.events
+                )
+                for ml_ev in ml_events:
+                    key = (ml_ev['t_start'], ml_ev['type'])
+                    if key not in existing_starts:
+                        self.events.append(ml_ev)
+
+        except Exception as e:
+            logger.error(f"ML 滑动窗口检测失败: {e}", exc_info=True)
+
+        self._ml_events = ml_events
+        return ml_events
+
+    def _deduplicate_ml_events(self, events: List[Dict]) -> List[Dict]:
+        """合并相邻同类 ML 事件"""
+        if len(events) < 2:
+            return events
+
+        events.sort(key=lambda e: e['t_start'])
+        merged = []
+        current = dict(events[0])
+
+        for next_ev in events[1:]:
+            if next_ev['type'] == current['type'] and \
+               next_ev['t_start'] - current['t_end'] < 0.5:
+                # 合并
+                current['t_end'] = next_ev['t_end']
+                current['idx_end'] = next_ev['idx_end']
+                current['duration'] = current['t_end'] - current['t_start']
+                current['confidence'] = max(current['confidence'], next_ev['confidence'])
+            else:
+                merged.append(current)
+                current = dict(next_ev)
+
+        merged.append(current)
+        return merged
 
     def _get_sternum(self):
         for k in self.exp:

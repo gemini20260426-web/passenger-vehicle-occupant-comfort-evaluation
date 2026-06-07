@@ -1668,10 +1668,156 @@ class DataBridge(QObject):
         summary = detector.get_summary()
 
         self.logger.info(
-            f"[DataBridge] Offline behavior analysis done: {summary['total']} events, "
+            f"[DataBridge] Rule-based detection: {summary['total']} events, "
             f"{len(summary['by_type'])} types, "
             f"vehicle_accel=[{accel_min:.2f}, {accel_max:.2f}] m/s²"
         )
+
+        # ── Step 2b: ML 滑动窗口独立检测 (不依赖规则引擎) ──
+        ml_new_events = []
+        try:
+            from core.core.analysis.layer4_behavior_classification.hybrid_classifier import (
+                HybridBehaviorClassifier
+            )
+            from core.core.analysis.core_types import (
+                ManeuverEvent, FrameFeatures, BehaviorCategory,
+                DEPRECATED_EVENT_MAPPING
+            )
+
+            ml_clf = HybridBehaviorClassifier(context_window_size=10)
+            if ml_clf.ml_classifier and ml_clf.ml_classifier.is_ready():
+                self.logger.info("[DataBridge] ML sliding window detection starting...")
+                ml_detected = ml_clf.detect_events_from_raw(
+                    t=detector.t,
+                    speed=detector.speed,
+                    wheel=detector.wheel,
+                    ax=detector.ax,
+                    ay=detector.ay,
+                    az=detector.az,
+                    gx=detector.gx,
+                    gy=detector.gy,
+                    gz=detector.gz,
+                    vehicle_accel=detector.vehicle_accel,
+                    speed_ma=detector.speed_ma,
+                    speed_std=detector.speed_std,
+                    wheel_std=detector.wheel_std,
+                    accel_ma=detector.accel_ma,
+                    window_size=500,
+                    step_size=250,
+                    min_confidence=0.6,
+                )
+
+                # 去重: ML 检测到的事件如果与规则事件重叠，只保留规则事件（规则更精确）
+                for me in ml_detected:
+                    overlaps = False
+                    for re in events:
+                        if (me['t_start'] <= re.t_end + 0.2 and
+                                me['t_end'] >= re.t_start - 0.2):
+                            overlaps = True
+                            break
+                    if not overlaps:
+                        ml_new_events.append(me)
+
+                self.logger.info(
+                    f"[DataBridge] ML sliding window: {len(ml_detected)} detected, "
+                    f"{len(ml_new_events)} new (non-overlapping with rule)"
+                )
+            else:
+                self.logger.info("[DataBridge] ML model not ready, skipping sliding window detection")
+        except Exception as e:
+            self.logger.warning(f"[DataBridge] ML sliding window detection failed: {e}")
+
+        # ── Step 3: ML 事件重分类 (HybridBehaviorClassifier) ──
+        ml_events = []
+        ml_event_types = {}
+        try:
+            from core.core.analysis.layer4_behavior_classification.hybrid_classifier import (
+                HybridBehaviorClassifier
+            )
+            from core.core.analysis.core_types import (
+                ManeuverEvent, FrameFeatures, BehaviorCategory,
+                DEPRECATED_EVENT_MAPPING
+            )
+
+            ml_classifier = HybridBehaviorClassifier(context_window_size=10)
+            if ml_classifier.ml_classifier.is_ready():
+                self.logger.info(
+                    f"[DataBridge] ML classifier ready, running hybrid classification on "
+                    f"{len(events)} events"
+                )
+                for rule_evt in events:
+                    try:
+                        # 构建 FrameFeatures
+                        features = FrameFeatures(timestamp=rule_evt.t_start)
+                        feat = rule_evt.features if hasattr(rule_evt, 'features') else {}
+                        features.temporal['ax_mean'] = float(feat.get('accel_mean', 0.0))
+                        features.temporal['ax_std'] = float(feat.get('accel_std', 0.0))
+                        features.temporal['ax_rms'] = float(feat.get('accel_rms', 0.0))
+                        features.temporal['ay_mean'] = float(feat.get('ay_mean', 0.0))
+                        features.temporal['ay_std'] = float(feat.get('ay_std', 0.0))
+                        features.temporal['ay_rms'] = float(feat.get('ay_rms', 0.0))
+                        features.temporal['az_mean'] = float(feat.get('az_mean', 0.0))
+                        features.temporal['az_std'] = float(feat.get('az_std', 0.0))
+                        features.temporal['az_rms'] = float(feat.get('az_rms', 0.0))
+
+                        me = ManeuverEvent(
+                            id=f'ml_batch_{rule_evt.event_id}',
+                            type=rule_evt.event_type,
+                            category=BehaviorCategory.LONGITUDINAL,
+                            start_time=rule_evt.t_start,
+                            end_time=rule_evt.t_end,
+                            duration=rule_evt.duration_s,
+                            confidence=rule_evt.confidence,
+                        )
+
+                        ml_result = ml_classifier.classify(me, features)
+                        etype = ml_result.type
+                        unified_type = DEPRECATED_EVENT_MAPPING.get(etype, etype)
+
+                        ml_events.append({
+                            'event_id': f'ml_{rule_evt.event_id}',
+                            'event_type': unified_type,
+                            'event_name': unified_type,
+                            't_start': rule_evt.t_start,
+                            't_end': rule_evt.t_end,
+                            'duration_s': rule_evt.duration_s,
+                            'confidence': ml_result.confidence,
+                            'method': 'ml',
+                            'features': dict(feat),
+                        })
+
+                        ml_event_types[unified_type] = ml_event_types.get(unified_type, 0) + 1
+                    except Exception:
+                        pass  # 单个事件 ML 分类失败不影响整体
+
+                self.logger.info(
+                    f"[DataBridge] ML classification done: {len(ml_events)} events, "
+                    f"{len(ml_event_types)} types"
+                )
+            else:
+                self.logger.info("[DataBridge] ML classifier not ready, skipping ML detection")
+        except Exception as e:
+            self.logger.warning(f"[DataBridge] ML classifier unavailable: {e}")
+
+        # ── 将 ML 滑动窗口新发现的事件合并到 ml_events ──
+        for me in ml_new_events:
+            ml_events.append({
+                'event_id': me['event_id'],
+                'event_type': me['event_type'],
+                'event_name': me['event_name'],
+                't_start': me['t_start'],
+                't_end': me['t_end'],
+                'duration_s': me['duration_s'],
+                'confidence': me['confidence'],
+                'method': me['method'],
+            })
+            ml_event_types[me['event_type']] = ml_event_types.get(me['event_type'], 0) + 1
+
+        if ml_new_events:
+            self.logger.info(
+                f"[DataBridge] Added {len(ml_new_events)} ML-detected events to ml_events "
+                f"(total ml_events: {len(ml_events)})"
+            )
 
         return {
             'events': [e.to_dict() for e in events],
@@ -1683,6 +1829,11 @@ class DataBridge(QObject):
                 'enriched_frames': len(enriched),
                 'event_types_detected': len(summary['by_type']),
             },
+            # ── Step 3: ML 检测结果 ──
+            'ml_events': ml_events,
+            'ml_event_types': ml_event_types,
+            # ── ML 滑动窗口独立检测的新事件 (不依赖规则引擎) ──
+            'ml_new_events': ml_new_events,
         }
 
     def analyze_records_batch(

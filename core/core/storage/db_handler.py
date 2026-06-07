@@ -25,6 +25,16 @@ except ImportError:
     USE_PYMYSQL = False
     pymysql = None
 
+
+def _safe_log_params(params: dict) -> dict:
+    """脱敏日志 — 隐藏密码/密钥等敏感字段 (E6 修复)"""
+    safe = dict(params)
+    for key in ('password', 'passwd', 'pwd', 'secret', 'token'):
+        if key in safe:
+            safe[key] = '******'
+    return safe
+
+
 # 为pymysql添加Error定义，保持代码兼容性
 if pymysql is not None:
     class Error(Exception):
@@ -152,7 +162,7 @@ class MySQLHandler(QObject):
                 self.logger.info("SSL未启用")
                 connection_params['ssl_disabled'] = True
             
-            self.logger.info(f"连接参数: {connection_params}")
+            self.logger.info(f"连接参数: {_safe_log_params(connection_params)}")
             
             # 记录开始连接时间
             start_time = time.time()

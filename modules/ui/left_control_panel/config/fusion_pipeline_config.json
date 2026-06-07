@@ -1,15 +1,54 @@
 {
   "version": "1.0",
-  "timestamp": 1780816461.510403,
+  "timestamp": 1780841779.154254,
   "data_sources": {
-    "663e50be": {
-      "id": "663e50be",
-      "name": "06",
+    "fd474c66": {
+      "id": "fd474c66",
+      "name": "88",
+      "type": "CAN",
+      "enabled": false,
+      "connection": {
+        "adapter": "文件读取",
+        "file_path": "D:/UI重构_全量备份_20250824_233403/260511_0859/2026_05_11_103752_ID0001.txt",
+        "file_type": "TXT",
+        "tested": false
+      },
+      "parsing": {
+        "type": "Generic",
+        "detected": true,
+        "target_channel": "ch4",
+        "target_sensor": "A",
+        "park_file_path": null
+      },
+      "quality_thresholds": {
+        "threshold": 0.8,
+        "filter": "不过滤 (保留所有数据)",
+        "outlier_method": "IQR (四分位距法)",
+        "gap_fill": "不填充 (保留空值)"
+      },
+      "signal_filter": {
+        "enabled": false,
+        "filter_type": "移动平均滤波 (Moving Average)",
+        "target_fields": "ax,ay,az",
+        "window_size": 5,
+        "alpha": 0.3,
+        "cutoff_frequency": 10.0,
+        "high_cutoff": 50.0,
+        "sample_rate": 100.0,
+        "order": 2,
+        "process_noise": 0.01,
+        "measurement_noise": 0.1
+      },
+      "axis_correction": {}
+    },
+    "7419b866": {
+      "id": "7419b866",
+      "name": "1101",
       "type": "CAN",
       "enabled": true,
       "connection": {
         "adapter": "文件读取",
-        "file_path": "D:/UI重构_全量备份_20250824_233403/260511_0859/2026_05_11_104237_ID0001.txt",
+        "file_path": "D:/UI重构_全量备份_20250824_233403/260511_0859/2026_05_11_104011_ID0001.txt",
         "file_type": "TXT",
         "tested": false
       },

@@ -161,6 +161,17 @@ class ContextWindow:
         })
         self._total_events += 1
 
+    def get_history(self) -> List[Tuple[str, str, float]]:
+        """F3: 获取上下文历史 (供 confidence_refiner 使用)
+
+        Returns:
+            [(event_type, category, confidence), ...] 按时间顺序排列
+        """
+        return [
+            (h['type'], str(h['category']), h['confidence'])
+            for h in self._history
+        ]
+
     def adjust(
         self,
         event_type: str,
@@ -309,3 +320,45 @@ class ContextWindow:
         """重置上下文窗口"""
         self._history.clear()
         self._total_events = 0
+
+    # ═══════════════════════════════════════════════════════════
+    #  静态方法: 转移概率查询 (供 ContextReviewEngine 复用)
+    # ═══════════════════════════════════════════════════════════
+
+    @staticmethod
+    def get_transition_prob(prev_type: str, curr_type: str) -> float:
+        """查询 (prev_type → curr_type) 的转移概率
+
+        优先级:
+          1. _HIGH_TRANSITIONS (精确匹配)
+          2. _LOW_TRANSITIONS (精确匹配)
+          3. _DEFAULT_TRANSITION_PROB (默认)
+
+        Args:
+            prev_type: 前一个事件类型
+            curr_type: 当前事件类型
+
+        Returns:
+            转移概率 (0.0 ~ 1.0)
+        """
+        pair = (prev_type, curr_type)
+        if pair in _HIGH_TRANSITIONS:
+            return _HIGH_TRANSITIONS[pair]
+        if pair in _LOW_TRANSITIONS:
+            return _LOW_TRANSITIONS[pair]
+        return _DEFAULT_TRANSITION_PROB
+
+    @staticmethod
+    def get_all_high_transitions() -> Dict:
+        """获取所有高概率转移对 (供调试和UI展示)"""
+        return dict(_HIGH_TRANSITIONS)
+
+    @staticmethod
+    def get_all_low_transitions() -> Dict:
+        """获取所有低概率转移对 (供调试和UI展示)"""
+        return dict(_LOW_TRANSITIONS)
+
+    @staticmethod
+    def get_all_sequence_patterns() -> Dict:
+        """获取所有序列模式 (供调试和UI展示)"""
+        return dict(_SEQUENCE_PATTERNS)

@@ -59,6 +59,7 @@ class ClearableRegistry:
     def __init__(self):
         self._resources: Dict[str, ClearableResource] = {}
         self._order: list = []  # 保持注册顺序
+        self._warned_keys: set = set()  # W2: 已警告的重复注册
 
     @classmethod
     def instance(cls) -> 'ClearableRegistry':
@@ -72,9 +73,15 @@ class ClearableRegistry:
         cls._instance = None
 
     def register(self, name: str, resource: ClearableResource):
-        """注册一个可清除资源"""
+        """注册一个可清除资源 (W2: 去重 — 同一实例跳过, 不同实例仅警告一次)"""
         if name in self._resources:
-            logger.warning(f"覆盖已注册的资源: {name}")
+            existing = self._resources[name]
+            if existing is resource:
+                return  # 同一实例, 跳过
+            # 不同实例, 仅警告一次
+            if name not in self._warned_keys:
+                logger.info(f"更新注册: {name}")
+                self._warned_keys.add(name)
         self._resources[name] = resource
         if name not in self._order:
             self._order.append(name)

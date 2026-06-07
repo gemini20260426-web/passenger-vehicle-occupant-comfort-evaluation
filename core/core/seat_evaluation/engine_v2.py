@@ -69,14 +69,31 @@ def mark_fallback_metric(metric_id: str, fallback_reason: str) -> str:
 
 
 class MultiChannelSeatEvaluationEngine(QObject):
-    """多通道座椅评测引擎"""
+    """多通道座椅评测引擎 (单例模式 — W6 修复)"""
+
+    _instance = None
+    _initialized = False
     
     evaluation_started = Signal(dict)
     evaluation_completed = Signal(dict)
     metric_calculated = Signal(dict)
     location_result_ready = Signal(dict)
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls):
+        """重置单例 (主要用于测试)"""
+        cls._instance = None
+        cls._initialized = False
     
-    def __init__(self, config_manager=None, data_storage=None):
+    def __init__(self, config_manager=None, data_storage=None, use_ml: bool = True):
+        if self._initialized:
+            return
+
         super().__init__()
         self.config_manager = config_manager
         self.data_storage = data_storage
@@ -93,11 +110,133 @@ class MultiChannelSeatEvaluationEngine(QObject):
         # 默认采样率
         self.default_sample_rate = 100.0
 
-        logger.info("多通道座椅评测引擎初始化完成")
+        # ── F1: ML 分类器集成 (P0) ──
+        self._ml_classifier = None
+        self._ml_events = []
+        if use_ml:
+            try:
+                from core.core.analysis.layer4_behavior_classification.hybrid_classifier import (
+                    HybridBehaviorClassifier
+                )
+                self._ml_classifier = HybridBehaviorClassifier()
+                logger.info("ML 分类器已集成到座椅评测引擎 (HybridBehaviorClassifier)")
+            except Exception as e:
+                logger.warning(f"ML 分类器加载失败: {e}，将使用规则模式")
+
+        logger.info("多通道座椅评测引擎初始化完成 (单例)")
+        self._initialized = True
     
     def set_preprocess_level(self, level: int):
         self.preprocess_level = max(0, min(2, level))
         logger.info(f"预处理级别已设置为: Level {self.preprocess_level}")
+    
+    def _detect_ml_events(self, multi_channel_data: Dict[str, Any]) -> List[Dict]:
+        """F1: ML 检测 — 从多通道加速度数据提取事件
+
+        Args:
+            multi_channel_data: 多通道数据 {channel_id: {ax, ay, az, ...}}
+
+        Returns:
+            ML 检测到的事件列表 [{type, confidence, t_start, t_end, method}, ...]
+        """
+        if not self._ml_classifier:
+            return []
+
+        ml_events = []
+        try:
+            from core.core.analysis.core_types import ManeuverEvent, FrameFeatures, BehaviorCategory
+
+            # 对每个通道执行 ML 检测
+            for channel_id, channel_data in multi_channel_data.items():
+                if channel_id.startswith('_'):
+                    continue
+                if not isinstance(channel_data, dict):
+                    continue
+
+                ax = channel_data.get('ax', [])
+                if len(ax) < 20:
+                    continue
+
+                # 滑动窗口 ML 检测
+                window_size = 500  # 500ms
+                step_size = 250
+                sample_rate = multi_channel_data.get('_sample_rate', 100.0)
+
+                for i in range(0, len(ax) - int(window_size * sample_rate / 1000),
+                               max(1, int(step_size * sample_rate / 1000))):
+                    win_end = i + int(window_size * sample_rate / 1000)
+                    if win_end > len(ax):
+                        win_end = len(ax)
+
+                    win_ax = np.array(ax[i:win_end]) if isinstance(ax, list) else ax[i:win_end]
+                    win_ay = np.array(channel_data.get('ay', [0]*len(ax))[i:win_end])
+                    win_az = np.array(channel_data.get('az', [0]*len(ax))[i:win_end])
+
+                    # 构建特征
+                    features = FrameFeatures(timestamp=i / sample_rate)
+                    features.temporal['ax_mean'] = float(np.mean(win_ax))
+                    features.temporal['ax_std'] = float(np.std(win_ax))
+                    features.temporal['ax_rms'] = float(np.sqrt(np.mean(win_ax**2)))
+                    features.temporal['ay_mean'] = float(np.mean(win_ay))
+                    features.temporal['ay_std'] = float(np.std(win_ay))
+                    features.temporal['ay_rms'] = float(np.sqrt(np.mean(win_ay**2)))
+                    features.temporal['az_mean'] = float(np.mean(win_az))
+                    features.temporal['az_std'] = float(np.std(win_az))
+                    features.temporal['az_rms'] = float(np.sqrt(np.mean(win_az**2)))
+
+                    event = ManeuverEvent(
+                        id=f'ml_{channel_id}_{i}',
+                        type='unknown',
+                        category=BehaviorCategory.LONGITUDINAL,
+                        start_time=i / sample_rate,
+                        end_time=win_end / sample_rate,
+                        duration=(win_end - i) / sample_rate,
+                        confidence=0.0,
+                    )
+
+                    ml_event = self._ml_classifier.classify(event, features)
+                    if ml_event.confidence >= 0.75:
+                        ml_events.append({
+                            'type': ml_event.type,
+                            'category': str(ml_event.category),
+                            'confidence': ml_event.confidence,
+                            't_start': ml_event.start_time,
+                            't_end': ml_event.end_time,
+                            'method': 'ml',
+                            'channel': channel_id,
+                        })
+
+            logger.info(f"ML 检测完成: {len(ml_events)} 个事件 (confidence≥0.75)")
+        except Exception as e:
+            logger.error(f"ML 检测失败: {e}", exc_info=True)
+
+        self._ml_events = ml_events
+        return ml_events
+    
+    def _merge_events(self, rule_events: List[Dict], ml_events: List[Dict]) -> List[Dict]:
+        """F1: 合并规则检测和 ML 检测事件
+
+        ML 事件补充到规则检测结果中，去重 (时间重叠 < 50% 的保留)
+        """
+        if not ml_events:
+            return rule_events
+
+        merged = list(rule_events)
+        for ml_ev in ml_events:
+            # 检查是否与已有事件重叠
+            overlaps = False
+            for existing in merged:
+                t_start = existing.get('t_start', existing.get('timestamp', 0))
+                t_end = existing.get('t_end', t_start + 1.0)
+                overlap = max(0, min(ml_ev['t_end'], t_end) - max(ml_ev['t_start'], t_start))
+                if overlap > 0.5 * (ml_ev['t_end'] - ml_ev['t_start']):
+                    overlaps = True
+                    break
+            if not overlaps:
+                merged.append(ml_ev)
+
+        logger.info(f"事件合并: 规则 {len(rule_events)} + ML {len(ml_events)} → {len(merged)}")
+        return merged
     
     def evaluate_by_event(self, trigger: Dict[str, Any], preprocess_level: int = None) -> Optional[EvaluationResult]:
         """
@@ -130,6 +269,17 @@ class MultiChannelSeatEvaluationEngine(QObject):
                 f"locations={locations}, channel_count={len(channel_keys)}, "
                 f"channels={channel_keys}"
             )
+
+            # ── F1: ML 事件检测 (补充到座椅评测流程) ──
+            if self._ml_classifier is not None and multi_channel_data:
+                try:
+                    self._ml_events = self._detect_ml_events(multi_channel_data)
+                    logger.info(f"ML 检测完成: {len(self._ml_events)} 个事件")
+                except Exception as e:
+                    logger.warning(f"ML 事件检测失败 (非致命): {e}")
+                    self._ml_events = []
+            else:
+                self._ml_events = []
             
             if not metrics:
                 metrics = self._get_all_metrics()
@@ -255,7 +405,10 @@ class MultiChannelSeatEvaluationEngine(QObject):
                     'source_behavior': source_behavior,
                     'locations': locations,
                     'group_tag': group_tag,
-                    'diagnosis': diagnosis.to_dict()
+                    'diagnosis': diagnosis.to_dict(),
+                    # F1: 附加 ML 检测事件
+                    'ml_events': self._ml_events,
+                    'ml_events_count': len(self._ml_events),
                 }
             )
 

@@ -1563,12 +1563,11 @@ class AdvancedAnalysisTab(QWidget):
             with open(file_path, 'rb') as f:
                 model = pickle.load(f)
             self._update_model_info(model)
+            self._loaded_model = model
             self.model_status_label.setText("模型状态：已加载")
             self.model_indicator.setStyleSheet("QLabel { color: #27ae60; font-size: 14px; }")
-            if self._data_bridge:
-                self._data_bridge.advanced_analyzer.set_model(model)
-                self._sync_model_info_from_bridge()
-                self.logger.info("模型已加载并同步到 DataBridge")
+            self._sync_model_info_from_bridge()
+            self.logger.info("模型已加载: %s", type(model).__name__)
             QMessageBox.information(self, "加载成功", "模型文件加载成功！")
         except Exception as e:
             QMessageBox.critical(self, "加载失败", f"无法加载模型文件：{e}")
@@ -1582,9 +1581,8 @@ class AdvancedAnalysisTab(QWidget):
         try:
             with open(file_path, 'rb') as f:
                 scaler = pickle.load(f)
-            if self._data_bridge:
-                self._data_bridge.advanced_analyzer.scaler = scaler
-                self.logger.info("归一化器已加载并同步到 DataBridge")
+            self._loaded_scaler = scaler
+            self.logger.info("归一化器已加载")
             QMessageBox.information(self, "加载成功", "归一化器文件加载成功！")
         except Exception as e:
             QMessageBox.critical(self, "加载失败", f"无法加载归一化器文件：{e}")
@@ -1601,16 +1599,24 @@ class AdvancedAnalysisTab(QWidget):
         self.info_last_trained.setText(datetime.now().strftime('%m-%d %H:%M'))
 
     def _sync_model_info_from_bridge(self):
-        if not self._data_bridge:
+        """从本地缓存的模型更新 UI 信息"""
+        if not hasattr(self, '_loaded_model') or self._loaded_model is None:
             return
         try:
-            info = self._data_bridge.get_advanced_model_info()
-            if info.get("status") == "已加载模型":
-                self.info_algorithm_type.setText(info.get("type", "--"))
-                self.algo_info_label.setText(f"算法：{info.get('type', '--')}")
-                self.info_feature_dim.setText(str(info.get("feature_dim", "--")))
-                self.info_num_classes.setText(str(info.get("num_classes", "--")))
-                self._update_feature_importance(info.get("feature_importance", {}))
+            model = self._loaded_model
+            model_type = type(model).__name__
+            self.info_algorithm_type.setText(model_type)
+            self.algo_info_label.setText(f"算法：{model_type}")
+            if hasattr(model, 'n_features_in_'):
+                self.info_feature_dim.setText(str(model.n_features_in_))
+            if hasattr(model, 'classes_'):
+                self.info_num_classes.setText(str(len(model.classes_)))
+            # 尝试获取特征重要性
+            if hasattr(model, 'feature_importances_'):
+                importances = model.feature_importances_
+                feature_names = getattr(model, 'feature_name_', None)
+                if feature_names is not None and len(feature_names) == len(importances):
+                    self._update_feature_importance(dict(zip(feature_names, importances)))
         except Exception as e:
             self.logger.error("同步模型信息失败：%s", e)
 
@@ -1665,27 +1671,16 @@ class AdvancedAnalysisTab(QWidget):
             self.training_status_label.setText("正在初始化训练...")
             self.train_model_btn.setEnabled(False)
 
-            if self._data_bridge:
-                analyzer = self._data_bridge.train_advanced_model(
-                    base_results, labels,
-                    use_cv=self.use_cv_check.isChecked(),
-                    compare=self.compare_algo_check.isChecked()
-                )
-                self._disconnect_analyzer_signals(analyzer)
-                analyzer.training_progress.connect(self._on_training_progress)
-                analyzer.training_status.connect(self._on_training_status)
-                analyzer.model_trained.connect(self._on_training_complete)
-            else:
-                from core.core.analysis.advanced_analyzer import AdvancedBehaviorAnalyzer
-                if hasattr(self, '_training_analyzer') and self._training_analyzer:
-                    self._disconnect_analyzer_signals(self._training_analyzer)
-                self._training_analyzer = AdvancedBehaviorAnalyzer(config_manager=self.config_manager)
-                self._training_analyzer.use_cross_validation = self.use_cv_check.isChecked()
-                self._training_analyzer.compare_algorithms = self.compare_algo_check.isChecked()
-                self._training_analyzer.training_progress.connect(self._on_training_progress)
-                self._training_analyzer.training_status.connect(self._on_training_status)
-                self._training_analyzer.model_trained.connect(self._on_training_complete)
-                self._training_analyzer.train_model(base_results, labels)
+            from core.core.analysis.advanced_analyzer import AdvancedBehaviorAnalyzer
+            if hasattr(self, '_training_analyzer') and self._training_analyzer:
+                self._disconnect_analyzer_signals(self._training_analyzer)
+            self._training_analyzer = AdvancedBehaviorAnalyzer(config_manager=self.config_manager)
+            self._training_analyzer.use_cross_validation = self.use_cv_check.isChecked()
+            self._training_analyzer.compare_algorithms = self.compare_algo_check.isChecked()
+            self._training_analyzer.training_progress.connect(self._on_training_progress)
+            self._training_analyzer.training_status.connect(self._on_training_status)
+            self._training_analyzer.model_trained.connect(self._on_training_complete)
+            self._training_analyzer.train_model(base_results, labels)
 
         except ImportError as e:
             self.logger.error("导入失败：%s", e)
@@ -1712,10 +1707,8 @@ class AdvancedAnalysisTab(QWidget):
         self.train_model_btn.setEnabled(True)
         self.training_progress.setVisible(False)
 
-        if self._data_bridge:
-            self._data_bridge.refresh_advanced_model()
-            self._sync_model_info_from_bridge()
-            self.logger.info("DataBridge 高级模型已在训练后刷新并同步")
+        self._sync_model_info_from_bridge()
+        self.logger.info("模型训练完成，UI 已更新")
 
         QMessageBox.information(
             self, "训练完成",

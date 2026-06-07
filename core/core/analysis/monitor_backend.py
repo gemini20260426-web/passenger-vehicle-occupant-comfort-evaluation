@@ -196,6 +196,39 @@ class SystemMonitorBackend:
             'max_ms': round(float(np.max(latencies_sorted)), 1),
         }
 
+    def get_health_report(self) -> dict:
+        """F4: 获取综合健康报告 (供 UI 面板和日志使用)"""
+        health = self.check_health()
+        perf = self.get_performance_summary()
+        dist = self.get_event_distribution()
+        imu = self.get_imu_quality_report()
+
+        return {
+            'health': health,
+            'performance': perf,
+            'event_distribution': dist,
+            'imu_quality': imu,
+            'summary': (
+                f"状态: {health['status_text']}, "
+                f"事件: {health['total_events']}, "
+                f"延迟: {health['avg_latency_ms']:.1f}ms, "
+                f"置信度均值: {health['avg_confidence']:.3f}, "
+                f"数据间隙: {health['data_gaps']}"
+            ),
+        }
+
+    def record_pipeline_event(self, event_type: str, confidence: float,
+                              latency_ms: float = 0.0) -> None:
+        """F4: 便捷记录接口 — 供 pipeline 一步调用
+
+        同时记录检测事件和置信度，自动计算近似的处理延迟。
+        """
+        self.record_detection(
+            event_type=event_type,
+            confidence=confidence,
+            latency_ms=latency_ms,
+        )
+
     def reset(self) -> None:
         """重置所有指标"""
         self._event_detect_latency.clear()

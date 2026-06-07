@@ -17,8 +17,13 @@ Core System Dashboard - 主程序入口
 import sys
 import os
 import ctypes
+import warnings
 
 sys.setrecursionlimit(5000)
+
+# 抑制 matplotlib tight_layout 兼容性警告 (非功能性, 不影响图表渲染)
+warnings.filterwarnings('ignore', message='.*tight_layout.*')
+warnings.filterwarnings('ignore', message='.*Axes that are not compatible with tight_layout.*')
 
 # ============================================================
 # 第一层：修复 Windows 控制台编码 (必须最先执行)
