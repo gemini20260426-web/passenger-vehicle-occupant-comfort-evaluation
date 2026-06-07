@@ -166,8 +166,8 @@ class TimelinePlotWidget(QWidget):
             for plot in [self.speed_plot, self.behavior_plot, self.risk_plot]:
                 try:
                     plot.removeItem(region)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.debug(f"清理事件区域失败: {e}")
         self._event_regions.clear()
         self.behavior_plot.clear()
 

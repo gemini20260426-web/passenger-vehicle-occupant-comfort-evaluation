@@ -124,6 +124,39 @@ class DataCard(QFrame):
 class DrivingRiskDashboard(QWidget):
     """驾驶评估仪表盘 — 卡片式布局"""
 
+    # ── 默认显示阈值 (可通过 config_manager 覆盖) ──
+    _DEFAULT_THRESHOLDS = {
+        # 维度评分等级
+        'dim_excellent': 80,   # >= 80 → 优秀
+        'dim_good': 60,        # >= 60 → 良好
+        'dim_fair': 40,        # >= 40 → 一般 (否则 较差)
+        # 碰撞风险等级
+        'collision_low': 20,   # <= 20 → 低风险
+        'collision_medium': 50, # <= 50 → 中等风险 (否则 高风险)
+        # 舒适度等级
+        'comfort_good': 70,    # >= 70 → 良好
+        'comfort_fair': 40,    # >= 40 → 一般 (否则 较差)
+        # Jerk 阈值 (m/s³)
+        'jerk_comfortable': 3.0,
+        'jerk_acceptable': 6.0,
+        # VDV 阈值 (m/s^1.75)
+        'vdv_comfortable': 1.0,
+        'vdv_acceptable': 2.0,
+        # TTC 安全阈值 (秒)
+        'ttc_safe': 3.0,
+        'ttc_caution': 1.5,
+        # 制动距离裕度 (米)
+        'brake_margin_min': 20.0,
+        # 因素贡献等级
+        'factor_high': 50,
+        'factor_medium': 20,
+        # 默认回退值
+        'default_ttc': 5.0,
+        'default_brake': 45.0,
+        'default_economy': 0.5,
+        'default_compliance': 0.5,
+    }
+
     def __init__(self, config_manager=None, parent=None):
         super().__init__(parent)
         self.logger = logging.getLogger(__name__)
@@ -136,7 +169,25 @@ class DrivingRiskDashboard(QWidget):
         self._category_counts = {cat: 0 for cat in BehaviorCategory}
         self._dim_values = {k: 0.5 for k in DIM_KEYS}
 
+        # 加载可配置阈值
+        self._thresholds = dict(self._DEFAULT_THRESHOLDS)
+        self._load_thresholds()
+
         self._init_ui()
+
+    def _load_thresholds(self):
+        """从 config_manager 加载 Dashboard 显示阈值, 回退到默认值"""
+        if self.config_manager is None:
+            return
+        try:
+            section = self.config_manager.get_section("DashboardThresholds")
+            if section:
+                for key in self._DEFAULT_THRESHOLDS:
+                    if key in section:
+                        self._thresholds[key] = float(section[key])
+                self.logger.debug("Dashboard 显示阈值已从配置加载")
+        except Exception as e:
+            self.logger.debug(f"加载 Dashboard 阈值失败, 使用默认值: {e}")
 
     def set_data_bridge(self, data_bridge):
         self._data_bridge = data_bridge
@@ -532,17 +583,21 @@ class DrivingRiskDashboard(QWidget):
         self._data_cards["wheel"].set_value(f"{float(wheel):.1f}" if wheel else "--")
 
     def _update_dimensions(self, report: RiskReport):
+        t = self._thresholds
+        default_eco = t['default_economy']
+        default_comp = t['default_compliance']
+
         dim_data = {
             "stability": (int(report.stability_margin * 100), report.stability_margin),
             "safety": (int((1 - report.collision_risk) * 100), 1 - report.collision_risk),
             "comfort": (int((1 - report.comfort_index) * 100), 1 - report.comfort_index),
-            "economy": (int(0.5 * 100), 0.5),
-            "compliance": (int(0.5 * 100), 0.5),
+            "economy": (int(default_eco * 100), default_eco),
+            "compliance": (int(default_comp * 100), default_comp),
         }
         
         factors = report.factors
-        eco_val = factors.get('fuel_efficiency', 0.5)
-        comp_val = factors.get('compliance_score', 0.5)
+        eco_val = factors.get('fuel_efficiency', default_eco)
+        comp_val = factors.get('compliance_score', default_comp)
         dim_data["economy"] = (int(eco_val * 100), eco_val)
         dim_data["compliance"] = (int(comp_val * 100), comp_val)
 
@@ -551,11 +606,11 @@ class DrivingRiskDashboard(QWidget):
             score, raw_val = dim_data.get(key, (50, 0.5))
             self._dim_values[key] = raw_val
 
-            if score >= 80:
+            if score >= t['dim_excellent']:
                 grade, color = "优秀", "#27ae60"
-            elif score >= 60:
+            elif score >= t['dim_good']:
                 grade, color = "良好", "#2980b9"
-            elif score >= 40:
+            elif score >= t['dim_fair']:
                 grade, color = "一般", "#f1c40f"
             else:
                 grade, color = "较差", "#e74c3c"
@@ -674,11 +729,12 @@ class DrivingRiskDashboard(QWidget):
         self._stability_table.setUpdatesEnabled(True)
 
     def _update_collision(self, report: RiskReport):
+        t = self._thresholds
         risk_pct = int(max(0, min(100, report.collision_risk * 100)))
 
-        if risk_pct <= 20:
+        if risk_pct <= t['collision_low']:
             color, status = "#27ae60", "低风险"
-        elif risk_pct <= 50:
+        elif risk_pct <= t['collision_medium']:
             color, status = "#f1c40f", "中等风险"
         else:
             color, status = "#e74c3c", "高风险"
@@ -688,25 +744,26 @@ class DrivingRiskDashboard(QWidget):
         self._set_cell(self._collision_table, 0, 2, status, color, True)
 
         factors = report.factors
-        ttc = factors.get('ttc', 5.0)
-        ttc_status = "安全" if ttc > 3 else "注意" if ttc > 1.5 else "危险"
-        ttc_color = "#27ae60" if ttc > 3 else "#f1c40f" if ttc > 1.5 else "#e74c3c"
+        ttc = factors.get('ttc', t['default_ttc'])
+        ttc_status = "安全" if ttc > t['ttc_safe'] else "注意" if ttc > t['ttc_caution'] else "危险"
+        ttc_color = "#27ae60" if ttc > t['ttc_safe'] else "#f1c40f" if ttc > t['ttc_caution'] else "#e74c3c"
         self._set_cell(self._collision_table, 1, 1, f"{ttc:.1f} s")
         self._set_cell(self._collision_table, 1, 2, ttc_status, ttc_color)
 
-        brake = factors.get('brake_distance_margin', 45)
-        brake_status = "充足" if brake > 20 else "不足"
-        brake_color = "#27ae60" if brake > 20 else "#e74c3c"
+        brake = factors.get('brake_distance_margin', t['default_brake'])
+        brake_status = "充足" if brake > t['brake_margin_min'] else "不足"
+        brake_color = "#27ae60" if brake > t['brake_margin_min'] else "#e74c3c"
         self._set_cell(self._collision_table, 2, 1, f"{brake:.1f} m")
         self._set_cell(self._collision_table, 2, 2, brake_status, brake_color)
         self._collision_table.setUpdatesEnabled(True)
 
     def _update_comfort(self, report: RiskReport):
+        t = self._thresholds
         comfort_pct = int(max(0, min(100, (1 - report.comfort_index) * 100)))
 
-        if comfort_pct >= 70:
+        if comfort_pct >= t['comfort_good']:
             color, status = "#27ae60", "良好"
-        elif comfort_pct >= 40:
+        elif comfort_pct >= t['comfort_fair']:
             color, status = "#f1c40f", "一般"
         else:
             color, status = "#e74c3c", "较差"
@@ -717,19 +774,20 @@ class DrivingRiskDashboard(QWidget):
 
         factors = report.factors
         jerk = factors.get('jerk', 2.0)
-        jerk_status = "舒适" if jerk < 3 else "可接受" if jerk < 6 else "不适"
-        jerk_color = "#27ae60" if jerk < 3 else "#f1c40f" if jerk < 6 else "#e74c3c"
+        jerk_status = "舒适" if jerk < t['jerk_comfortable'] else "可接受" if jerk < t['jerk_acceptable'] else "不适"
+        jerk_color = "#27ae60" if jerk < t['jerk_comfortable'] else "#f1c40f" if jerk < t['jerk_acceptable'] else "#e74c3c"
         self._set_cell(self._comfort_table, 1, 1, f"{jerk:.2f} m/s³")
         self._set_cell(self._comfort_table, 1, 2, jerk_status, jerk_color)
 
         vdv = factors.get('vdv', 0.8)
-        vdv_status = "舒适" if vdv < 1.0 else "可接受" if vdv < 2.0 else "不适"
-        vdv_color = "#27ae60" if vdv < 1.0 else "#f1c40f" if vdv < 2.0 else "#e74c3c"
+        vdv_status = "舒适" if vdv < t['vdv_comfortable'] else "可接受" if vdv < t['vdv_acceptable'] else "不适"
+        vdv_color = "#27ae60" if vdv < t['vdv_comfortable'] else "#f1c40f" if vdv < t['vdv_acceptable'] else "#e74c3c"
         self._set_cell(self._comfort_table, 2, 1, f"{vdv:.2f} m/s^1.75")
         self._set_cell(self._comfort_table, 2, 2, vdv_status, vdv_color)
         self._comfort_table.setUpdatesEnabled(True)
 
     def _update_factors(self, report: RiskReport, event: ManeuverEvent):
+        t = self._thresholds
         factors = report.factors
         factor_contrib = factors.get('factor_contributions', {})
 
@@ -749,9 +807,9 @@ class DrivingRiskDashboard(QWidget):
             val = factor_contrib.get(label, 0)
             self._set_cell(self._factor_table, i, 1, f"{val:.0f}")
 
-            if val >= 50:
+            if val >= t['factor_high']:
                 lvl, lvl_color = "高", "#e74c3c"
-            elif val >= 20:
+            elif val >= t['factor_medium']:
                 lvl, lvl_color = "中", "#f1c40f"
             elif val > 0:
                 lvl, lvl_color = "低", "#27ae60"

@@ -118,8 +118,8 @@ class EventReplayWidget(QWidget):
         try:
             self.duration_label.setText(f"时长: {self._duration:.1f}s")
             self.progress_bar.setMaximum(int(self._duration * 10))
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"更新时长显示失败: {e}")
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
