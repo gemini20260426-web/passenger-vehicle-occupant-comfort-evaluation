@@ -11,7 +11,7 @@
 """
 
 import numpy as np
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, sosfiltfilt
 from typing import Dict, Any, Optional, Tuple
 import logging
 
@@ -143,8 +143,8 @@ class DataPreprocessor:
             return data
         nyq = 0.5 * self.sample_rate
         normal_cutoff = min(self.lowpass_cutoff / nyq, 0.99)
-        b, a = butter(order, normal_cutoff, btype='low')
-        return filtfilt(b, a, data)
+        sos = butter(order, normal_cutoff, btype='low', output='sos')
+        return sosfiltfilt(sos, data)
 
     def compute_calibration_params(self, acc_data: np.ndarray, gyro_data: np.ndarray) -> Dict[str, Any]:
         n = min(self._calib_samples_count, len(acc_data))

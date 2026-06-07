@@ -32,8 +32,8 @@ class CFCOperator:
                 normalized_cutoff = 0.99
             if normalized_cutoff < 0.01:
                 normalized_cutoff = 0.01
-            b, a = signal.butter(self._butter_order, normalized_cutoff, btype='low')
-            filtered_data = signal.filtfilt(b, a, data)
+            sos = signal.butter(self._butter_order, normalized_cutoff, btype='low', output='sos')
+            filtered_data = signal.sosfiltfilt(sos, data)
             return filtered_data
         except Exception as e:
             logger.error(f"CFC滤波失败: {e}")
@@ -168,20 +168,20 @@ class WeightingOperator:
             f_trans = 3.0
             f_high = 100.0
 
-            b_hp, a_hp = signal.butter(2, f_low / nyq, btype='high')
-            data = signal.filtfilt(b_hp, a_hp, data)
-            b_lp, a_lp = signal.butter(2, f_high / nyq, btype='low')
-            data = signal.filtfilt(b_lp, a_lp, data)
-            b_t, a_t = signal.butter(2, f_trans / nyq, btype='low')
-            data = signal.filtfilt(b_t, a_t, data)
+            sos_hp = signal.butter(2, f_low / nyq, btype='high', output='sos')
+            data = signal.sosfiltfilt(sos_hp, data)
+            sos_lp = signal.butter(2, f_high / nyq, btype='low', output='sos')
+            data = signal.sosfiltfilt(sos_lp, data)
+            sos_t = signal.butter(2, f_trans / nyq, btype='low', output='sos')
+            data = signal.sosfiltfilt(sos_t, data)
         else:
             f_low = 0.4
             f_high = 100.0
 
-            b_hp, a_hp = signal.butter(2, f_low / nyq, btype='high')
-            data = signal.filtfilt(b_hp, a_hp, data)
-            b_lp, a_lp = signal.butter(2, f_high / nyq, btype='low')
-            data = signal.filtfilt(b_lp, a_lp, data)
+            sos_hp = signal.butter(2, f_low / nyq, btype='high', output='sos')
+            data = signal.sosfiltfilt(sos_hp, data)
+            sos_lp = signal.butter(2, f_high / nyq, btype='low', output='sos')
+            data = signal.sosfiltfilt(sos_lp, data)
 
         return data
 
@@ -292,10 +292,10 @@ class IntegrationOperator:
             return np.zeros_like(acc)
         try:
             nyq = sample_rate / 2.0
-            b, a = signal.butter(2, 0.5 / nyq, btype='high')
-            acc_f = signal.filtfilt(b, a, acc)
+            sos = signal.butter(2, 0.5 / nyq, btype='high', output='sos')
+            acc_f = signal.sosfiltfilt(sos, acc)
             vel = np.cumsum(acc_f) / sample_rate
-            vel_f = signal.filtfilt(b, a, vel)
+            vel_f = signal.sosfiltfilt(sos, vel)
             disp = np.cumsum(vel_f) / sample_rate * 1000.0
             return disp
         except Exception as e:

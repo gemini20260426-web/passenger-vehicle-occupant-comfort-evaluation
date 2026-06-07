@@ -94,30 +94,29 @@ class _RealtimeButterworth:
 
     SAE J211-1 建议座椅振动分析使用 CFC 60 (截止频率 ~100Hz)，
     人体振动感知关注 0-10Hz，此处默认10Hz截止频率 + 2阶滤波。
-    使用 lfilter (因果) + 状态追踪实现实时流式处理。
+    使用 sosfilt (因果) + SOS 二阶节实现实时流式处理，数值稳定性优于 ba 形式。
     """
 
     def __init__(self, cutoff=10.0, fs=100.0, order=2):
         self._cutoff = cutoff
         self._fs = fs
         self._order = order
-        self._b = None
-        self._a = None
+        self._sos = None
         self._zi = None
         self._state = None
         self._init_filter()
 
     def _init_filter(self):
-        from scipy.signal import butter, lfilter_zi
+        from scipy.signal import butter, sosfilt_zi
         nyq = 0.5 * self._fs
         normal_cutoff = min(max(self._cutoff / nyq, 0.01), 0.99)
-        self._b, self._a = butter(self._order, normal_cutoff, btype='low')
-        self._zi = lfilter_zi(self._b, self._a)
+        self._sos = butter(self._order, normal_cutoff, btype='low', output='sos')
+        self._zi = sosfilt_zi(self._sos)
         self._state = self._zi.copy()
 
     def filter(self, value):
-        from scipy.signal import lfilter
-        filtered, self._state = lfilter(self._b, self._a, [float(value)], zi=self._state)
+        from scipy.signal import sosfilt
+        filtered, self._state = sosfilt(self._sos, [float(value)], zi=self._state)
         return float(filtered[0])
 
     def reset(self):
