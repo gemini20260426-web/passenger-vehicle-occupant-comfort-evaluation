@@ -59,12 +59,6 @@ class ABModelComparisonWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        # ——— 顶栏 ———
-        title = QLabel("A/B 模型对比")
-        title.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
-        title.setStyleSheet("color: #2F5496;")
-        layout.addWidget(title)
-
         # ——— 模型加载 ———
         load_group = QGroupBox("模型加载")
         load_layout = QGridLayout(load_group)

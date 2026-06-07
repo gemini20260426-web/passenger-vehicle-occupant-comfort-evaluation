@@ -64,12 +64,6 @@ class EventReplayWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        # ——— 顶栏 ———
-        title = QLabel("事件回放")
-        title.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
-        title.setStyleSheet("color: #2F5496;")
-        layout.addWidget(title)
-
         # ——— 回放控制 ———
         ctrl_group = QGroupBox("🎮 回放控制")
         ctrl_layout = QHBoxLayout(ctrl_group)

@@ -197,12 +197,8 @@ class MLTrainingPanel(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
 
-        # ——— 顶栏 ———
+        # ——— 状态指示 ———
         top_bar = QHBoxLayout()
-        title = QLabel("驾驶行为 ML 训练与推理")
-        title.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
-        title.setStyleSheet("color: #2F5496;")
-        top_bar.addWidget(title)
         top_bar.addStretch()
 
         self.status_indicator = QLabel("● 就绪")
