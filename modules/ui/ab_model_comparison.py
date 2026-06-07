@@ -31,11 +31,15 @@ logger = logging.getLogger(__name__)
 class ABModelComparisonWidget(QWidget):
     """A/B 模型对比视图
 
+    支持两种模式:
+      1. 手动模式: load_model_a/b + add_comparison_frame
+      2. 自动模式: set_data_bridge 后自动接收实时事件并对比
+
     用法:
         widget = ABModelComparisonWidget()
+        widget.set_data_bridge(data_bridge)  # 自动模式
         widget.load_model_a("path/to/model_a.pkl")
         widget.load_model_b("path/to/model_b.pkl")
-        widget.add_comparison_frame(features, ground_truth)
     """
 
     comparison_result = Signal(dict)  # 对比结果
@@ -44,6 +48,7 @@ class ABModelComparisonWidget(QWidget):
         super().__init__(parent)
         self.logger = logging.getLogger(__name__)
 
+        self._data_bridge = None
         self._model_a = None
         self._model_b = None
         self._model_a_path = ""
@@ -54,6 +59,28 @@ class ABModelComparisonWidget(QWidget):
         self._max_comparisons = 100
 
         self._init_ui()
+
+    def set_data_bridge(self, data_bridge):
+        """连接 DataBridge，自动接收实时事件进行模型对比"""
+        self._data_bridge = data_bridge
+        if data_bridge:
+            try:
+                data_bridge.behavior_event_ready.connect(self._on_event_for_comparison)
+                self.logger.info("A/B模型对比组件已连接 DataBridge (behavior_event_ready)")
+            except Exception as e:
+                self.logger.error(f"连接 DataBridge 失败: {e}", exc_info=True)
+
+    def _on_event_for_comparison(self, event):
+        """自动将实时事件推送到模型对比"""
+        if not self._model_a or not self._model_b:
+            return
+        try:
+            feature_attrs = ['ax', 'ay', 'az', 'gx', 'gy', 'gz', 'speed', 'wheel']
+            features = {attr: float(getattr(event, attr, 0.0) or 0.0) for attr in feature_attrs}
+            etype = str(getattr(event, 'event_type', getattr(event, 'type', 'unknown')))
+            self.add_comparison_frame(features, etype)
+        except Exception as e:
+            self.logger.warning(f"自动对比事件失败: {e}", exc_info=True)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -192,7 +219,7 @@ class ABModelComparisonWidget(QWidget):
                 f"平均置信度差异: {summary.get('avg_conf_diff', 0):.3f}")
 
         except Exception as e:
-            self.logger.error(f"对比失败: {e}")
+            self.logger.error(f"对比失败: {e}", exc_info=True)
             QMessageBox.critical(self, "对比失败", str(e))
 
     def _generate_summary(self) -> dict:

@@ -32,7 +32,9 @@ logger = logging.getLogger('fast_train_gen')
 from core.core.analysis.core_types import BEHAVIOR_TYPES_V2
 
 # 事件名映射: event_analysis.csv 中的中文名 → 系统事件类型
+# 覆盖 expert_evaluation 中实际出现的所有事件名 (24 种)
 EVENT_LABEL_MAP = {
+    # ── 原有映射 (13 种) ──
     '复合工况': 'cornering_braking',
     '制动减速': 'normal_deceleration',
     '加速': 'normal_acceleration',
@@ -46,6 +48,30 @@ EVENT_LABEL_MAP = {
     '匀速': 'constant_speed',
     '正常': 'normal',
     '起步': 'launch',
+    # ── 新增映射 (11 种) — expert_evaluation 中实际出现 ──
+    '转向/变道': 'lane_change',
+    '左转': 'tight_turn',
+    '右转': 'wide_turn',
+    '急刹车': 'emergency_braking',
+    '弯道加速': 'cornering_acceleration',
+    '弯道减速': 'cornering_deceleration',
+    '蛇形驾驶': 'weaving',
+    '恒速行驶': 'constant_speed',
+    '车道保持': 'lane_keeping',
+    '正常加速': 'normal_acceleration',
+    '正常减速': 'normal_deceleration',
+    '激进加速': 'aggressive_acceleration',
+    '激进减速': 'aggressive_deceleration',
+    '大半径转弯': 'wide_turn',
+    '小半径转弯': 'tight_turn',
+    'U型转弯': 'u_turn',
+    '急速变向': 'rapid_direction_change',
+    '侧滑风险': 'skid_risk',
+    '侧翻风险': 'rollover_risk',
+    '驻车': 'stopped',
+    '匀速直行': 'straight_driving',
+    '传感器异常': 'sensor_fault',
+    '剧烈颠簸': 'severe_bump',
 }
 
 
@@ -84,6 +110,7 @@ class FastTrainingDataGenerator:
 
         # 过滤主 IMU
         if 'imu_name' in df.columns:
+            df['imu_name'] = df['imu_name'].astype(str)
             df = df[df['imu_name'].str.contains(self.primary_imu, na=False)]
             logger.info(f"过滤 {self.primary_imu} 后: {len(df)} 行")
 
@@ -132,9 +159,10 @@ class FastTrainingDataGenerator:
             X_vec = adapter.get_feature_vector(feat_dict)
             features_list.append(X_vec)
 
-            # 确定标签
-            window_t = timestamps[start]
-            label = self._get_label(window_t, event_windows)
+            # 确定标签 (取窗口内多数标签，而非仅起始点)
+            window_t_start = timestamps[start]
+            window_t_end = timestamps[end - 1]
+            label = self._get_majority_label(window_t_start, window_t_end, event_windows)
             labels_list.append(label_to_id.get(label, 0))
 
             if (i + 1) % 5000 == 0:
@@ -227,22 +255,63 @@ class FastTrainingDataGenerator:
         """加载事件标注"""
         df = pd.read_csv(self.event_csv)
         windows = []
+        unmapped_events = set()
         for _, row in df.iterrows():
             t_start = float(row['t_start'])
             t_end = float(row['t_end'])
             if t_end < t_min or t_start > t_max:
                 continue
             event_name = str(row['event'])
-            mapped = EVENT_LABEL_MAP.get(event_name, 'normal')
+            if event_name not in EVENT_LABEL_MAP:
+                unmapped_events.add(event_name)
+                continue
+            mapped = EVENT_LABEL_MAP[event_name]
             windows.append((t_start, t_end, mapped))
+        if unmapped_events:
+            logger.warning(f"未映射事件名 ({len(unmapped_events)} 种): {unmapped_events}")
         return windows
 
     def _get_label(self, t: float, event_windows: List[Tuple[float, float, str]]) -> str:
-        """获取时间点 t 的标签"""
-        for t_start, t_end, label in event_windows:
-            if t_start <= t <= t_end:
-                return label
-        return 'normal'
+        """获取时间点 t 的标签 (处理重叠事件: 优先匹配持续时间较短的事件)"""
+        matches = [(t_start, t_end, label) for t_start, t_end, label in event_windows
+                   if t_start <= t <= t_end]
+        if not matches:
+            return 'normal'
+        # 重叠事件: 优先选择持续时间最短的事件 (更精确的标注)
+        if len(matches) > 1:
+            matches.sort(key=lambda x: x[1] - x[0])
+        return matches[0][2]
+
+    def _get_majority_label(
+        self, t_start: float, t_end: float,
+        event_windows: List[Tuple[float, float, str]],
+        n_samples: int = 10,
+    ) -> str:
+        """获取窗口 [t_start, t_end] 内的多数标签
+        
+        在窗口内均匀采样 n_samples 个时间点，统计每个时间点对应的标签，
+        返回出现次数最多的标签（平局时优先选择非 normal 标签）。
+        
+        Args:
+            t_start: 窗口起始时间
+            t_end: 窗口结束时间
+            event_windows: 事件窗口列表
+            n_samples: 采样点数
+        """
+        from collections import Counter
+        
+        label_counts = Counter()
+        for i in range(n_samples):
+            t = t_start + (t_end - t_start) * i / (n_samples - 1) if n_samples > 1 else t_start
+            label = self._get_label(t, event_windows)
+            label_counts[label] += 1
+        
+        # 平局时优先选择非 normal 标签（更有信息量）
+        if len(label_counts) > 1:
+            most_common = label_counts.most_common()
+            if most_common[0][0] == 'normal' and len(most_common) > 1:
+                return most_common[1][0]
+        return label_counts.most_common(1)[0][0]
 
     @staticmethod
     def _skewness(x: np.ndarray) -> float:

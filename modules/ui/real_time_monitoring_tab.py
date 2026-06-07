@@ -2700,6 +2700,48 @@ class ComparisonTab(QWidget):
         """设置父级 RealTimeMonitoringTab 引用，用于批量加载已有事件"""
         self._parent_tab = parent_tab
 
+    def set_data_bridge(self, data_bridge):
+        """连接 DataBridge，直接接收实时事件"""
+        self._data_bridge = data_bridge
+        if data_bridge:
+            try:
+                data_bridge.behavior_event_ready.connect(self._on_data_bridge_event)
+                self.logger.info("ComparisonTab 已直接连接 DataBridge (behavior_event_ready)")
+            except Exception as e:
+                self.logger.error(f"ComparisonTab 连接 DataBridge 失败: {e}", exc_info=True)
+
+    def _on_data_bridge_event(self, event):
+        """直接接收 DataBridge 实时事件"""
+        try:
+            from core.core.analysis.event_confidence_refiner import RefinedEvent
+            t_start = float(getattr(event, 'timestamp', getattr(event, 'start_time', 0)))
+            t_end = float(getattr(event, 'end_time', t_start + getattr(event, 'duration', 0.5)))
+            ev_type = str(getattr(event, 'event_type', getattr(event, 'type', 'unknown')))
+            conf = float(getattr(event, 'confidence', 0.0))
+            refined = RefinedEvent(
+                event_type=ev_type,
+                category=str(getattr(event, 'category', '')),
+                confidence=conf,
+                t_start=t_start,
+                t_end=t_end,
+                speed=float(getattr(event, 'speed', 0.0) or 0.0),
+                l3_score=float(getattr(event, 'l3_score', conf)),
+                l4_score=float(getattr(event, 'l4_score', conf * 0.95)),
+                ts_score=float(getattr(event, 'ts_score', conf)),
+                hmm_confidence=float(getattr(event, 'hmm_confidence', conf)),
+                physics_pass=True,
+                verdict="confirmed",
+                requires_review=conf < 0.85,
+                review_reason="置信度偏低" if conf < 0.85 else "",
+            )
+            self._event_history.append(refined)
+            if len(self._event_history) > self.max_cache_size:
+                self._event_history = self._event_history[-self.max_cache_size:]
+            if self._event_review_panel:
+                self._event_review_panel.set_review_data(self._event_history)
+        except Exception as e:
+            self.logger.warning(f"ComparisonTab 处理实时事件失败: {e}", exc_info=True)
+
     def _bulk_review_existing(self):
         """批量加载已有事件到复核面板
 
@@ -3035,6 +3077,8 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 self.comparison_tab.set_parent_tab(self)  # 注入父级引用，用于批量加载
                 self.main_tabs.insertTab(3, self.comparison_tab, "事件复核")
                 self.main_tabs.removeTab(4)
+                if self._data_bridge:
+                    self.comparison_tab.set_data_bridge(self._data_bridge)
             elif index == 4:
                 # Phase 1+2: ML 训练面板
                 from modules.ui.ml_training_panel import MLTrainingPanel
@@ -3138,6 +3182,15 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
             self.ml_training_panel.set_data_bridge(data_bridge)
         if hasattr(self, 'waveform_view') and self.waveform_view:
             self.waveform_view.set_data_bridge(data_bridge)
+        # 事件复核 (ComparisonTab) 直接连接
+        if hasattr(self, 'comparison_tab') and self.comparison_tab:
+            self.comparison_tab.set_data_bridge(data_bridge)
+        # A/B 模型对比 自动集成
+        if hasattr(self, 'ab_comparison_view') and self.ab_comparison_view:
+            self.ab_comparison_view.set_data_bridge(data_bridge)
+        # 事件回放 自动集成
+        if hasattr(self, 'event_replay_view') and self.event_replay_view:
+            self.event_replay_view.set_data_bridge(data_bridge)
         if data_bridge:
             data_bridge.sensor_data_received.connect(self._on_sensor_data_received)
             data_bridge.frame_result_ready.connect(self.process_frame_result)

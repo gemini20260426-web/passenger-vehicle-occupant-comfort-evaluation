@@ -30,11 +30,14 @@ logger = logging.getLogger(__name__)
 class EventReplayWidget(QWidget):
     """事件回放模式
 
+    支持两种模式:
+      1. 手动模式: load_events + load_frames + start_replay
+      2. 自动模式: set_data_bridge 后自动收集实时事件供回放
+
     用法:
         widget = EventReplayWidget()
-        widget.load_events(events_list)
-        widget.load_frames(frames_list)
-        widget.start_replay()
+        widget.set_data_bridge(data_bridge)  # 自动模式: 实时收集事件
+        widget.start_replay()               # 回放已收集的事件
     """
 
     event_highlighted = Signal(dict)     # 事件高亮
@@ -45,6 +48,7 @@ class EventReplayWidget(QWidget):
         super().__init__(parent)
         self.logger = logging.getLogger(__name__)
 
+        self._data_bridge = None
         self._events: List[Dict] = []
         self._frames: List[Dict] = []
         self._current_pos = 0.0
@@ -52,6 +56,7 @@ class EventReplayWidget(QWidget):
         self._speed = 1.0
         self._duration = 0.0
         self._frame_index = 0
+        self._max_events = 500  # 最大缓存事件数
 
         # 定时器控制回放
         self._replay_timer = QTimer(self)
@@ -59,6 +64,62 @@ class EventReplayWidget(QWidget):
         self._replay_timer.setInterval(100)  # 100ms per step
 
         self._init_ui()
+
+    def set_data_bridge(self, data_bridge):
+        """连接 DataBridge，自动收集实时事件和帧数据"""
+        self._data_bridge = data_bridge
+        if data_bridge:
+            try:
+                data_bridge.behavior_event_ready.connect(self._on_new_event)
+                data_bridge.frame_result_ready.connect(self._on_new_frame)
+                self.logger.info("事件回放组件已连接 DataBridge (behavior_event_ready + frame_result_ready)")
+            except Exception as e:
+                self.logger.error(f"连接 DataBridge 失败: {e}", exc_info=True)
+
+    def _on_new_event(self, event):
+        """自动收集实时事件"""
+        try:
+            event_dict = {
+                'event_type': str(getattr(event, 'event_type', getattr(event, 'type', 'unknown'))),
+                'timestamp': float(getattr(event, 'timestamp', 0)),
+                'confidence': float(getattr(event, 'confidence', 0)),
+                'category': str(getattr(event, 'category', '')),
+                'duration': float(getattr(event, 'duration', 0)),
+            }
+            self._events.append(event_dict)
+            if len(self._events) > self._max_events:
+                self._events = self._events[-self._max_events:]
+            self._update_event_table()
+            # 更新回放时长
+            if self._events:
+                self._duration = max(e['timestamp'] for e in self._events)
+                self._update_duration()
+        except Exception as e:
+            self.logger.warning(f"收集事件失败: {e}", exc_info=True)
+
+    def _on_new_frame(self, frame_data):
+        """自动收集帧数据"""
+        try:
+            frame_dict = {
+                'timestamp': float(getattr(frame_data, 'timestamp', 0)),
+                'ax': float(getattr(frame_data, 'ax', 0.0) or 0.0),
+                'ay': float(getattr(frame_data, 'ay', 0.0) or 0.0),
+                'az': float(getattr(frame_data, 'az', 0.0) or 0.0),
+                'speed': float(getattr(frame_data, 'speed', 0.0) or 0.0),
+            }
+            self._frames.append(frame_dict)
+            if len(self._frames) > self._max_events * 10:
+                self._frames = self._frames[-self._max_events * 10:]
+        except Exception as e:
+            self.logger.warning(f"收集帧数据失败: {e}", exc_info=True)
+
+    def _update_duration(self):
+        """更新回放时长显示"""
+        try:
+            self.duration_label.setText(f"时长: {self._duration:.1f}s")
+            self.progress_bar.setMaximum(int(self._duration * 10))
+        except Exception:
+            pass
 
     def _init_ui(self):
         layout = QVBoxLayout(self)

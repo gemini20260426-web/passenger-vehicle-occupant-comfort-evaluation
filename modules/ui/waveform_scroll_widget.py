@@ -331,11 +331,11 @@ class WaveformScrollWidget(QWidget):
         self._data_bridge = data_bridge
         if data_bridge:
             try:
-                data_bridge.frame_ready.connect(self._on_frame_ready)
+                data_bridge.frame_result_ready.connect(self._on_frame_ready)
                 data_bridge.behavior_event_ready.connect(self._on_event_detected)
-                self.logger.info("波形滚动组件已连接 DataBridge")
+                self.logger.info("波形滚动组件已连接 DataBridge (frame_result_ready + behavior_event_ready)")
             except Exception as e:
-                self.logger.warning(f"连接 DataBridge 失败: {e}")
+                self.logger.error(f"连接 DataBridge 失败: {e}", exc_info=True)
 
     def _on_frame_ready(self, frame_data):
         """处理实时帧数据"""
@@ -345,8 +345,8 @@ class WaveformScrollWidget(QWidget):
             az = getattr(frame_data, 'az', 0.0) or 0.0
             ts = getattr(frame_data, 'timestamp', time.time()) or time.time()
             self.add_data(float(ax), float(ay), float(az), float(ts))
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(f"处理帧数据失败: {e}", exc_info=True)
 
     def _on_event_detected(self, event):
         """处理检测到的事件"""
@@ -355,5 +355,5 @@ class WaveformScrollWidget(QWidget):
             ts = float(getattr(event, 'timestamp', 0))
             conf = float(getattr(event, 'confidence', 0))
             self.add_event(etype, ts, conf)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(f"处理事件数据失败: {e}", exc_info=True)

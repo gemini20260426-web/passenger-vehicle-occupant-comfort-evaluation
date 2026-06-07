@@ -45,30 +45,44 @@ logger = logging.getLogger('train_lgbm')
 def load_training_data(
     data_path: Optional[str] = None,
     csv_path: Optional[str] = None,
+    event_csv: Optional[str] = None,
     max_samples: int = 50000,
     use_label_column: bool = False,
+    data_dir: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """加载训练数据
 
     Args:
         data_path: .npz 文件路径
         csv_path: CSV 文件路径
+        event_csv: 事件标注 CSV 路径 (event_analysis.csv)
         max_samples: 最大样本数
         use_label_column: 是否使用 CSV 中的 event_label 列
+        data_dir: data_output 目录 (批量模式, 自动配对)
 
     Returns:
         (X, y) 训练数据
     """
-    if data_path and os.path.exists(data_path):
-        logger.info(f"从 {data_path} 加载数据...")
-        data = np.load(data_path)
-        X, y = data['X'], data['y']
-        logger.info(f"已加载: {X.shape[0]} 样本, {X.shape[1]} 特征")
+    # 优先级: data_dir > csv_path > data_path > 合成数据
+    if data_dir and os.path.isdir(data_dir):
+        from core.core.analysis.batch_training_data_generator import BatchTrainingDataGenerator
+        gen = BatchTrainingDataGenerator(data_output_dir=data_dir, max_windows_per_file=max_samples)
+        X, y, stats = gen.generate_all(output_path=data_path or 'training_data_real.npz')
+        logger.info(f"从 data_output 批量生成训练数据: {X.shape[0]} 样本, {X.shape[1]} 特征")
         return X, y
 
-    if csv_path:
+    if csv_path and os.path.exists(csv_path):
         if use_label_column:
             X, y = _load_from_labeled_csv(csv_path)
+        elif event_csv and os.path.exists(event_csv):
+            from core.core.analysis.fast_training_data_generator import FastTrainingDataGenerator
+            gen = FastTrainingDataGenerator(
+                csv_path=csv_path,
+                event_csv=event_csv,
+                max_windows=max_samples,
+            )
+            X, y = gen.generate()
+            logger.info(f"从 CSV + 事件标注生成训练数据: {X.shape[0]} 样本")
         else:
             from core.core.analysis.training_data_generator import TrainingDataGenerator
             gen = TrainingDataGenerator(
@@ -78,7 +92,18 @@ def load_training_data(
             X, y = gen.generate()
         return X, y
 
-    raise ValueError("请提供 --data 或 --csv 参数")
+    if data_path and os.path.exists(data_path):
+        logger.info(f"从 {data_path} 加载数据...")
+        data = np.load(data_path, allow_pickle=True)
+        X, y = data['X'], data['y']
+        logger.info(f"已加载: {X.shape[0]} 样本, {X.shape[1]} 特征")
+        return X, y
+
+    # 兜底: 合成数据
+    from core.core.analysis.generate_synthetic_data import generate_synthetic_data
+    X, y = generate_synthetic_data(n_samples_per_class=400)
+    logger.info(f"生成合成训练数据: {X.shape[0]} 样本, {X.shape[1]} 特征")
+    return X, y
 
 
 def _load_from_labeled_csv(csv_path: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -161,6 +186,11 @@ def train_model(
     y: np.ndarray,
     test_size: float = 0.2,
     random_state: int = 42,
+    n_estimators: int = 500,
+    max_depth: int = 10,
+    learning_rate: float = 0.03,
+    num_leaves: int = 63,
+    skip_smote: bool = False,
 ) -> dict:
     """训练 LightGBM 模型
 
@@ -193,24 +223,28 @@ def train_model(
         name = id_to_label.get(label_id, f'id_{label_id}')
         logger.info(f"  {name}: {count}")
 
-    # SMOTE 过采样
-    logger.info("执行 SMOTE 过采样...")
-    min_class_count = min(Counter(y).values())
-    k_neighbors = min(5, min_class_count - 1, 3)
-    if k_neighbors < 1:
-        k_neighbors = 1
+    # SMOTE 过采样 (如果外部已做 SMOTE 则跳过)
+    if not skip_smote:
+        logger.info("执行 SMOTE 过采样...")
+        min_class_count = min(Counter(y).values())
+        k_neighbors = min(5, min_class_count - 1, 3)
+        if k_neighbors < 1:
+            k_neighbors = 1
 
-    smote = SMOTE(
-        sampling_strategy='auto',
-        k_neighbors=k_neighbors,
-        random_state=random_state,
-    )
-    X_res, y_res = smote.fit_resample(X, y)
-    logger.info(f"SMOTE 完成: {len(X)} → {len(X_res)} 样本")
-    logger.info("均衡后标签分布:")
-    for label_id, count in Counter(y_res).most_common(10):
-        name = id_to_label.get(label_id, f'id_{label_id}')
-        logger.info(f"  {name}: {count}")
+        smote = SMOTE(
+            sampling_strategy='auto',
+            k_neighbors=k_neighbors,
+            random_state=random_state,
+        )
+        X_res, y_res = smote.fit_resample(X, y)
+        logger.info(f"SMOTE 完成: {len(X)} → {len(X_res)} 样本")
+        logger.info("均衡后标签分布:")
+        for label_id, count in Counter(y_res).most_common(10):
+            name = id_to_label.get(label_id, f'id_{label_id}')
+            logger.info(f"  {name}: {count}")
+    else:
+        X_res, y_res = X, y
+        logger.info("跳过 SMOTE (外部已处理)")
 
     # 训练/验证集划分
     X_train, X_val, y_train, y_val = train_test_split(
@@ -224,16 +258,19 @@ def train_model(
     t0 = time.time()
 
     model = lgb.LGBMClassifier(
-        n_estimators=200,
-        max_depth=10,
-        num_leaves=31,
-        learning_rate=0.05,
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        num_leaves=num_leaves,
+        learning_rate=learning_rate,
         objective='multiclass',
         num_class=n_classes,
         class_weight='balanced',
         random_state=random_state,
         n_jobs=-1,
         verbose=-1,
+        min_child_samples=10,
+        subsample=0.8,
+        colsample_bytree=0.8,
     )
 
     model.fit(
@@ -395,15 +432,29 @@ def main():
   # 从带标签的 CSV 训练
   python -m core.core.analysis.train_lgbm_model --csv test/test_data_seat_vibration.csv --use_label_column
 
+  # 从 data_output 真实数据训练 (批量模式)
+  python -m core.core.analysis.train_lgbm_model --data_dir data_output
+
+  # 从单个 parsed_data CSV + 事件标注训练
+  python -m core.core.analysis.train_lgbm_model \\
+      --csv data_output/parsed_data_20260606_094258.csv \\
+      --event_csv data_output/expert_evaluation_20260606_095159/event_analysis.csv
+
+  # 渐进式训练 (合成 + 真实)
+  python -m core.core.analysis.train_lgbm_model --data_dir data_output --progressive
+
   # 仅验证已有模型
   python -m core.core.analysis.train_lgbm_model --verify
         """,
     )
     parser.add_argument('--csv', type=str, help='输入 CSV 文件路径')
+    parser.add_argument('--event_csv', type=str, help='事件标注 CSV 路径 (event_analysis.csv)')
     parser.add_argument('--data', type=str, help='.npz 训练数据文件路径')
+    parser.add_argument('--data_dir', type=str, help='data_output 目录 (批量模式, 自动配对)')
     parser.add_argument('--output', type=str, default='training_data.npz', help='训练数据输出路径')
     parser.add_argument('--max_samples', type=int, default=50000, help='最大处理样本数')
     parser.add_argument('--use_label_column', action='store_true', help='使用 CSV 中 event_label 列')
+    parser.add_argument('--progressive', action='store_true', help='启用渐进式训练 (合成 + 真实)')
     parser.add_argument('--verify', action='store_true', help='仅验证已有模型')
     parser.add_argument('--test_size', type=float, default=0.2, help='验证集比例')
 
@@ -413,15 +464,24 @@ def main():
         verify_model()
         return
 
-    if not args.csv and not args.data:
-        parser.error("请提供 --csv 或 --data 参数")
+    if not args.csv and not args.data and not args.data_dir:
+        parser.error("请提供 --csv, --data 或 --data_dir 参数")
+
+    # 渐进式训练模式
+    if args.progressive:
+        if not args.data_dir:
+            parser.error("--progressive 需要 --data_dir 参数")
+        _run_progressive_training(args)
+        return
 
     # 加载数据
     X, y = load_training_data(
         data_path=args.data,
         csv_path=args.csv,
+        event_csv=args.event_csv,
         max_samples=args.max_samples,
         use_label_column=args.use_label_column,
+        data_dir=args.data_dir,
     )
 
     if len(X) == 0:
@@ -444,6 +504,71 @@ def main():
     print(f"  准确率: {results['accuracy']*100:.1f}%")
     print(f"  模型路径: {results['model_path']}")
     print(f"  训练用时: {results['train_time']:.1f}s")
+    print("=" * 60)
+
+
+def _run_progressive_training(args):
+    """渐进式训练: 合成 + 真实 混合"""
+    from core.core.analysis.generate_synthetic_data import generate_synthetic_data
+    from core.core.analysis.batch_training_data_generator import BatchTrainingDataGenerator
+    from core.core.analysis.adaptive_balancer import AdaptiveBalancingStrategy
+    from core.core.analysis.sensor_fault_augmenter import SensorFaultAugmenter
+    from core.core.analysis.progressive_trainer import ProgressiveTrainingStrategy
+
+    logger.info("=" * 60)
+    logger.info("渐进式训练模式")
+    logger.info("=" * 60)
+
+    # 1. 生成合成数据 (基准)
+    logger.info("\n[Step 1] 生成合成基准数据...")
+    X_synth, y_synth = generate_synthetic_data(n_samples_per_class=400)
+    logger.info(f"合成数据: {X_synth.shape[0]} 样本, {len(set(y_synth))} 类")
+
+    # 2. 从 data_output 生成真实数据
+    logger.info("\n[Step 2] 生成真实训练数据...")
+    gen = BatchTrainingDataGenerator(
+        data_output_dir=args.data_dir,
+        max_windows_per_file=args.max_samples,
+    )
+    X_real, y_real, stats = gen.generate_all(output_path='training_data_real.npz')
+    logger.info(f"真实数据: {X_real.shape[0]} 样本, {len(set(y_real))} 类")
+
+    # 3. 传感器故障数据增强
+    logger.info("\n[Step 3] 传感器故障数据增强...")
+    aug = SensorFaultAugmenter()
+    X_real, y_real = aug.generate_and_merge(X_real, y_real, n_samples=50)
+    logger.info(f"增强后: {X_real.shape[0]} 样本")
+
+    # 4. 阶梯式类别均衡
+    logger.info("\n[Step 4] 阶梯式类别均衡...")
+    balancer = AdaptiveBalancingStrategy(min_samples_per_class=10)
+    X_real, y_real, bal_report = balancer.balance(
+        X_real, y_real, BEHAVIOR_TYPES_V2,
+        synthetic_data=(X_synth, y_synth),
+    )
+    logger.info(f"均衡后: {X_real.shape[0]} 样本")
+
+    # 5. 渐进式训练
+    logger.info("\n[Step 5] 渐进式训练 (5 阶段)...")
+    trainer = ProgressiveTrainingStrategy()
+
+    def train_fn(X, y):
+        return train_model(X, y, test_size=args.test_size)
+
+    results = trainer.train_progressive(
+        X_synth, y_synth, X_real, y_real,
+        train_fn=train_fn,
+        class_names=BEHAVIOR_TYPES_V2,
+    )
+
+    # 验证
+    verify_model()
+
+    print("\n" + "=" * 60)
+    print("渐进式训练完成！")
+    best = max(results, key=lambda r: r.get('accuracy', r.get('eval_accuracy', 0)))
+    print(f"  最佳阶段: {best['name']}")
+    print(f"  准确率: {best.get('accuracy', best.get('eval_accuracy', 0))*100:.1f}%")
     print("=" * 60)
 
 

@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QSlider, QCheckBox, QGroupBox, QProgressBar, QTextEdit,
     QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QFrame, QScrollArea, QSizePolicy,
-    QLineEdit, QFormLayout,
+    QLineEdit, QFormLayout, QListWidget, QAbstractItemView,
 )
 from PySide6.QtCore import (
     Qt, Signal, QThread, QTimer,
@@ -48,10 +48,63 @@ class MLTrainingThread(QThread):
             self.progress.emit(5, "加载训练数据...")
             self.log_message.emit("开始加载训练数据")
 
-            # 1. 加载或生成数据
-            data_path = self.config.get('data_path', 'training_data.npz')
-            if not os.path.exists(data_path):
-                self.log_message.emit(f"数据文件不存在: {data_path}，生成合成数据...")
+            data_dir = self.config.get('data_dir', '')
+            csv_paths = self.config.get('csv_paths', [])
+
+            # 1. 加载或生成数据 (优先级: data_dir > CSV列表 > .npz > 合成)
+            if data_dir and os.path.isdir(data_dir):
+                self.log_message.emit(f"批量模式: 扫描 {data_dir} ...")
+                self.progress.emit(10, "扫描 data_output 目录...")
+                from core.core.analysis.batch_training_data_generator import BatchTrainingDataGenerator
+                gen = BatchTrainingDataGenerator(
+                    data_output_dir=data_dir,
+                    window_size=self.config.get('window_size', 500),
+                    step_size=self.config.get('step_size', 250),
+                )
+                pairs = gen.discover_data_pairs()
+                self.log_message.emit(f"发现 {len(pairs)} 对数据")
+                X, y, stats = gen.generate_all(output_path='training_data_real.npz')
+                self.log_message.emit(f"批量生成: {stats['total_samples']} 样本, {stats['n_classes']} 类")
+            elif csv_paths:
+                import numpy as np
+                from core.core.analysis.training_data_generator import TrainingDataGenerator
+                X_list, y_list = [], []
+                total_csv = len(csv_paths)
+                for idx, csv_path in enumerate(csv_paths):
+                    self.log_message.emit(f"[{idx+1}/{total_csv}] 处理: {os.path.basename(csv_path)}")
+                    pct = 10 + int((idx / total_csv) * 20)
+                    self.progress.emit(pct, f"生成训练特征 ({idx+1}/{total_csv})...")
+                    gen = TrainingDataGenerator(csv_path=csv_path, max_samples=50000)
+                    Xi, yi = gen.generate()
+                    if Xi.size > 0:
+                        X_list.append(Xi)
+                        y_list.append(yi)
+                        self.log_message.emit(f"  -> {Xi.shape[0]} 样本")
+                    else:
+                        self.log_message.emit(f"  -> 跳过 (无有效样本)")
+                if not X_list:
+                    self.log_message.emit("所有CSV文件均未生成有效样本，回退到合成数据...")
+                    self.progress.emit(10, "生成合成训练数据...")
+                    from core.core.analysis.generate_synthetic_data import generate_synthetic_data
+                    X, y = generate_synthetic_data(
+                        samples_per_class=self.config.get('samples_per_class', 400),
+                        noise_scale=self.config.get('noise_scale', 0.15),
+                        random_state=self.config.get('random_state', 42),
+                    )
+                    np.savez_compressed('training_data.npz', X=X, y=y)
+                    self.log_message.emit(f"合成数据已生成: {X.shape[0]} 样本")
+                else:
+                    X = np.concatenate(X_list, axis=0)
+                    y = np.concatenate(y_list, axis=0)
+                    self.log_message.emit(f"合并完成: {X.shape[0]} 样本 (来自 {len(X_list)} 个文件)")
+            elif os.path.exists('training_data.npz'):
+                import numpy as np
+                data = np.load('training_data.npz', allow_pickle=True)
+                X, y = data['X'], data['y']
+                self.log_message.emit(f"加载数据: {X.shape[0]} 样本, {X.shape[1]} 特征")
+            else:
+                import numpy as np
+                self.log_message.emit("数据文件不存在，生成合成数据...")
                 self.progress.emit(10, "生成合成训练数据...")
                 from core.core.analysis.generate_synthetic_data import generate_synthetic_data
                 X, y = generate_synthetic_data(
@@ -59,13 +112,8 @@ class MLTrainingThread(QThread):
                     noise_scale=self.config.get('noise_scale', 0.15),
                     random_state=self.config.get('random_state', 42),
                 )
-                np.savez_compressed(data_path, X=X, y=y)
+                np.savez_compressed('training_data.npz', X=X, y=y)
                 self.log_message.emit(f"合成数据已生成: {X.shape[0]} 样本")
-            else:
-                import numpy as np
-                data = np.load(data_path)
-                X, y = data['X'], data['y']
-                self.log_message.emit(f"加载数据: {X.shape[0]} 样本, {X.shape[1]} 特征")
 
             self.progress.emit(15, "提取特征...")
             self.log_message.emit("特征提取完成")
@@ -75,8 +123,11 @@ class MLTrainingThread(QThread):
                 self.progress.emit(30, "SMOTE 类别均衡...")
                 self.log_message.emit("开始 SMOTE 过采样...")
                 from core.core.analysis.layer4_behavior_classification.smote_balancer import SmoteBalancer
-                balancer = SmoteBalancer(random_state=self.config.get('random_state', 42))
-                X, y = balancer.balance(X, y)
+                balancer = SmoteBalancer(
+                    random_state=self.config.get('random_state', 42),
+                    strategy='auto',  # 平衡到多数类，而非仅补足到 50
+                )
+                X, y = balancer.fit_resample(X, y)
                 self.log_message.emit(f"SMOTE 完成: {X.shape[0]} 样本")
 
             self.progress.emit(40, "训练 LightGBM...")
@@ -87,10 +138,12 @@ class MLTrainingThread(QThread):
             results = train_model(
                 X, y,
                 test_size=self.config.get('test_size', 0.2),
-                n_estimators=self.config.get('n_estimators', 200),
-                max_depth=self.config.get('max_depth', 12),
-                learning_rate=self.config.get('lr', 0.05),
+                n_estimators=self.config.get('n_estimators', 500),
+                max_depth=self.config.get('max_depth', 10),
+                learning_rate=self.config.get('lr', 0.03),
+                num_leaves=self.config.get('num_leaves', 63),
                 random_state=self.config.get('random_state', 42),
+                skip_smote=True,
             )
 
             self.progress.emit(100, f"训练完成! 准确率: {results['accuracy']*100:.1f}%")
@@ -170,7 +223,7 @@ class MLTrainingPanel(QWidget):
                     meta = json.load(f)
                 self._model_info = {
                     'path': meta_path.replace('_meta.json', '.pkl'),
-                    'version': meta.get('version', 'v1.0'),
+                    'version': meta.get('version', 1),
                     'n_classes': meta.get('n_classes', 23),
                     'accuracy': meta.get('metrics', {}).get('accuracy', 0),
                     'f1': meta.get('metrics', {}).get('f1_macro', 0),
@@ -226,31 +279,63 @@ class MLTrainingPanel(QWidget):
         ds_group = QGroupBox("📂 数据源配置")
         ds_layout = QGridLayout(ds_group)
 
-        ds_layout.addWidget(QLabel("CSV文件:"), 0, 0)
-        self.csv_path_label = QLabel("未选择 (将使用合成数据)")
-        self.csv_path_label.setStyleSheet("color: #666; padding: 4px; border: 1px solid #ddd; border-radius: 3px;")
-        ds_layout.addWidget(self.csv_path_label, 0, 1)
-        btn_browse = QPushButton("浏览...")
-        btn_browse.clicked.connect(self._browse_csv)
-        ds_layout.addWidget(btn_browse, 0, 2)
+        ds_layout.addWidget(QLabel("离线数据文件:"), 0, 0)
+        # 文件列表 (支持多选)
+        self.csv_list_widget = QListWidget()
+        self.csv_list_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.csv_list_widget.setMaximumHeight(90)
+        self.csv_list_widget.setStyleSheet(
+            "QListWidget { border: 1px solid #ddd; border-radius: 3px; font-size: 11px; } "
+            "QListWidget::item { padding: 2px; } "
+            "QListWidget::item:selected { background: #3498db; color: white; }"
+        )
+        ds_layout.addWidget(self.csv_list_widget, 0, 1, 1, 2)
 
-        ds_layout.addWidget(QLabel("窗口大小:"), 1, 0)
+        # 文件操作按钮
+        btn_row = QHBoxLayout()
+        btn_add = QPushButton("➕ 添加文件")
+        btn_add.clicked.connect(self._browse_csv)
+        btn_add.setToolTip("选择CSV离线数据文件 (可多选)")
+        btn_row.addWidget(btn_add)
+        btn_remove = QPushButton("➖ 移除选中")
+        btn_remove.clicked.connect(self._remove_csv)
+        btn_row.addWidget(btn_remove)
+        btn_clear = QPushButton("清空列表")
+        btn_clear.clicked.connect(self._clear_csv_list)
+        btn_row.addWidget(btn_clear)
+        ds_layout.addLayout(btn_row, 1, 1, 1, 2)
+
+        self.csv_count_label = QLabel("已添加: 0 个文件")
+        self.csv_count_label.setStyleSheet("color: #666; font-size: 11px;")
+        ds_layout.addWidget(self.csv_count_label, 2, 1, 1, 2)
+
+        # 批量模式: 选择 data_output 目录
+        ds_layout.addWidget(QLabel("批量目录:"), 3, 0)
+        self.data_dir_label = QLabel("未选择")
+        self.data_dir_label.setStyleSheet("color: #666; padding: 4px; border: 1px solid #ddd; border-radius: 3px;")
+        ds_layout.addWidget(self.data_dir_label, 3, 1)
+        btn_data_dir = QPushButton("选择目录...")
+        btn_data_dir.clicked.connect(self._browse_data_dir)
+        btn_data_dir.setToolTip("选择 data_output 目录，自动配对所有 parsed_data + expert_evaluation")
+        ds_layout.addWidget(btn_data_dir, 3, 2)
+
+        ds_layout.addWidget(QLabel("窗口大小:"), 4, 0)
         self.win_size_spin = QSpinBox()
         self.win_size_spin.setRange(100, 2000)
         self.win_size_spin.setValue(500)
-        ds_layout.addWidget(self.win_size_spin, 1, 1)
+        ds_layout.addWidget(self.win_size_spin, 4, 1)
 
-        ds_layout.addWidget(QLabel("步长:"), 1, 2)
+        ds_layout.addWidget(QLabel("步长:"), 4, 2)
         self.step_spin = QSpinBox()
         self.step_spin.setRange(10, 500)
-        self.step_spin.setValue(50)
-        ds_layout.addWidget(self.step_spin, 1, 3)
+        self.step_spin.setValue(250)
+        ds_layout.addWidget(self.step_spin, 4, 3)
 
-        ds_layout.addWidget(QLabel("每类样本:"), 2, 0)
+        ds_layout.addWidget(QLabel("每类样本:"), 5, 0)
         self.samples_spin = QSpinBox()
         self.samples_spin.setRange(100, 1000)
         self.samples_spin.setValue(400)
-        ds_layout.addWidget(self.samples_spin, 2, 1)
+        ds_layout.addWidget(self.samples_spin, 5, 1)
 
         layout.addWidget(ds_group)
 
@@ -260,20 +345,20 @@ class MLTrainingPanel(QWidget):
 
         train_layout.addWidget(QLabel("迭代次数:"), 0, 0)
         self.n_est_spin = QSpinBox()
-        self.n_est_spin.setRange(50, 500)
-        self.n_est_spin.setValue(200)
+        self.n_est_spin.setRange(50, 1000)
+        self.n_est_spin.setValue(500)
         train_layout.addWidget(self.n_est_spin, 0, 1)
 
         train_layout.addWidget(QLabel("最大深度:"), 1, 0)
         self.max_depth_spin = QSpinBox()
         self.max_depth_spin.setRange(3, 20)
-        self.max_depth_spin.setValue(12)
+        self.max_depth_spin.setValue(10)
         train_layout.addWidget(self.max_depth_spin, 1, 1)
 
         train_layout.addWidget(QLabel("学习率:"), 2, 0)
         self.lr_spin = QDoubleSpinBox()
         self.lr_spin.setRange(0.01, 0.30)
-        self.lr_spin.setValue(0.05)
+        self.lr_spin.setValue(0.03)
         self.lr_spin.setSingleStep(0.01)
         train_layout.addWidget(self.lr_spin, 2, 1)
 
@@ -447,17 +532,60 @@ class MLTrainingPanel(QWidget):
     # ═══════════════════════════════════════════════════════
 
     def _browse_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择CSV训练数据", "", "CSV Files (*.csv)")
+        """添加离线CSV数据文件 (支持多选)"""
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择CSV离线数据文件", "", "CSV Files (*.csv)")
+        if paths:
+            for path in paths:
+                # 检查是否已存在
+                existing = [self.csv_list_widget.item(i).data(Qt.UserRole)
+                           for i in range(self.csv_list_widget.count())]
+                if path in existing:
+                    continue
+                # 显示文件名，存储完整路径
+                from PySide6.QtWidgets import QListWidgetItem
+                item = QListWidgetItem(os.path.basename(path))
+                item.setData(Qt.UserRole, path)
+                item.setToolTip(path)
+                self.csv_list_widget.addItem(item)
+            self._update_csv_count()
+
+    def _remove_csv(self):
+        """移除选中的CSV文件"""
+        for item in self.csv_list_widget.selectedItems():
+            row = self.csv_list_widget.row(item)
+            self.csv_list_widget.takeItem(row)
+        self._update_csv_count()
+
+    def _clear_csv_list(self):
+        """清空CSV文件列表"""
+        self.csv_list_widget.clear()
+        self._update_csv_count()
+
+    def _update_csv_count(self):
+        """更新文件计数"""
+        count = self.csv_list_widget.count()
+        self.csv_count_label.setText(f"已添加: {count} 个文件")
+
+    def _get_csv_paths(self):
+        """获取所有已添加的CSV文件完整路径列表"""
+        return [self.csv_list_widget.item(i).data(Qt.UserRole)
+                for i in range(self.csv_list_widget.count())]
+
+    def _browse_data_dir(self):
+        """选择 data_output 目录 (批量模式)"""
+        path = QFileDialog.getExistingDirectory(self, "选择 data_output 目录", "")
         if path:
-            self.csv_path_label.setText(os.path.basename(path))
-            self._csv_path = path
+            dirname = os.path.basename(path)
+            self.data_dir_label.setText(f"{dirname} (批量模式)")
+            self._data_dir = path
 
     def _start_training(self):
         """启动训练"""
-        csv_path = getattr(self, '_csv_path', '')
-        if not csv_path:
+        data_dir = getattr(self, '_data_dir', '')
+        csv_paths = self._get_csv_paths()
+        if not csv_paths and not data_dir:
             reply = QMessageBox.question(
-                self, "确认", "未选择CSV文件，将使用合成数据训练。继续？",
+                self, "确认", "未选择离线数据文件，将使用合成数据训练。继续？",
                 QMessageBox.Yes | QMessageBox.No
             )
             if reply == QMessageBox.No:
@@ -470,10 +598,14 @@ class MLTrainingPanel(QWidget):
         self.status_indicator.setText("● 训练中...")
         self.status_indicator.setStyleSheet("color: #f39c12; font-size: 13px; font-weight: bold;")
         self._log("=" * 50)
-        self._log("开始 ML 模型训练...")
+        if csv_paths:
+            self._log(f"开始 ML 模型训练... (共 {len(csv_paths)} 个离线数据文件)")
+        else:
+            self._log("开始 ML 模型训练...")
 
         config = {
-            'data_path': csv_path if csv_path else 'training_data.npz',
+            'csv_paths': csv_paths,
+            'data_dir': data_dir,
             'window_size': self.win_size_spin.value(),
             'step_size': self.step_spin.value(),
             'samples_per_class': self.samples_spin.value(),
@@ -517,11 +649,12 @@ class MLTrainingPanel(QWidget):
             self._refresh_feature_importance()
             self.training_finished.emit(result)
 
+            model_path = result.get('model_path', 'core/core/models/lgbm_25class_classifier.pkl')
             QMessageBox.information(self, "训练完成",
                 f"模型训练成功!\n\n准确率: {acc:.1f}%\n"
                 f"F1 Macro: {result.get('f1_macro', 0):.3f}\n"
                 f"样本数: {result.get('n_samples', 'N/A')}\n"
-                f"模型: core/core/models/lgbm_25class_classifier.pkl")
+                f"模型路径: {model_path}")
         else:
             self.status_indicator.setText("● 训练失败")
             self.status_indicator.setStyleSheet("color: #e74c3c; font-size: 13px; font-weight: bold;")

@@ -33,16 +33,19 @@ class SmoteBalancer:
         min_samples_per_class: int = 50,
         k_neighbors: int = 5,
         random_state: int = 42,
+        strategy: str = 'auto',
     ):
         """
         Args:
             min_samples_per_class: 每类最少样本数 (SMOTE 合成目标)
             k_neighbors: SMOTE 近邻数
             random_state: 随机种子
+            strategy: 平衡策略 — 'auto' 平衡到多数类, 'threshold' 仅补足到 min_samples
         """
         self._min_samples = min_samples_per_class
         self._k_neighbors = k_neighbors
         self._random_state = random_state
+        self._strategy = strategy
         self._sampling_strategy: Optional[Dict[int, int]] = None
         self._original_counts: Dict[int, int] = {}
         self._resampled_counts: Dict[int, int] = {}
@@ -64,11 +67,24 @@ class SmoteBalancer:
         self._original_counts = dict(Counter(y))
         class_counts = self._original_counts
 
-        # 构建采样策略: 每类至少 min_samples 个
-        self._sampling_strategy = {}
-        for cls_id, count in class_counts.items():
-            if count < self._min_samples:
-                self._sampling_strategy[cls_id] = self._min_samples
+        # 构建采样策略
+        if self._strategy == 'auto':
+            # 平衡到多数类: 所有少数类都过采样到多数类的数量
+            max_count = max(class_counts.values())
+            self._sampling_strategy = {}
+            for cls_id, count in class_counts.items():
+                if count < max_count:
+                    self._sampling_strategy[cls_id] = max_count
+            logger.info(
+                f"SMOTE auto 策略: {len(self._sampling_strategy)} 个少数类 "
+                f"将平衡到 {max_count} 样本 (多数类)"
+            )
+        else:
+            # threshold 模式: 仅补足到 min_samples
+            self._sampling_strategy = {}
+            for cls_id, count in class_counts.items():
+                if count < self._min_samples:
+                    self._sampling_strategy[cls_id] = self._min_samples
 
         if not self._sampling_strategy:
             logger.info("所有类别样本数已达标，无需 SMOTE 过采样")
