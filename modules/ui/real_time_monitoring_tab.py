@@ -2907,7 +2907,7 @@ class ComparisonTab(QWidget):
 
 
 class RealTimeMonitoringTab(QWidget, ClearableResource):
-    """实时驾驶监控主标签页 — v3.0 五视图专业架构"""
+    """实时驾驶监控主标签页 — v3.1 Phase 1+2 增强版 (五视图 + ML训练)"""
 
     task_progress_changed = Signal(str, int, str)
     event_clicked = Signal(int, float, float)  # 事件点击信号
@@ -2923,6 +2923,9 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
 
         self._data_bridge = None
         self._frame_count = 0
+
+        self.ml_training_panel = None  # Phase 1+2 训练面板
+        self._hybrid_classifier = None
 
         self.init_ui()
 
@@ -2967,13 +2970,14 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
         self.feature_view = None
         self.comparison_tab = None
 
-        self._view_initialized = [False, False, False, False]
+        self._view_initialized = [False, False, False, False, False]
 
         placeholder_labels = [
             ("📊 驾驶评估", "正在加载驾驶评估模块..."),
             ("📈 行为时间轴", "正在加载行为时间轴模块..."),
             ("🔬 特征分析", "正在加载特征分析模块..."),
             ("🔄 事件复核", "正在加载事件复核模块..."),
+            ("🧠 ML训练", "正在加载ML训练模块..."),
         ]
         for title, _ in placeholder_labels:
             ph = QWidget()
@@ -3028,11 +3032,25 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
                 self.comparison_tab.set_parent_tab(self)  # 注入父级引用，用于批量加载
                 self.main_tabs.insertTab(3, self.comparison_tab, "🔄 事件复核")
                 self.main_tabs.removeTab(4)
+            elif index == 4:
+                # Phase 1+2: ML 训练面板
+                from modules.ui.ml_training_panel import MLTrainingPanel
+                self.ml_training_panel = MLTrainingPanel(self.config_manager)
+                ml_scroll = QScrollArea()
+                ml_scroll.setWidgetResizable(True)
+                ml_scroll.setWidget(self.ml_training_panel)
+                ml_scroll.setFrameShape(QFrame.NoFrame)
+                self.main_tabs.insertTab(4, ml_scroll, "🧠 ML训练")
+                self.main_tabs.removeTab(5)
+                if self._data_bridge:
+                    self.ml_training_panel.set_data_bridge(self._data_bridge)
+                # 初始化 HybridBehaviorClassifier
+                self._init_hybrid_classifier()
         except Exception as e:
             self.logger.error(f"延迟初始化视图 {index} 失败: {e}")
 
     def ensure_all_views_initialized(self):
-        for i in range(4):
+        for i in range(5):
             self._ensure_view_initialized(i)
 
     def _create_and_manage_basic_tab(self):
@@ -3079,6 +3097,9 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
         # 注入到basic_tab
         if hasattr(self, 'basic_tab') and self.basic_tab:
             self.basic_tab.set_data_bridge(data_bridge)
+        # Phase 1+2: 注入到 ML 训练面板
+        if self.ml_training_panel:
+            self.ml_training_panel.set_data_bridge(data_bridge)
         if data_bridge:
             data_bridge.sensor_data_received.connect(self._on_sensor_data_received)
             data_bridge.frame_result_ready.connect(self.process_frame_result)
@@ -3273,6 +3294,34 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
             except Exception as e:
                 self.logger.error(f"重新加载配置失败: {e}")
 
+    def _init_hybrid_classifier(self):
+        """Phase 1+2: 初始化 HybridBehaviorClassifier"""
+        try:
+            from core.core.analysis.layer4_behavior_classification import HybridBehaviorClassifier
+            self._hybrid_classifier = HybridBehaviorClassifier(context_window_size=10)
+            if self._hybrid_classifier.ml_classifier.is_ready():
+                self.logger.info("Phase 1+2 HybridBehaviorClassifier 已就绪")
+                if self._hybrid_classifier.ml_classifier.calibrator.is_fitted():
+                    self.logger.info("Phase 2 概率校准器已就绪")
+            else:
+                self.logger.info("ML 模型未训练，使用规则+统计模式")
+        except Exception as e:
+            self.logger.warning(f"HybridBehaviorClassifier 初始化失败: {e}")
+
+    def classify_ml_event(self, event, features):
+        """Phase 1+2: 使用 ML 分类器进行事件分类"""
+        if not self._hybrid_classifier:
+            return event.type, event.category, event.confidence
+        try:
+            return self._hybrid_classifier.classify(event, features)
+        except Exception as e:
+            self.logger.debug(f"ML 分类失败: {e}")
+            return event.type, event.category, event.confidence
+
+    @property
+    def hybrid_classifier(self):
+        return self._hybrid_classifier
+
     def _start_analysis(self):
         if not self._data_bridge:
             self._try_get_data_bridge_from_window()
@@ -3306,6 +3355,10 @@ class RealTimeMonitoringTab(QWidget, ClearableResource):
             self.timeline_view.reset()
         if self.feature_view:
             self.feature_view.reset()
+        if self.ml_training_panel:
+            self.ml_training_panel.clear_data()
+        if self._hybrid_classifier:
+            self._hybrid_classifier.reset()
         self.status_label.setText("数据已清空")
 
     def showEvent(self, event):
