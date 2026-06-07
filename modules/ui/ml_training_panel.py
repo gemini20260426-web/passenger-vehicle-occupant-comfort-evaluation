@@ -170,6 +170,10 @@ class MLTrainingPanel(QWidget):
         panel.set_data_bridge(data_bridge)  # 可选
     """
 
+    # 训练超参数默认值
+    DEFAULT_NOISE_SCALE = 0.15
+    DEFAULT_RANDOM_STATE = 42
+
     model_loaded = Signal(object)   # 模型信息
     training_started = Signal()
     training_finished = Signal(dict)
@@ -615,8 +619,8 @@ class MLTrainingPanel(QWidget):
             'test_size': self.test_size_spin.value(),
             'smote_enabled': self.smote_cb.isChecked(),
             'calibrate_enabled': self.calibrate_cb.isChecked(),
-            'noise_scale': 0.15,
-            'random_state': 42,
+            'noise_scale': self.DEFAULT_NOISE_SCALE,
+            'random_state': self.DEFAULT_RANDOM_STATE,
         }
 
         self._train_thread = MLTrainingThread(config)

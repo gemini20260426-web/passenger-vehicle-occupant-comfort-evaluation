@@ -502,18 +502,7 @@ class BasicAnalysisTab(QWidget):
         
         # 模拟基础分析结果（转换新格式到旧格式）
         state = data.get('state', 'STRAIGHT_CRUISE')
-        
-        # 状态映射
-        state_map = {
-            'STOPPED': 'parking',
-            'STRAIGHT_CRUISE': 'normal',
-            'ACCELERATING': 'accelerating',
-            'BRAKING': 'braking',
-            'TURNING_LEFT': 'left_turn',
-            'TURNING_RIGHT': 'right_turn',
-        }
-        
-        behavior = state_map.get(state, 'normal')
+        behavior = self.STATE_MAP.get(state, 'normal')
         event_data = data.get('event', {})
         confidence = event_data.get('confidence', 0.85)
         speed = data.get('speed', 0)
@@ -2943,6 +2932,16 @@ class ComparisonTab(QWidget):
 
 class RealTimeMonitoringTab(QWidget, ClearableResource):
     """实时驾驶监控主标签页 — v3.1 Phase 1+2 增强版 (五视图 + ML训练)"""
+
+    # 驾驶状态 → 行为标签映射 (可扩展)
+    STATE_MAP = {
+        'STOPPED': 'parking',
+        'STRAIGHT_CRUISE': 'normal',
+        'ACCELERATING': 'accelerating',
+        'BRAKING': 'braking',
+        'TURNING_LEFT': 'left_turn',
+        'TURNING_RIGHT': 'right_turn',
+    }
 
     task_progress_changed = Signal(str, int, str)
     event_clicked = Signal(int, float, float)  # 事件点击信号
