@@ -365,7 +365,7 @@ class HybridBehaviorClassifier:
             dummy_event = ManeuverEvent(
                 id=f'ml_scan_{start}',
                 type='unknown',
-                category=BehaviorCategory.UNKNOWN,
+                category=BehaviorCategory.NORMAL,
                 start_time=t[start],
                 end_time=t[end - 1],
                 duration=t[end - 1] - t[start],

@@ -36,12 +36,7 @@ CONFIG = {
     'ds_accel_thresh': 3,             # 加速检测阈值 km/h/s
     'dw_steer_thresh': 3,             # 转向检测阈值 deg/s
     'da_shock_thresh': 0.5,           # 冲击检测阈值 m/s²
-    'freq_bands': {                   # 频段划分
-        'sub_low': (0.1, 0.5),
-        'low': (0.5, 1.0),
-        'mid_low': (1.0, 5.0),
-        'mid_high': (5.0, 20.0),
-        'high': (20.0, 80.0),
+    'freq_bands': {                   # 频段划分 (Hz格式，避免重复)
         '0.1-0.5Hz': (0.1, 0.5),
         '0.5-1Hz': (0.5, 1.0),
         '1-5Hz': (1.0, 5.0),
@@ -825,6 +820,26 @@ class FullTimeseriesEvaluator:
                 v = spec.get(ax, {}).get('bands_atten', {}).get(band, np.nan)
                 vals.append(f"{v:.1f}%" if not np.isnan(v) else "—")
             lines.append(f"| {band} | {vals[0]} | {vals[1]} | {vals[2]} |")
+        lines.append("")
+
+        # ── P1: 频段衰减雷达图数据 ──
+        lines.append("## 2.1 频段衰减雷达图 (Radar Chart Data)")
+        lines.append("```json")
+        radar_data = {
+            "bands": ["0.1-0.5Hz", "0.5-1Hz", "1-5Hz", "5-20Hz", "20-80Hz"],
+            "axes": ["Ax", "Ay", "Az"],
+            "attenuation_pct": {}
+        }
+        for ax in ['Ax', 'Ay', 'Az']:
+            radar_data["attenuation_pct"][ax] = {
+                band: round(spec.get(ax, {}).get('bands_atten', {}).get(band, np.nan), 1)
+                if not np.isnan(spec.get(ax, {}).get('bands_atten', {}).get(band, np.nan))
+                else None
+                for band in radar_data["bands"]
+            }
+        import json
+        lines.append(json.dumps(radar_data, ensure_ascii=False, indent=2))
+        lines.append("```")
         lines.append("")
 
         lines.append("## 3. 综合评价指标")

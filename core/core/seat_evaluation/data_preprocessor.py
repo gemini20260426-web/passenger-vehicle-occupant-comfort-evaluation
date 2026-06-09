@@ -164,3 +164,98 @@ class DataPreprocessor:
             'z_sign': float(z_sign),
             'g_magnitude': float(np.linalg.norm(np.mean(acc_data[:n], axis=0)))
         }
+
+
+# ── P1: IMU 传感器健康诊断 ──
+
+class IMUHealthChecker:
+    """IMU 传感器健康诊断 — 对比同位置两个 IMU 的加速度幅值
+
+    原理: 同一位置的两个 IMU (如 IMU5 和 IMU6) 应感知相似的加速度。
+    如果 imu_b 的加速度极值远小于 imu_a，则 imu_b 可能故障。
+
+    Usage:
+        checker = IMUHealthChecker()
+        result = checker.check_pair(channel_data_map, 'IMU5_头部眉心-1', 'IMU6_头部眉心-2')
+        if result['status'] == 'fault':
+            channels_to_skip.add(result['faulty_imu'])
+    """
+
+    def __init__(self, threshold: float = 0.15):
+        self.threshold = threshold
+
+    def check_pair(self, channel_data_map: dict, imu_a: str, imu_b: str) -> dict:
+        """对比同一位置的两个 IMU 通道
+
+        Args:
+            channel_data_map: {ch_name: {ax: [], ay: [], az: [], ...}}
+            imu_a: 参考 IMU 通道名 (如 'IMU5_头部眉心-1')
+            imu_b: 待检测 IMU 通道名 (如 'IMU6_头部眉心-2')
+
+        Returns:
+            {'status': 'healthy'|'fault', 'faulty_imu': ..., 'axes': {...}}
+        """
+        if imu_a not in channel_data_map or imu_b not in channel_data_map:
+            return {'status': 'skipped', 'reason': '通道不存在'}
+
+        data_a = channel_data_map[imu_a]
+        data_b = channel_data_map[imu_b]
+
+        axes = ['ax', 'ay', 'az']
+        axis_labels = ['X', 'Y', 'Z']
+        faulty_axes = []
+
+        for axis, label in zip(axes, axis_labels):
+            arr_a = np.abs(np.array(data_a.get(axis, [])))
+            arr_b = np.abs(np.array(data_b.get(axis, [])))
+
+            if len(arr_a) == 0 or len(arr_b) == 0:
+                continue
+
+            max_a = float(np.max(arr_a))
+            max_b = float(np.max(arr_b))
+
+            if max_a < 1e-6:
+                continue  # 参考通道无有效信号，跳过
+
+            ratio = max_b / max_a
+            if ratio < self.threshold:
+                faulty_axes.append({
+                    'axis': label,
+                    'ref_max': round(max_a, 4),
+                    'test_max': round(max_b, 4),
+                    'ratio': round(ratio, 4),
+                })
+
+        if faulty_axes:
+            logger.warning(
+                f"IMU故障检测: {imu_b} 疑似故障 "
+                f"(vs {imu_a}), 异常轴: "
+                + ', '.join(a['axis'] for a in faulty_axes)
+            )
+            return {
+                'status': 'fault',
+                'faulty_imu': imu_b,
+                'reference_imu': imu_a,
+                'faulty_axes': faulty_axes,
+                'recommendation': f'跳过 {imu_b}, 使用 {imu_a} 替代',
+            }
+
+        return {'status': 'healthy'}
+
+    def check_all_pairs(self, channel_data_map: dict) -> list:
+        """自动检测所有配对 IMU 的健康状态
+
+        基于通道名模式: IMUx_xxx-1 vs IMUx_xxx-2
+        """
+        results = []
+        channels = sorted(channel_data_map.keys())
+
+        for ch in channels:
+            if ch.endswith('-1'):
+                paired = ch[:-2] + '-2'
+                if paired in channel_data_map:
+                    result = self.check_pair(channel_data_map, ch, paired)
+                    results.append(result)
+
+        return results

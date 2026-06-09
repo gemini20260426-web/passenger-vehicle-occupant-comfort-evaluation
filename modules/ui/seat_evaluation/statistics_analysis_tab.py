@@ -816,14 +816,29 @@ class UnifiedEvaluationWorker(QObject):
                     evaluator.load_from_csv(self._dataset_path)
                 
                 if not self._is_running: return
-                self.progress_updated.emit(80, '检测事件...')
-                behavior_events = behavior_summary.get('events', [])
-                if behavior_events:
-                    evaluator.set_external_events(behavior_events)
-                    logger.info(f"[全时域诊断] 使用驾驶行为事件: {len(behavior_events)} 个")
+                self.progress_updated.emit(80, '检测事件 (ML 25类)...')
+                # ── P0: ML 事件优先注入 ──
+                evaluator.detect_events()
+                ml_events = evaluator.events
+                if ml_events and any(e.get('method') == 'ml' for e in ml_events):
+                    # ML 事件替换 behavior_summary，供 GUI 显示
+                    behavior_summary['events'] = ml_events
+                    behavior_summary['total_events'] = len(ml_events)
+                    behavior_summary['source'] = 'ml'
+                    # 重建 event_types 统计
+                    by_type = {}
+                    for evt in ml_events:
+                        et = evt.get('type', 'unknown')
+                        by_type[et] = by_type.get(et, 0) + 1
+                    behavior_summary['event_types'] = by_type
+                    logger.info(f"[全时域诊断] ML 25类事件注入成功: {len(ml_events)} 个事件")
                 else:
-                    evaluator.detect_events()
-                    logger.info("[全时域诊断] 使用全时域引擎内部事件检测")
+                    behavior_events = behavior_summary.get('events', [])
+                    if behavior_events:
+                        evaluator.set_external_events(behavior_events)
+                        logger.info(f"[全时域诊断] 使用规则引擎事件: {len(behavior_events)} 个")
+                    else:
+                        logger.info("[全时域诊断] 无事件数据")
                 
                 if not self._is_running: return
                 self.progress_updated.emit(81, '事件级对比分析...')
@@ -1273,6 +1288,175 @@ class StatisticsAnalysisTab(QWidget):
             self._results_table.setRowCount(0)
         self.logger.info("全量统计分析数据已清空")
 
+    # ── P1: 导出功能 ──
+
+    def _export_excel(self):
+        """导出统计分析结果为 Excel 文件 (优先使用结构化报告)"""
+        if not self._current_report:
+            QMessageBox.warning(self, "提示", "请先运行全量统计分析")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(self, "保存 Excel", "统计结果.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+
+        try:
+            # 优先使用结构化报告
+            if hasattr(self, '_full_report') and self._full_report:
+                from core.core.seat_evaluation.pdf_report_generator import ReportService
+                ReportService.export_excel(self._full_report, path)
+                QMessageBox.information(self, "成功", f"Excel (结构化报告) 已导出到:\n{path}")
+                return
+
+            # 回退: 原始报告导出
+            import openpyxl
+            from openpyxl.utils import get_column_letter
+
+            wb = openpyxl.Workbook()
+
+            # Sheet 1: 指标统计
+            ws1 = wb.active
+            ws1.title = "指标统计"
+            results = self._current_report.get('location_results', {})
+            rows = []
+            for loc_id, loc_data in results.items():
+                if isinstance(loc_data, dict):
+                    indicators = loc_data.get('indicators', {})
+                    for ind_id, ind_val in indicators.items():
+                        rows.append({
+                            '位置': LOCATION_NAMES.get(loc_id, loc_id),
+                            '指标ID': ind_id,
+                            '实验组': ind_val.get('exp', ''),
+                            '对照组': ind_val.get('ctrl', ''),
+                            '变化率': ind_val.get('change_pct', ''),
+                        })
+            if rows:
+                headers = list(rows[0].keys())
+                for c, h in enumerate(headers, 1):
+                    ws1.cell(row=1, column=c, value=h)
+                for r, row in enumerate(rows, 2):
+                    for c, h in enumerate(headers, 1):
+                        ws1.cell(row=r, column=c, value=row[h])
+
+            # Sheet 2: 驾驶行为事件
+            ws2 = wb.create_sheet("驾驶行为事件")
+            behavior_summary = self._current_report.get('behavior_summary', {})
+            events = behavior_summary.get('events', [])
+            if events:
+                headers = ['类型', '起始时间(s)', '结束时间(s)', '持续时长(s)', '置信度', '方法']
+                for c, h in enumerate(headers, 1):
+                    ws2.cell(row=1, column=c, value=h)
+                for r, evt in enumerate(events, 2):
+                    ws2.cell(row=r, column=1, value=evt.get('type', ''))
+                    ws2.cell(row=r, column=2, value=round(evt.get('t_start', 0), 2))
+                    ws2.cell(row=r, column=3, value=round(evt.get('t_end', 0), 2))
+                    ws2.cell(row=r, column=4, value=round(evt.get('duration', 0), 2))
+                    ws2.cell(row=r, column=5, value=round(evt.get('confidence', 0), 3))
+                    ws2.cell(row=r, column=6, value=evt.get('method', ''))
+
+            wb.save(path)
+            QMessageBox.information(self, "成功", f"Excel 已导出到:\n{path}")
+
+        except ImportError:
+            QMessageBox.warning(self, "依赖缺失", "请安装: pip install openpyxl")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def _export_html(self):
+        """导出分析结果为 HTML 报告"""
+        if not self._current_report:
+            QMessageBox.warning(self, "提示", "请先运行全量统计分析")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(self, "保存 HTML", "统计报告.html", "HTML (*.html)")
+        if not path:
+            return
+
+        try:
+            behavior_summary = self._current_report.get('behavior_summary', {})
+            events = behavior_summary.get('events', [])
+            source = behavior_summary.get('source', 'rule')
+
+            lines = ['<!DOCTYPE html><html><head><meta charset="utf-8">',
+                     '<title>全量统计分析报告</title>',
+                     '<style>',
+                     'body { font-family: Microsoft YaHei, sans-serif; max-width: 1200px; margin: auto; padding: 20px; }',
+                     'table { border-collapse: collapse; width: 100%; margin: 10px 0; }',
+                     'th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }',
+                     'th { background: #f5f7fa; }',
+                     'tr:nth-child(even) { background: #fafafa; }',
+                     'h2 { color: #303133; border-bottom: 2px solid #409EFF; padding-bottom: 8px; }',
+                     '.ml-badge { background: #67C23A; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }',
+                     '.rule-badge { background: #E6A23C; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }',
+                     '</style></head><body>',
+                     '<h1>全量统计分析报告</h1>',
+                     f'<p>生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>']
+
+            # 事件来源
+            badge = 'ml-badge' if source == 'ml' else 'rule-badge'
+            label = 'ML 25类' if source == 'ml' else '规则引擎'
+            lines.append(f'<p>事件检测引擎: <span class="{badge}">{label}</span></p>')
+
+            # 事件摘要
+            lines.append(f'<h2>驾驶行为事件 ({len(events)} 个)</h2>')
+            lines.append('<table><tr><th>#</th><th>类型</th><th>起始(s)</th><th>结束(s)</th><th>持续(s)</th><th>置信度</th><th>方法</th></tr>')
+            for i, evt in enumerate(events):
+                lines.append(f'<tr><td>{i+1}</td><td>{evt.get("type","")}</td>'
+                             f'<td>{evt.get("t_start",0):.1f}</td><td>{evt.get("t_end",0):.1f}</td>'
+                             f'<td>{evt.get("duration",0):.1f}</td>'
+                             f'<td>{evt.get("confidence",0):.2f}</td>'
+                             f'<td>{evt.get("method","")}</td></tr>')
+            lines.append('</table>')
+
+            # 全时域结果
+            ft_result = self._current_report.get('_full_timeseries', {})
+            if ft_result:
+                ft_events = ft_result.get('events', [])
+                lines.append(f'<h2>全时域评测事件 ({len(ft_events)} 个)</h2>')
+                lines.append('<table><tr><th>#</th><th>类型</th><th>起始(s)</th><th>结束(s)</th><th>方法</th></tr>')
+                for i, evt in enumerate(ft_events):
+                    lines.append(f'<tr><td>{i+1}</td><td>{evt.get("type","")}</td>'
+                                 f'<td>{evt.get("t_start",0):.1f}</td><td>{evt.get("t_end",0):.1f}</td>'
+                                 f'<td>{evt.get("method","")}</td></tr>')
+                lines.append('</table>')
+
+            lines.append('</body></html>')
+
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+
+            QMessageBox.information(self, "成功", f"HTML 报告已导出到:\n{path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def _export_pdf(self):
+        """导出 PDF 报告 (需要 reportlab)"""
+        report_data = None
+        if hasattr(self, '_full_report') and self._full_report:
+            report_data = self._full_report
+        elif self._current_report:
+            report_data = self._current_report
+
+        if not report_data:
+            QMessageBox.warning(self, "提示", "请先运行全量统计分析")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(self, "保存 PDF", "统计报告.pdf", "PDF (*.pdf)")
+        if not path:
+            return
+
+        try:
+            from core.core.seat_evaluation.pdf_report_generator import ReportService
+            ReportService.export_pdf(report_data, path)
+            QMessageBox.information(self, "成功", f"PDF 已导出到:\n{path}")
+        except ImportError:
+            QMessageBox.warning(self, "依赖缺失",
+                "请安装: pip install reportlab\n\n"
+                "暂可使用 HTML 导出替代。")
+        except Exception as e:
+            QMessageBox.critical(self, "PDF导出失败", str(e))
+
     def _init_ui(self):
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -1293,6 +1477,7 @@ class StatisticsAnalysisTab(QWidget):
 
         content = QWidget()
         self._content_widget = content
+        self._results_container = content
         content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content.setMinimumSize(0, 0)
         content.minimumSizeHint = lambda: QSize(0, 0)
@@ -1309,6 +1494,50 @@ class StatisticsAnalysisTab(QWidget):
 
         pipeline_card = self._create_pipeline_indicator()
         main_layout.addWidget(pipeline_card)
+
+        # ── P1: 舒适度仪表盘（始终可见，分析完成后更新数据）──
+        try:
+            from modules.ui.seat_evaluation.comfort_dashboard import ComfortDashboard
+            self._comfort_dashboard = ComfortDashboard(content)
+            main_layout.addWidget(self._comfort_dashboard)
+            self._comfort_dashboard.clear()
+            self.logger.info("舒适度仪表盘已创建（空状态）")
+        except Exception as e:
+            self.logger.warning(f"舒适度仪表盘初始化失败: {e}")
+            self._comfort_dashboard = None
+
+        # ── P1: 调校建议面板（始终可见）──
+        try:
+            from modules.ui.seat_evaluation.tuning_recommendation_panel import TuningRecommendationPanel
+            self._tuning_panel = TuningRecommendationPanel(content)
+            main_layout.addWidget(self._tuning_panel)
+            self._tuning_panel.clear()
+            self.logger.info("调校建议面板已创建（空状态）")
+        except Exception as e:
+            self.logger.warning(f"调校建议面板初始化失败: {e}")
+            self._tuning_panel = None
+
+        # ── P1: 多工况对比视图（始终可见）──
+        try:
+            from modules.ui.seat_evaluation.condition_comparison_view import ConditionComparisonView
+            self._condition_view = ConditionComparisonView(content)
+            main_layout.addWidget(self._condition_view)
+            self._condition_view.clear()
+            self.logger.info("多工况对比视图已创建（空状态）")
+        except Exception as e:
+            self.logger.warning(f"多工况对比视图初始化失败: {e}")
+            self._condition_view = None
+
+        # ── P1: 趋势监测组件（始终可见）──
+        try:
+            from modules.ui.seat_evaluation.trend_monitoring_widget import TrendMonitoringWidget
+            self._trend_widget = TrendMonitoringWidget(content)
+            main_layout.addWidget(self._trend_widget)
+            self._trend_widget.clear()
+            self.logger.info("趋势监测组件已创建（空状态）")
+        except Exception as e:
+            self.logger.warning(f"趋势监测组件初始化失败: {e}")
+            self._trend_widget = None
 
         # ════════════════════════════════════════════════════════════
         # 卡片布局顺序（递进式）:
@@ -2219,6 +2448,34 @@ class StatisticsAnalysisTab(QWidget):
         )
         title_row.addWidget(title)
         title_row.addStretch()
+
+        # ── P1: 导出工具栏 ──
+        btn_export = QPushButton("导出 Excel")
+        btn_export.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 4px 12px; border: 1px solid #67C23A; "
+            "border-radius: 4px; background: #67C23A; color: white; }"
+            "QPushButton:hover { background: #85CE61; }"
+        )
+        btn_export.clicked.connect(self._export_excel)
+        title_row.addWidget(btn_export)
+
+        btn_pdf = QPushButton("导出 PDF")
+        btn_pdf.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 4px 12px; border: 1px solid #E6A23C; "
+            "border-radius: 4px; background: #E6A23C; color: white; }"
+            "QPushButton:hover { background: #EBB563; }"
+        )
+        btn_pdf.clicked.connect(self._export_pdf)
+        title_row.addWidget(btn_pdf)
+
+        btn_html = QPushButton("导出 HTML")
+        btn_html.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 4px 12px; border: 1px solid #409EFF; "
+            "border-radius: 4px; background: #409EFF; color: white; }"
+            "QPushButton:hover { background: #66B1FF; }"
+        )
+        btn_html.clicked.connect(self._export_html)
+        title_row.addWidget(btn_html)
         layout.addLayout(title_row)
 
         ctrl_bar = QFrame()
@@ -2442,9 +2699,40 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
+        title_row = QHBoxLayout()
         title = QLabel("驾驶行为事件")
         title.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {LC['text_primary']};")
-        layout.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch()
+
+        # ── P1: 导出工具栏 ──
+        btn_export = QPushButton("导出 Excel")
+        btn_export.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 4px 12px; border: 1px solid #67C23A; "
+            "border-radius: 4px; background: #67C23A; color: white; }"
+            "QPushButton:hover { background: #85CE61; }"
+        )
+        btn_export.clicked.connect(self._export_excel)
+        title_row.addWidget(btn_export)
+
+        btn_pdf = QPushButton("导出 PDF")
+        btn_pdf.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 4px 12px; border: 1px solid #E6A23C; "
+            "border-radius: 4px; background: #E6A23C; color: white; }"
+            "QPushButton:hover { background: #EBB563; }"
+        )
+        btn_pdf.clicked.connect(self._export_pdf)
+        title_row.addWidget(btn_pdf)
+
+        btn_html = QPushButton("导出 HTML")
+        btn_html.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 4px 12px; border: 1px solid #409EFF; "
+            "border-radius: 4px; background: #409EFF; color: white; }"
+            "QPushButton:hover { background: #66B1FF; }"
+        )
+        btn_html.clicked.connect(self._export_html)
+        title_row.addWidget(btn_html)
+        layout.addLayout(title_row)
 
         # 时序概览图（fig1_overview: 车速/方向盘/实验组头部/对照组头部）
         self._behavior_overview_chart = QWidget()
@@ -4963,6 +5251,62 @@ class StatisticsAnalysisTab(QWidget):
         self._worker_thread = None
         QTimer.singleShot(50, self._constrain_content_width)
 
+        # ── P1: 更新舒适度仪表盘 + 结构化报告 ──
+        try:
+            from core.core.seat_evaluation.report_builder import ReportBuilder
+
+            # 1. 构建结构化报告
+            full_ts = report.get('_full_timeseries', {})
+            evaluator_results = full_ts.get('results', {})
+            behavior_summary = report.get('behavior_summary', {})
+
+            if evaluator_results:
+                builder = ReportBuilder()
+                self._full_report = builder.build(
+                    evaluator_results=evaluator_results,
+                    behavior_summary=behavior_summary,
+                    location_results=report.get('location_results', None),
+                    include_comfort=True,
+                    include_subjective=True,
+                    include_tuning=True,
+                    include_spine=True,
+                    include_ride=True,
+                )
+                if self._comfort_dashboard:
+                    self._comfort_dashboard.update_from_report(self._full_report)
+                self.logger.info(
+                    f"结构化报告构建完成: 舒适度 {self._full_report.get('comfort_index', {}).get('overall_score', 0):.1f}/100"
+                )
+
+                # ── P1: 更新调校建议面板 ──
+                if self._tuning_panel:
+                    self._tuning_panel.update_from_report(self._full_report)
+                    self.logger.info("调校建议面板已更新")
+
+                # ── P1: 更新多工况对比视图 ──
+                if self._condition_view:
+                    self._condition_view.update_from_report(self._full_report)
+                    self.logger.info("多工况对比视图已更新")
+
+                # ── P1: 更新趋势监测组件 ──
+                if self._trend_widget:
+                    self._trend_widget.update_from_report(self._full_report)
+                    self.logger.info("趋势监测组件已更新")
+
+            else:
+                self._full_report = None
+                if self._comfort_dashboard:
+                    self._comfort_dashboard.clear()
+                if self._tuning_panel:
+                    self._tuning_panel.clear()
+                if self._condition_view:
+                    self._condition_view.clear()
+                if self._trend_widget:
+                    self._trend_widget.clear()
+
+        except Exception as e:
+            self.logger.warning(f"结构化报告构建失败: {e}")
+
     def _on_analysis_failed(self, error_msg: str):
         QMessageBox.critical(self, "分析失败", error_msg)
         self._reset_ui_state()
@@ -5235,11 +5579,24 @@ class StatisticsAnalysisTab(QWidget):
             return
 
         try:
-            from modules.evaluation_report.report_exporter import ReportExporter
-            exporter = ReportExporter()
-            result_path = exporter.export(self._current_report, format='pdf', filename=file_path)
+            # 优先使用结构化报告
+            report_data = None
+            if hasattr(self, '_full_report') and self._full_report:
+                report_data = self._full_report
+            elif self._current_report:
+                report_data = self._current_report
+
+            if not report_data:
+                QMessageBox.warning(self, "警告", "没有可导出的报告数据")
+                return
+
+            from core.core.seat_evaluation.pdf_report_generator import ReportService
+            result_path = ReportService.export_pdf(report_data, file_path)
             QMessageBox.information(self, "导出成功", f"报告已导出到:\n{result_path}")
             self._status_label.setText(f'报告已导出: {os.path.basename(result_path)}')
+        except ImportError:
+            QMessageBox.warning(self, "依赖缺失",
+                "请安装: pip install reportlab\n\n暂可使用 HTML 导出替代。")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 

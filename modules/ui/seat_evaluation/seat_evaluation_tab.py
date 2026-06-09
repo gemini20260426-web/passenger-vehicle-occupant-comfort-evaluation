@@ -26,6 +26,7 @@ from core.core.analysis.clearable_registry import ClearableResource, ClearableRe
 from .event_manager_panel import EventManagerPanel
 from .instance_view_panel import InstanceViewPanel
 from .statistics_analysis_tab import StatisticsAnalysisTab
+from .shaker_main_panel import ShakerMainPanel
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,9 @@ class SeatEvaluationTab(QWidget, ClearableResource):
         self._statistics_tab.set_type_labels(self._type_labels)
         self._statistics_tab.set_event_manager(self._event_manager)
         self.main_tabs.addTab(self._statistics_tab, "📊 全量统计")
+
+        self._shaker_tab = ShakerMainPanel()
+        self.main_tabs.addTab(self._shaker_tab, "🔬 台架实验")
 
         self._report_tab = self._create_report_placeholder()
         self.main_tabs.addTab(self._report_tab, "📄 报告中心")

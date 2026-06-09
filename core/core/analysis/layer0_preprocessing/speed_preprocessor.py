@@ -75,6 +75,15 @@ class SpeedPreprocessor:
         speed_kmh = np.array([r.get('speed', 0.0) or 0.0 for r in records], dtype=float)
         wheel_deg = np.array([r.get('wheel', 0.0) or 0.0 for r in records], dtype=float)
 
+        # ── P1: 方向盘累积值归一化 ──
+        # 某些 CAN 总线输出的 wheel 是累积值 (如 1557°) 而非瞬时角度 (-180°~180°)
+        wheel_abs_max = float(np.max(np.abs(wheel_deg)))
+        if wheel_abs_max > 360:
+            logger.info(f"方向盘归一化: 检测到累积值模式 (max={wheel_abs_max:.1f}°) → 归一化至 ±180°")
+            wheel_deg = np.rad2deg(np.unwrap(np.deg2rad(wheel_deg)))
+            wheel_deg = np.fmod(wheel_deg, 360)
+            wheel_deg = np.where(wheel_deg > 180, wheel_deg - 360, wheel_deg)
+
         # 时间戳 — 兼容多种字段名
         if 'rel_time' in records[0]:
             t = np.array([float(r['rel_time']) for r in records], dtype=float)

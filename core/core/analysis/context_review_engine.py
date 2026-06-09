@@ -49,11 +49,11 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════
 
 # 自动确认: 转移概率 ≥ 此值 且 置信度 ≥ 置信度下限
-AUTO_CONFIRM_TRANSITION_PROB = 0.55
-AUTO_CONFIRM_MIN_CONFIDENCE = 0.75
+AUTO_CONFIRM_TRANSITION_PROB = 0.30
+AUTO_CONFIRM_MIN_CONFIDENCE = 0.70
 
 # 自动驳回: 转移概率 ≤ 此值 (或互斥)
-AUTO_REJECT_TRANSITION_PROB = 0.03
+AUTO_REJECT_TRANSITION_PROB = 0.05
 
 # 序列模式匹配加成
 SEQUENCE_MATCH_BOOST = 0.08

@@ -1195,3 +1195,179 @@ class OperatorSystem:
         self._cache_enabled = value
         if not value:
             self.clear_cache()
+
+
+# ═════════════════════════════════════════════════════════════
+# 台架实验新增算子 (ISO 10326-1 / ISO 2631-1)
+# ═════════════════════════════════════════════════════════════
+
+class SEATOperator:
+    """SEAT 因子计算算子 — ISO 10326-1:2016 §8(g)
+
+    SEAT = (座椅处频率加权RMS) / (平台处频率加权RMS) × 100%
+
+    评级:
+        ≤ 100%   → 优秀 (座椅有隔振效果)
+        100-120% → 良好
+        120-200% → 一般
+        200-300% → 差
+        > 300%   → 严重 (可能存在共振)
+    """
+
+    SEAT_THRESHOLDS = [
+        (100, 'excellent', '优秀'),
+        (120, 'good', '良好'),
+        (200, 'fair', '一般'),
+        (300, 'poor', '差'),
+        (float('inf'), 'critical', '严重'),
+    ]
+
+    def __init__(self, fs: float = 1000.0):
+        self.fs = fs
+
+    def compute(self, seat_rms: float, platform_rms: float) -> float:
+        """计算单个 SEAT 因子"""
+        if abs(platform_rms) < 1e-12:
+            return float('inf')
+        return seat_rms / platform_rms * 100.0
+
+    def compute_all(self, seat_rms_dict: Dict[str, float],
+                    platform_rms_dict: Dict[str, float]) -> Dict[str, float]:
+        """批量计算 SEAT 因子"""
+        results = {}
+        for key, seat_val in seat_rms_dict.items():
+            # 匹配对应平台通道
+            plat_key = key.replace('r_', 'platform_').replace('t8_', 'platform_')
+            plat_val = platform_rms_dict.get(plat_key, 1.0)
+            results[key] = self.compute(seat_val, plat_val)
+        return results
+
+    def grade(self, seat_value: float) -> tuple:
+        """评级 SEAT 值 → (等级标签, 等级名)"""
+        for threshold, grade, label in self.SEAT_THRESHOLDS:
+            if seat_value <= threshold:
+                return grade, label
+        return 'critical', '严重'
+
+
+class CrestFactorOperator:
+    """波峰因数算子 — ISO 2631-1 补充方法触发判定
+
+    CF = max|a_w(t)| / a_w_rms
+
+    CF > 9 → 需要触发 ISO 2631-5 的冲击评估方法
+    CF ≤ 9 → 基本评价法 (RMS) 足够
+    """
+
+    CF_TRIGGER = 9.0  # ISO 2631-1 阈值
+
+    def compute(self, signal: np.ndarray) -> float:
+        """计算波峰因数"""
+        rms_val = float(np.sqrt(np.mean(signal ** 2)))
+        if rms_val < 1e-12:
+            return float('inf')
+        return float(np.max(np.abs(signal)) / rms_val)
+
+    def needs_iso2631_5(self, cf_value: float) -> bool:
+        """判断是否需要触发 ISO 2631-5"""
+        return cf_value > self.CF_TRIGGER
+
+
+class TransferFunctionOperator:
+    """H1 传递函数算子 — ISO 10326-2:2022 §5.1.3
+
+    H1(f) = S_xy(f) / S_xx(f)
+    γ²(f) = |S_xy|² / (S_xx * S_yy)
+    """
+
+    def __init__(self, fs: float = 1000.0, nperseg: int = 8192):
+        self.fs = fs
+        self.nperseg = nperseg
+
+    def compute(self, input_signal: np.ndarray, output_signal: np.ndarray) -> dict:
+        """计算 H1 传递函数和相干性"""
+        f, Pxx = signal.welch(input_signal, self.fs, nperseg=self.nperseg)
+        f, Pyy = signal.welch(output_signal, self.fs, nperseg=self.nperseg)
+        f, Pxy = signal.csd(input_signal, output_signal, self.fs, nperseg=self.nperseg)
+
+        H1 = np.abs(Pxy) / (Pxx + 1e-15)
+        coherence = np.abs(Pxy) ** 2 / (Pxx * Pyy + 1e-15)
+
+        return {
+            'frequencies': f,
+            'magnitude': H1,
+            'coherence': coherence,
+            'df': float(f[1] - f[0]) if len(f) > 1 else 0.0,
+        }
+
+    def find_peaks(self, freq: np.ndarray, mag: np.ndarray, coh: np.ndarray,
+                   coh_threshold: float = 0.5, min_distance_hz: float = 1.0,
+                   max_peaks: int = 5) -> List[Dict]:
+        """在高相干性区域搜索共振峰值"""
+        valid = coh >= coh_threshold
+        if not valid.any():
+            return []
+
+        valid_mag = mag.copy()
+        valid_mag[~valid] = 0
+        df = float(freq[1] - freq[0])
+        min_dist = max(1, int(min_distance_hz / df))
+
+        peaks, _ = signal.find_peaks(valid_mag, distance=min_dist)
+        # 按增益降序
+        order = sorted(peaks, key=lambda i: valid_mag[i], reverse=True)[:max_peaks]
+
+        results = []
+        for i in order:
+            results.append({
+                'frequency': float(freq[i]),
+                'gain': float(mag[i]),
+                'coherence': float(coh[i]),
+            })
+        return results
+
+
+class PSDNormalizedOperator:
+    """归一化 PSD 算子 — 用于台架信号频域分析"""
+
+    def __init__(self, fs: float = 1000.0, nperseg: int = 8192):
+        self.fs = fs
+        self.nperseg = nperseg
+
+    def compute(self, sig: np.ndarray) -> dict:
+        """Welch 法 PSD 估计"""
+        import scipy.signal as sp_signal
+        f, Pxx = sp_signal.welch(sig, self.fs, nperseg=self.nperseg, scaling='density')
+        return {
+            'frequencies': f,
+            'psd': Pxx,
+            'resolution': float(f[1] - f[0]) if len(f) > 1 else 0.0,
+        }
+
+
+class VDVOperator:
+    """VDV 算子 — ISO 2631-1 Eq 42.7
+
+    VDV = [∫ a_w⁴(t) dt]^(1/4) ≈ [Σ a_w⁴(t_i) · Δt]^(1/4)
+    """
+
+    def compute(self, signal: np.ndarray, fs: float) -> float:
+        """计算 VDV (使用频率加权后的信号)"""
+        return float((np.sum(signal ** 4) / fs) ** 0.25)
+
+
+class MTVVOperator:
+    """MTVV 算子 — ISO 2631-1 最大瞬态振动值
+
+    MTVV = max[a_w(t_0)]  其中 a_w(t_0) 是 1s 窗口内的 RMS 值
+    """
+
+    def compute(self, signal: np.ndarray, fs: float, tau: float = 1.0) -> float:
+        """计算 MTVV"""
+        n_tau = int(tau * fs)
+        if n_tau < 1:
+            return float(np.sqrt(np.mean(signal ** 2)))
+        squared = signal ** 2
+        kernel = np.ones(n_tau) / n_tau
+        running_rms = np.sqrt(np.convolve(squared, kernel, mode='same'))
+        return float(np.max(running_rms))
