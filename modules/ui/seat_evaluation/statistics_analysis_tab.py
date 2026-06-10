@@ -1315,7 +1315,42 @@ class StatisticsAnalysisTab(QWidget):
         self._statistics_card = self._create_statistics_card()
         self._statistics_group._content_layout.addWidget(self._statistics_card)
 
-        # ════ 9. 统一输出：QTabWidget（报告预览 + 对比数据表）════
+        # ════ 9. 高级可视化图表 ════
+        self._advanced_viz_group = self._create_section_group("高级可视化图表")
+        self._advanced_viz_group.setVisible(True)
+        main_layout.addWidget(self._advanced_viz_group)
+
+        # 9.1 事件时间线
+        self._advanced_timeline_card = self._create_advanced_card(" 事件时间线",
+            "车速 + 方向盘转角 + 驾驶事件色块标记", "timeline")
+        self._advanced_viz_group._content_layout.addWidget(self._advanced_timeline_card)
+
+        # 9.2 PSD 功率谱密度对比
+        self._advanced_psd_card = self._create_advanced_card(" PSD 功率谱密度对比",
+            "实验组 vs 对照组 各通道 Z轴功率谱", "psd")
+        self._advanced_viz_group._content_layout.addWidget(self._advanced_psd_card)
+
+        # 9.3 衰减效率柱状图
+        self._advanced_attenuation_card = self._create_advanced_card(" 衰减效率柱状图",
+            "各指标改善率排序 (±百分比)", "attenuation")
+        self._advanced_viz_group._content_layout.addWidget(self._advanced_attenuation_card)
+
+        # 9.4 雷达对比图
+        self._advanced_radar_card = self._create_advanced_card(" 雷达对比图",
+            "多维度指标归一化对比", "radar")
+        self._advanced_viz_group._content_layout.addWidget(self._advanced_radar_card)
+
+        # 9.5 三轴加速度波形
+        self._advanced_accel_card = self._create_advanced_card(" 三轴加速度时域波形",
+            "前3通道 实验组 Ax/Ay/Az 10s截面", "accel")
+        self._advanced_viz_group._content_layout.addWidget(self._advanced_accel_card)
+
+        # 9.6 SRS 冲击响应谱
+        self._advanced_srs_card = self._create_advanced_card(" SRS 冲击响应谱",
+            "头部眉心 X轴 频响对比", "srs")
+        self._advanced_viz_group._content_layout.addWidget(self._advanced_srs_card)
+
+        # ════ 10. 统一输出：QTabWidget（报告预览 + 对比数据表）════
         self._output_tab_widget = QTabWidget()
         self._output_tab_widget.setStyleSheet(f"""
             QTabWidget::pane {{
@@ -1469,49 +1504,6 @@ class StatisticsAnalysisTab(QWidget):
         # 添加到TabWidget
         self._output_tab_widget.addTab(report_preview_tab, "\U0001F4CA 报告预览")
         self._output_tab_widget.addTab(contrast_data_tab, "\U0001F4CB 对比数据表")
-
-        # ── Tab 3: 高级图表 ──
-        self._charts_tab = QWidget()
-        charts_layout = QVBoxLayout(self._charts_tab)
-        charts_layout.setContentsMargins(8, 8, 8, 8)
-        charts_layout.setSpacing(8)
-
-        # 图表工具栏
-        charts_toolbar = QHBoxLayout()
-        charts_toolbar.addWidget(QLabel("专业可视化图表"))
-        charts_toolbar.addStretch()
-        self._generate_charts_btn = QPushButton("\U0001F4CA 生成全部图表")
-        self._generate_charts_btn.setStyleSheet("""
-            QPushButton {
-                background: #2E75B6; color: white; border: none;
-                border-radius: 4px; padding: 6px 14px; font-size: 11px;
-            }
-            QPushButton:hover { background: #1F5A8E; }
-        """)
-        self._generate_charts_btn.clicked.connect(self._on_generate_charts)
-        charts_toolbar.addWidget(self._generate_charts_btn)
-        charts_layout.addLayout(charts_toolbar)
-
-        # 图表滚动区域
-        self._charts_scroll = QScrollArea()
-        self._charts_scroll.setWidgetResizable(True)
-        self._charts_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._charts_scroll.setFrameShape(QFrame.NoFrame)
-        self._charts_scroll.setStyleSheet("QScrollArea { border: none; background: #FAFBFC; }")
-
-        self._charts_container = QWidget()
-        self._charts_layout = QVBoxLayout(self._charts_container)
-        self._charts_layout.setSpacing(12)
-        self._charts_layout.setContentsMargins(4, 4, 4, 4)
-        self._charts_scroll.setWidget(self._charts_container)
-        charts_layout.addWidget(self._charts_scroll)
-
-        self._charts_placeholder = QLabel("分析完成后点击「生成全部图表」查看专业可视化")
-        self._charts_placeholder.setAlignment(Qt.AlignCenter)
-        self._charts_placeholder.setStyleSheet(f"color: {LC['text_muted']}; font-size: 14px; padding: 60px;")
-        self._charts_layout.addWidget(self._charts_placeholder)
-
-        self._output_tab_widget.addTab(self._charts_tab, "\U0001F4C8 高级图表")
 
         self._status_label = QLabel('就绪 — 请加载数据集开始分析')
         self._status_label.setStyleSheet(
@@ -3785,6 +3777,36 @@ class StatisticsAnalysisTab(QWidget):
 
         return card
 
+    def _create_advanced_card(self, title_text: str, desc: str, chart_key: str) -> QFrame:
+        """创建高级可视化图表卡片 (统一工厂方法)"""
+        card = QFrame()
+        card.setObjectName("proCard")
+        card.setStyleSheet(CARD_STYLE)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        title = QLabel(title_text)
+        title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
+        layout.addWidget(title)
+
+        subtitle = QLabel(desc)
+        subtitle.setStyleSheet(f"font-size: 11px; color: {LC['text_secondary']};")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        # 图表容器
+        container_attr = f"_advanced_{chart_key}_container"
+        chart_widget = QWidget()
+        chart_widget.setLayout(QVBoxLayout())
+        chart_widget.layout().setContentsMargins(0, 0, 0, 0)
+        chart_widget.setMinimumHeight(180)
+        chart_widget.setVisible(False)
+        setattr(self, container_attr, chart_widget)
+        layout.addWidget(chart_widget)
+
+        return card
+
     def _create_band_attenuation_card(self) -> QFrame:
         card = QFrame()
         card.setObjectName("proCard")
@@ -5833,38 +5855,14 @@ class StatisticsAnalysisTab(QWidget):
         self._charts_pending_report = report
         QTimer.singleShot(800, self._generate_advanced_charts_from_pending)
 
-    def _on_generate_charts(self):
-        """用户手动点击「生成全部图表」按钮"""
-        report = getattr(self, '_current_report', None)
-        if report:
-            self._generate_advanced_charts(report)
-        else:
-            self.logger.warning("无可用报告，请先完成分析")
-
     def _generate_advanced_charts_from_pending(self):
         """从待处理报告生成图表"""
         report = getattr(self, '_charts_pending_report', None)
         if report:
             self._generate_advanced_charts(report)
 
-    def _create_charts_tab_canvas(self, fig: Figure, min_height: int = 300) -> FigureCanvas:
-        """为高级图表 Tab 创建自适应 Canvas（不使用 Ignored 缩放）"""
-        canvas = FigureCanvas(fig)
-        fig_h = int(fig.get_figheight() * fig.get_dpi())
-        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        canvas.setFixedHeight(max(min_height, fig_h))
-        canvas.setMinimumWidth(200)
-        canvas.setStyleSheet("background: white;")
-        return canvas
-
     def _generate_advanced_charts(self, report: Dict):
-        """生成全部高级图表并嵌入到图表 Tab"""
-        # 清空旧图表
-        while self._charts_layout.count():
-            item = self._charts_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
+        """生成全部高级图表，嵌入到各自的卡片容器中"""
         overview = report.get('_overview_data', {})
         channel_data_map = report.get('_channel_data_map', {})
         events = report.get('behavior_summary', {}).get('events', []) or \
@@ -5872,7 +5870,7 @@ class StatisticsAnalysisTab(QWidget):
 
         charts_generated = 0
 
-        # ── 图表1: 事件时间线 ──
+        # ── 图表1: 事件时间线 → _advanced_timeline_container ──
         if overview:
             timestamps = np.array(overview.get('timestamps', []))
             speed_arr = np.array(overview.get('speed', []))
@@ -5880,12 +5878,13 @@ class StatisticsAnalysisTab(QWidget):
             if len(timestamps) > 10 and len(speed_arr) > 10:
                 try:
                     fig = create_event_timeline(timestamps, speed_arr, wheel_arr, events)
-                    self._charts_layout.addWidget(self._create_charts_tab_canvas(fig, 320))
+                    self._create_chart_canvas(fig, self._advanced_timeline_container)
+                    self._advanced_timeline_container.setVisible(True)
                     charts_generated += 1
                 except Exception as e:
                     self.logger.warning(f"事件时间线生成失败: {e}")
 
-        # ── 图表2: PSD 功率谱对比 ──
+        # ── 图表2: PSD 功率谱对比 → _advanced_psd_container ──
         if channel_data_map:
             exp_imus = [k for k in channel_data_map.keys() if k.endswith('-1')]
             ctrl_imus = [k for k in channel_data_map.keys() if k.endswith('-2')]
@@ -5893,43 +5892,47 @@ class StatisticsAnalysisTab(QWidget):
                 try:
                     fig = create_psd_comparison(channel_data_map, exp_imus, ctrl_imus, axis='Z')
                     if fig:
-                        self._charts_layout.addWidget(self._create_charts_tab_canvas(fig, 320))
+                        self._create_chart_canvas(fig, self._advanced_psd_container)
+                        self._advanced_psd_container.setVisible(True)
                         charts_generated += 1
                 except Exception as e:
                     self.logger.warning(f"PSD图表生成失败: {e}")
 
-        # ── 图表3: 衰减效率柱状图 ──
+        # ── 图表3: 衰减效率柱状图 → _advanced_attenuation_container ──
+        # ── 图表4: 雷达对比图 → _advanced_radar_container ──
         comparison = self._build_comparison_dict(report)
         if comparison:
             try:
                 fig = create_attenuation_bar(comparison)
                 if fig:
-                    self._charts_layout.addWidget(self._create_charts_tab_canvas(fig, 300))
+                    self._create_chart_canvas(fig, self._advanced_attenuation_container)
+                    self._advanced_attenuation_container.setVisible(True)
                     charts_generated += 1
             except Exception as e:
                 self.logger.warning(f"衰减柱状图生成失败: {e}")
 
-            # ── 图表4: 雷达对比图 ──
             try:
                 fig = create_comparison_radar(comparison)
                 if fig:
-                    self._charts_layout.addWidget(self._create_charts_tab_canvas(fig, 420))
+                    self._create_chart_canvas(fig, self._advanced_radar_container)
+                    self._advanced_radar_container.setVisible(True)
                     charts_generated += 1
             except Exception as e:
                 self.logger.warning(f"雷达图生成失败: {e}")
 
-        # ── 图表5: 三轴加速度波形 ──
+        # ── 图表5: 三轴加速度波形 → _advanced_accel_container ──
         exp_imus_1 = [k for k in channel_data_map.keys() if k.endswith('-1')]
         if len(exp_imus_1) >= 2:
             try:
                 fig = create_acceleration_waveform(channel_data_map, exp_imus_1[:3])
                 if fig:
-                    self._charts_layout.addWidget(self._create_charts_tab_canvas(fig, 450))
+                    self._create_chart_canvas(fig, self._advanced_accel_container)
+                    self._advanced_accel_container.setVisible(True)
                     charts_generated += 1
             except Exception as e:
                 self.logger.warning(f"加速度波形生成失败: {e}")
 
-        # ── 图表6: SRS 冲击响应谱 ──
+        # ── 图表6: SRS 冲击响应谱 → _advanced_srs_container ──
         head_exp = next((k for k in channel_data_map if '头部' in k and k.endswith('-1')), None)
         head_ctrl = next((k for k in channel_data_map if '头部' in k and k.endswith('-2')), None)
         if head_exp and head_ctrl:
@@ -5937,18 +5940,16 @@ class StatisticsAnalysisTab(QWidget):
                 fig = create_srs_comparison(channel_data_map, head_exp, head_ctrl,
                                            location_name='头部眉心', axis='X')
                 if fig:
-                    self._charts_layout.addWidget(self._create_charts_tab_canvas(fig, 300))
+                    self._create_chart_canvas(fig, self._advanced_srs_container)
+                    self._advanced_srs_container.setVisible(True)
                     charts_generated += 1
             except Exception as e:
                 self.logger.warning(f"SRS图表生成失败: {e}")
 
         if charts_generated > 0:
-            self.logger.info(f"高级图表生成完成: {charts_generated} 张")
-            # 自动切换到图表 Tab
-            self._output_tab_widget.setCurrentIndex(2)
+            self.logger.info(f"高级可视化图表生成完成: {charts_generated} 张")
         else:
-            self._charts_layout.addWidget(
-                QLabel("当前数据不支持生成高级图表（需要包含 IMU 通道数据的评测结果）"))
+            self.logger.warning("当前数据不支持生成高级可视化图表")
 
     def _build_comparison_dict(self, report: Dict) -> Dict[str, Dict]:
         """从报告中构建 comparison_data 字典，用于雷达图和衰减图"""
