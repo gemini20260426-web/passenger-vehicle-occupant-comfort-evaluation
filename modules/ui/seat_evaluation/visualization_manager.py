@@ -21,10 +21,155 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-CN_FONT_FAMILY = 'Microsoft YaHei'
-
 plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
+
+
+class ChartStyle:
+    """全量统计分析图表统一样式 — 与台架实验 shaker_charts 对齐"""
+
+    # ── DPI ──
+    DESIGN_DPI = 200        # 导出用高DPI
+    SCREEN_DPI = None       # 屏幕DPI(首次访问时自动检测)
+
+    # ── 配色 (Okabe-Ito 色盲友好) ──
+    C_BG = '#FAFAFA'
+    C_EXP = '#56B4E9'       # 实验组 - 天蓝
+    C_CTRL = '#E69F00'      # 对照组 - 橙
+    C_DIFF = '#009E73'      # 改善量 - 绿
+    C_GRID = '#CCCCCC'
+    C_NEUTRAL = '#999999'
+    C_GRID_ALPHA = 0.15
+
+    # ── 字体 (绝对点数, 基准为7.5英寸卡片) ──
+    FONT_SIZE = 9
+    TITLE_SIZE = 10          # 子图标题
+    LABEL_SIZE = 9           # 坐标轴标签
+    TICK_SIZE = 8            # 刻度标签
+    LEGEND_SIZE = 7.5        # 图例
+    ANNOT_SIZE = 7           # 标注
+    SUPTITLE_SIZE = 12       # 总标题
+
+    # ── 线宽 ──
+    LW_MAIN = 0.7            # 主数据线
+    LW_GRID = 0.4            # 网格线
+    LW_REF = 0.8             # 参考线
+
+    # ── 标记大小 ──
+    MS = 5
+
+    # ── 卡片基准 ──
+    CARD_W = 7.5             # 基准卡片宽度(英寸)
+    ROW_H = 2.5              # 每行高度
+
+    @classmethod
+    def screen_dpi(cls):
+        if cls.SCREEN_DPI is None:
+            from PySide6.QtWidgets import QApplication
+            screen = QApplication.primaryScreen()
+            cls.SCREEN_DPI = int(screen.logicalDotsPerInch()) if screen else 96
+        return cls.SCREEN_DPI
+
+    @classmethod
+    def apply_rcparams(cls):
+        """应用全局 matplotlib 样式参数"""
+        plt.rcParams.update({
+            'figure.dpi': cls.DESIGN_DPI,
+            'savefig.dpi': cls.DESIGN_DPI,
+            'font.size': cls.FONT_SIZE,
+            'axes.titlesize': cls.TITLE_SIZE,
+            'axes.labelsize': cls.LABEL_SIZE,
+            'xtick.labelsize': cls.TICK_SIZE,
+            'ytick.labelsize': cls.TICK_SIZE,
+            'legend.fontsize': cls.LEGEND_SIZE,
+            'figure.facecolor': cls.C_BG,
+            'axes.facecolor': cls.C_BG,
+            'axes.edgecolor': cls.C_NEUTRAL,
+            'axes.grid': True,
+            'grid.color': cls.C_GRID,
+            'grid.linewidth': cls.LW_GRID,
+            'grid.alpha': cls.C_GRID_ALPHA,
+            'font.sans-serif': ['Microsoft YaHei', 'SimHei', 'DejaVu Sans'],
+            'axes.unicode_minus': False,
+        })
+
+
+def card_adapted_figure(card_widget, nrows=1, ncols=1, height_mul=None,
+                         approach='auto', radar=False):
+    """
+    根据 QWidget 的实际像素宽度动态创建 matplotlib Figure。
+    核心原则: 创建时确定最终尺寸, 不做 post-creation 缩放。
+
+    approach:
+      'auto'    — 检测屏幕DPI, 自适应
+      'screen'  — 强制使用屏幕DPI(嵌入用)
+      'export'  — 强制使用设计DPI(导出用)
+
+    返回: (fig, axes, scale) where scale 是字体/线宽的缩放因子
+    """
+    if height_mul is None:
+        height_mul = float(nrows)
+
+    # ── 获取卡片实际可用宽度 ──
+    if hasattr(card_widget, 'width'):
+        card_px = card_widget.width()
+        if card_px < 400:
+            card_px = card_widget.parent().width() if card_widget.parent() else 1200
+    else:
+        card_px = 1200
+
+    # ── DPI 选择 ──
+    if approach == 'export':
+        dpi = ChartStyle.DESIGN_DPI
+    else:
+        dpi = ChartStyle.screen_dpi()
+
+    # ── 计算英寸: 减去 card padding ≈ 40px ──
+    usable_px = max(400, card_px - 40)
+    width_inches = usable_px / dpi
+
+    # 高度: 行高2.2英寸(比 ROW_H=2.5 稍小, 留出卡片标题空间)
+    row_height = 2.2
+    if radar:
+        height_inches = width_inches  # 雷达图 1:1
+    else:
+        height_inches = row_height * height_mul
+
+    # ── 缩放因子 (相对于设计基准 7.5") ──
+    scale = width_inches / ChartStyle.CARD_W
+    # 使用 sqrt 避免极端缩放
+    fs_ratio = np.sqrt(max(0.6, min(1.8, scale)))
+
+    # ── 创建 figure ──
+    if radar:
+        fig, axes = plt.subplots(nrows, ncols,
+            figsize=(width_inches, height_inches),
+            dpi=dpi, facecolor=ChartStyle.C_BG,
+            subplot_kw=dict(polar=True))
+    else:
+        fig, axes = plt.subplots(nrows, ncols,
+            figsize=(width_inches, height_inches),
+            dpi=dpi, facecolor=ChartStyle.C_BG)
+
+    # ── 展平 axes ──
+    if nrows == 1 and ncols == 1:
+        ax_arr = np.array([axes])
+    else:
+        ax_arr = np.array(axes).ravel() if hasattr(axes, '__len__') else np.array([axes])
+
+    # ── 统一 ax 样式 + 字体缩放 ──
+    for ax in ax_arr:
+        ax.set_facecolor(ChartStyle.C_BG)
+        lw_grid = max(0.3, ChartStyle.LW_GRID * scale)
+        ax.grid(True, color=ChartStyle.C_GRID, linewidth=lw_grid, alpha=0.15)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color(ChartStyle.C_NEUTRAL)
+        ax.spines['bottom'].set_color(ChartStyle.C_NEUTRAL)
+        ax.tick_params(labelsize=max(7, int(ChartStyle.TICK_SIZE * fs_ratio)),
+                       colors='#555555')
+
+    return fig, axes, scale
 
 
 class VisualizationManager:
@@ -42,7 +187,7 @@ class VisualizationManager:
         }
 
     def plot_overview(self, sw: np.ndarray, exp_head: np.ndarray, ctrl_head: np.ndarray,
-                      events: list, out_path: Optional[str] = None):
+                      events: list, out_path: str):
         """全时程概览图"""
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 10), sharex=True)
         t = sw[:, 0]
@@ -57,8 +202,8 @@ class VisualizationManager:
         ax2.grid(alpha=0.3)
         ax2.set_title('Steering Wheel Angle', fontsize=14)
 
-        ax3.plot(t, exp_head[:, 2], color=self.colors['exp'], linewidth=0.8, alpha=0.8, label='实验组')
-        ax3.plot(t, ctrl_head[:, 2], color=self.colors['ctrl'], linewidth=0.8, alpha=0.8, label='对照组')
+        ax3.plot(t, exp_head[:, 2], color=self.colors['exp'], linewidth=0.8, alpha=0.8, label='Active')
+        ax3.plot(t, ctrl_head[:, 2], color=self.colors['ctrl'], linewidth=0.8, alpha=0.8, label='Passive')
         ax3.set_ylabel('Ay (m/s²)', fontsize=12)
         ax3.set_xlabel('Time (s)', fontsize=12)
         ax3.grid(alpha=0.3)
@@ -71,58 +216,38 @@ class VisualizationManager:
             ax3.axvspan(ev['t_start'], ev['t_end'], alpha=0.1, color=self.colors['red'])
 
         plt.tight_layout()
-        if out_path is None:
-            return fig
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"  生成: {os.path.basename(out_path)}")
 
-    def plot_event_comparison(self, df_events: pd.DataFrame, out_path: Optional[str] = None):
-        n_events = len(df_events)
-        fig_width = max(14, n_events * 1.2)
-        fig, axes = plt.subplots(3, 1, figsize=(fig_width, 14), sharex=True)
+    def plot_event_comparison(self, df_events: pd.DataFrame, out_path: str):
+        """事件对比图"""
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         ax1, ax2, ax3 = axes
-
-        event_labels = df_events['event'].values if 'event' in df_events.columns else None
-        t_starts = df_events['t_start'].values if 't_start' in df_events.columns else None
-
-        if event_labels is not None and t_starts is not None:
-            x_labels = [f"{et} {ts:.1f}s" for et, ts in zip(event_labels, t_starts)]
-        elif event_labels is not None:
-            x_labels = list(event_labels)
-        else:
-            x_labels = None
 
         for ax, axis in zip([ax1, ax2, ax3], ['Ax', 'Ay', 'Az']):
             e_vals = df_events[f'e_{axis}_RMS'].dropna()
             c_vals = df_events[f'c_{axis}_RMS'].dropna()
-
+            
             x = np.arange(len(e_vals))
             width = 0.35
-
-            ax.bar(x - width/2, e_vals, width, label='实验组', color=self.colors['exp'])
-            ax.bar(x + width/2, c_vals, width, label='对照组', color=self.colors['ctrl'])
-
-            ax.set_title(f'{axis} 各事件RMS对比', fontsize=12, fontfamily=CN_FONT_FAMILY)
+            
+            ax.bar(x - width/2, e_vals, width, label='Active', color=self.colors['exp'])
+            ax.bar(x + width/2, c_vals, width, label='Passive', color=self.colors['ctrl'])
+            
+            ax.set_title(f'{axis} RMS Comparison per Event', fontsize=12)
+            ax.set_xlabel('Event Index', fontsize=10)
             ax.set_ylabel('RMS (m/s²)', fontsize=10)
-            ax.legend(loc='upper right', prop={'family': CN_FONT_FAMILY})
+            ax.legend()
             ax.grid(alpha=0.3)
+            ax.tick_params(axis='x', labelsize=8)
 
-            if x_labels is not None and len(x_labels) == len(x):
-                ax.set_xticks(x)
-                ax.set_xticklabels(x_labels, fontsize=8, rotation=90,
-                                   ha='center', va='top',
-                                   fontfamily=CN_FONT_FAMILY)
-
-        axes[-1].set_xlabel('驾驶事件', fontsize=11, fontfamily=CN_FONT_FAMILY)
-        plt.subplots_adjust(bottom=0.15)
-        if out_path is None:
-            return fig
+        plt.tight_layout()
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"  生成: {os.path.basename(out_path)}")
 
-    def plot_spectrum(self, spec: Dict[str, Any], out_path: Optional[str] = None):
+    def plot_spectrum(self, spec: Dict[str, Any], out_path: str):
         """频谱分析图"""
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         
@@ -137,8 +262,8 @@ class VisualizationManager:
             ctrl_psd = s['ctrl_psd']
             ratio = s['ratio']
             
-            ax.semilogy(f, exp_psd, color=self.colors['exp'], label='实验组', linewidth=1.2)
-            ax.semilogy(f, ctrl_psd, color=self.colors['ctrl'], label='对照组', linewidth=1.2)
+            ax.semilogy(f, exp_psd, color=self.colors['exp'], label='Active', linewidth=1.2)
+            ax.semilogy(f, ctrl_psd, color=self.colors['ctrl'], label='Passive', linewidth=1.2)
             ax.set_xlim(0.1, 80)
             ax.set_xlabel('Frequency (Hz)', fontsize=10)
             ax.set_ylabel('PSD (m²/s⁴/Hz)', fontsize=10)
@@ -147,13 +272,11 @@ class VisualizationManager:
             ax.grid(alpha=0.3)
 
         plt.tight_layout()
-        if out_path is None:
-            return fig
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"  生成: {os.path.basename(out_path)}")
 
-    def plot_spectrum_ratio(self, spec: Dict[str, Any], out_path: Optional[str] = None):
+    def plot_spectrum_ratio(self, spec: Dict[str, Any], out_path: str):
         """频谱衰减比图"""
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         
@@ -171,7 +294,7 @@ class VisualizationManager:
             ax.set_xlim(0.1, 80)
             ax.set_ylim(0, 2)
             ax.set_xlabel('Frequency (Hz)', fontsize=10)
-            ax.set_ylabel('实验组/对照组 比值', fontsize=10)
+            ax.set_ylabel('Active/Passive Ratio', fontsize=10)
             ax.set_title(f'{axis} Attenuation Ratio', fontsize=12)
             ax.grid(alpha=0.3)
             
@@ -180,13 +303,11 @@ class VisualizationManager:
                 ax.text((flo + fhi)/2, 1.8, band_name, ha='center', fontsize=8)
 
         plt.tight_layout()
-        if out_path is None:
-            return fig
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"  生成: {os.path.basename(out_path)}")
 
-    def plot_stft(self, stft: Dict[str, Any], out_path: Optional[str] = None):
+    def plot_stft(self, stft: Dict[str, Any], out_path: str):
         """时频分析图"""
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 8), sharex=True)
         
@@ -201,25 +322,23 @@ class VisualizationManager:
                                 vmin=-80, vmax=-20, cmap='viridis')
             ax1.set_ylim(0, 50)
             ax1.set_ylabel('Frequency (Hz)', fontsize=12)
-            ax1.set_title('实验组 - STFT', fontsize=14)
+            ax1.set_title('Active Seat - STFT', fontsize=14)
             
             im2 = ax2.pcolormesh(t, f, 10 * np.log10(ctrl_spec + 1e-10),
                                 vmin=-80, vmax=-20, cmap='viridis')
             ax2.set_ylim(0, 50)
             ax2.set_xlabel('Time (s)', fontsize=12)
             ax2.set_ylabel('Frequency (Hz)', fontsize=12)
-            ax2.set_title('对照组 - STFT', fontsize=14)
+            ax2.set_title('Passive Seat - STFT', fontsize=14)
             
             fig.colorbar(im1, ax=[ax1, ax2], label='Power (dB)')
 
         plt.tight_layout()
-        if out_path is None:
-            return fig
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"  生成: {os.path.basename(out_path)}")
 
-    def plot_statistics(self, stats: Dict[str, Any], out_path: Optional[str] = None):
+    def plot_statistics(self, stats: Dict[str, Any], out_path: str):
         """统计仪表盘"""
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
         
@@ -231,7 +350,7 @@ class VisualizationManager:
             
             metrics = ['e_rms', 'c_rms', 'attenuation_pct']
             values = [s.get(m, 0) for m in metrics]
-            labels = ['实验组 RMS', '对照组 RMS', '衰减率 (%)']
+            labels = ['Active RMS', 'Passive RMS', 'Attenuation (%)']
             
             bars = ax.bar(labels, values, color=[self.colors['exp'], self.colors['ctrl'], self.colors['green']])
             ax.set_title(f'{axis} Statistics', fontsize=12)
@@ -243,13 +362,11 @@ class VisualizationManager:
                         f'{height:.2f}', ha='center', va='bottom', fontsize=10)
 
         plt.tight_layout()
-        if out_path is None:
-            return fig
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"  生成: {os.path.basename(out_path)}")
 
-    def plot_band_radar(self, spec: Dict[str, Any], out_path: Optional[str] = None):
+    def plot_band_radar(self, spec: Dict[str, Any], out_path: str):
         """频段雷达图"""
         bands = ['0.1-0.5Hz', '0.5-1Hz', '1-5Hz', '5-20Hz', '20-80Hz']
         angles = np.linspace(0, 2 * np.pi, len(bands), endpoint=False)
@@ -273,15 +390,12 @@ class VisualizationManager:
         ax.set_title('Band Attenuation (%)', fontsize=14)
         ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
         ax.grid(True)
-
-        plt.tight_layout()
-        if out_path is None:
-            return fig
+        
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"  生成: {os.path.basename(out_path)}")
 
-    def plot_window_attenuation(self, df_windows: pd.DataFrame, out_path: Optional[str] = None):
+    def plot_window_attenuation(self, df_windows: pd.DataFrame, out_path: str):
         """滑动窗口衰减趋势图"""
         fig, axes = plt.subplots(3, 1, figsize=(16, 10), sharex=True)
         
@@ -298,59 +412,6 @@ class VisualizationManager:
         
         axes[-1].set_xlabel('Time (s)', fontsize=12)
         plt.tight_layout()
-        if out_path is None:
-            return fig
-        plt.savefig(out_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        logger.info(f"  生成: {os.path.basename(out_path)}")
-
-    def plot_statistical_features(self, metrics: Dict[str, float], out_path: Optional[str] = None):
-        """统计特征算子级输出: VDV, Crest Factor, Skewness, Kurtosis, MAV, Impulse Factor"""
-        feature_names = ['RMS', 'VDV', 'CrestFactor', 'Skewness', 'Kurtosis', 'MAV', 'ImpulseFactor']
-        feature_labels = ['RMS', 'VDV', 'Crest\nFactor', 'Skewness', 'Kurtosis', 'MAV', 'Impulse\nFactor']
-        axes_labels = ['Ax', 'Ay', 'Az']
-
-        fig, axes = plt.subplots(3, 3, figsize=(20, 16))
-        axes_flat = axes.flatten()
-
-        for fi, (fname, flabel) in enumerate(zip(feature_names, feature_labels)):
-            ax = axes_flat[fi]
-            x = np.arange(len(axes_labels))
-            width = 0.35
-
-            exp_vals = []
-            ctrl_vals = []
-            for axis in axes_labels:
-                exp_vals.append(metrics.get(f'exp_{axis}_{fname}', np.nan))
-                ctrl_vals.append(metrics.get(f'ctrl_{axis}_{fname}', np.nan))
-
-            bars1 = ax.bar(x - width/2, exp_vals, width, label='实验组', color=self.colors['exp'])
-            bars2 = ax.bar(x + width/2, ctrl_vals, width, label='对照组', color=self.colors['ctrl'])
-
-            ax.set_ylabel(flabel.replace('\n', ' '), fontsize=10)
-            ax.set_title(f'{flabel.split(chr(10))[0]}', fontsize=12)
-            ax.set_xticks(x)
-            ax.set_xticklabels(axes_labels)
-            ax.legend(fontsize=8)
-            ax.grid(axis='y', alpha=0.3)
-
-            for bar in bars1:
-                h = bar.get_height()
-                if not np.isnan(h):
-                    ax.text(bar.get_x() + bar.get_width()/2., h, f'{h:.2f}',
-                            ha='center', va='bottom', fontsize=7)
-            for bar in bars2:
-                h = bar.get_height()
-                if not np.isnan(h):
-                    ax.text(bar.get_x() + bar.get_width()/2., h, f'{h:.2f}',
-                            ha='center', va='bottom', fontsize=7)
-
-        for fi in range(len(feature_names), len(axes_flat)):
-            axes_flat[fi].set_visible(False)
-
-        plt.tight_layout()
-        if out_path is None:
-            return fig
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         logger.info(f"  生成: {os.path.basename(out_path)}")
@@ -394,10 +455,6 @@ class VisualizationManager:
         if 'windows' in evaluator.results and len(evaluator.results['windows']) > 0:
             self.plot_window_attenuation(evaluator.results['windows'],
                                           os.path.join(out_dir, 'fig7_window_atten.png'))
-        
-        if 'metrics' in evaluator.results and evaluator.results['metrics']:
-            self.plot_statistical_features(evaluator.results['metrics'],
-                                           os.path.join(out_dir, 'fig8_stat_features.png'))
         
         logger.info(f"  共生成 {len(os.listdir(out_dir))} 个图表")
         return out_dir
