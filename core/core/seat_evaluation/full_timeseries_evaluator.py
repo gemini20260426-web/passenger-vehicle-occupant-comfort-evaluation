@@ -82,7 +82,7 @@ class FullTimeseriesEvaluator:
         self.df_raw = df.copy()
         logger.info(f"  原始数据: {len(self.df_raw)}行 × {len(self.df_raw.columns)}列")
 
-        imus = [str(im) for im in self.df_raw['imu_name'].unique() if isinstance(im, str)]
+        imus = self.df_raw['imu_name'].unique()
         logger.info(f"  IMU传感器: {len(imus)}个")
         
         for im in sorted(imus):
@@ -214,7 +214,7 @@ class FullTimeseriesEvaluator:
             cn = self._cn_name(t)
             logger.info(f"    {cn}({t}): {c}次")
 
-        self.results['detected_events'] = self.events
+        self.results['events'] = self.events
 
     def _detect_by_ml(self):
         """ML 检测 — 25 种细粒度事件 (主力路径)
@@ -265,6 +265,8 @@ class FullTimeseriesEvaluator:
             )
             from core.core.analysis.core_types import DEPRECATED_EVENT_MAPPING
 
+            detector = DrivingEventDetector()
+
             # 构建 records 数据
             records = []
             if self.sw is not None and len(self.sw) > 0:
@@ -281,8 +283,7 @@ class FullTimeseriesEvaluator:
                 return
 
             # 使用 DrivingEventDetector 检测所有事件
-            detector = DrivingEventDetector.from_records(records)
-            rule_events = detector.detect_all()
+            rule_events = detector.detect_all(records)
 
             for evt in rule_events:
                 etype = evt.event_type
@@ -769,10 +770,7 @@ class FullTimeseriesEvaluator:
         for label, data in [('exp', exp_head), ('ctrl', ctrl_head)]:
             total = np.sqrt(data[:, 1]**2 + data[:, 2]**2 + data[:, 3]**2)
             valid = total[~np.isnan(total)]
-            if len(valid) >= 100:
-                metrics[f'{label}_total_RMS'] = np.sqrt(np.mean(valid**2))
-                metrics[f'{label}_total_Peak'] = np.max(np.abs(valid))
-            metrics[f'{label}_total_VDV'] = (np.sum(valid**4) / self.fs) ** 0.25 if len(valid) >= 100 else np.nan
+            metrics[f'{label}_total_VDV'] = (np.sum(valid**4) / self.fs) ** 0.25
 
         self.results['metrics'] = metrics
         logger.info(f"  计算 {len(metrics)} 个指标")
@@ -822,11 +820,6 @@ class FullTimeseriesEvaluator:
                 v = spec.get(ax, {}).get('bands_atten', {}).get(band, np.nan)
                 vals.append(f"{v:.1f}%" if not np.isnan(v) else "—")
             lines.append(f"| {band} | {vals[0]} | {vals[1]} | {vals[2]} |")
-        lines.append("")
-        # ── 嵌入图表 ──
-        lines.append("![PSD频谱对比](fig3_spectrum.png)")
-        lines.append("![衰减比](fig4_spectrum_ratio.png)")
-        lines.append("![频段雷达图](fig5_band_radar.png)")
         lines.append("")
 
         # ── P1: 频段衰减雷达图数据 ──
@@ -881,16 +874,6 @@ class FullTimeseriesEvaluator:
                          f"speed {ev['speed_start']:.0f}→{ev['speed_end']:.0f} km/h")
         if len(self.events) > 10:
             lines.append(f"- ... 还有 {len(self.events) - 10} 个事件")
-        lines.append("")
-        # ── 嵌入更多图表 ──
-        lines.append("## 4.1 统计可视化")
-        lines.append("![统计仪表盘](fig7_statistics.png)")
-        lines.append("![统计特征热力图](fig9_stat_features.png)")
-        lines.append("")
-        lines.append("![全时程概览](fig1_overview.png)")
-        lines.append("![事件RMS对比](fig2_events.png)")
-        lines.append("![时频分析](fig6_stft.png)")
-        lines.append("![滑动窗口衰减](fig8_window_atten.png)")
         lines.append("")
 
         lines.append("---\n*本报告由 FullTimeseriesEvaluator v2.0 自动生成*")
