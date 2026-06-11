@@ -207,6 +207,21 @@ class WaveformScrollWidget(QWidget):
             if self._show_az:
                 self._curve_az.setData(ts, np.array(self._az_data))
 
+            # 自动调整 Y轴范围: 排除极端离群点，使用 P1-P99 百分位
+            all_vals = []
+            if self._show_ax and len(self._ax_data) > 10:
+                all_vals.extend(self._ax_data)
+            if self._show_ay and len(self._ay_data) > 10:
+                all_vals.extend(self._ay_data)
+            if self._show_az and len(self._az_data) > 10:
+                all_vals.extend(self._az_data)
+            if len(all_vals) > 10:
+                all_arr = np.array(all_vals)
+                y_lo = float(np.percentile(all_arr, 1))
+                y_hi = float(np.percentile(all_arr, 99))
+                y_pad = max(0.1, (y_hi - y_lo) * 0.15)
+                self._plot_widget.setYRange(y_lo - y_pad, y_hi + y_pad, padding=0)
+
             if self._auto_scroll and len(ts) > 1:
                 self._plot_widget.setXRange(
                     ts[-1] - self._window_seconds, ts[-1] + 0.5,

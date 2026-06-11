@@ -1740,7 +1740,7 @@ class DataBridge(QObject):
             )
 
             ml_classifier = HybridBehaviorClassifier(context_window_size=10)
-            if ml_classifier.ml_classifier.is_ready():
+            if ml_classifier.ml_classifier and ml_classifier.ml_classifier.is_ready():
                 self.logger.info(
                     f"[DataBridge] ML classifier ready, running hybrid classification on "
                     f"{len(events)} events"

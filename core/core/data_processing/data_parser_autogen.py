@@ -25,7 +25,7 @@ class data_parser_CustomParser:
 
     def _init_patterns(self):
         """初始化解析模式"""
-                self.pattern_0 = re.compile(r"\[?(\d{4}[-/]\d{2}[-/]\d{2}\s*\d{2}[:]\d{2}[:]\d{2}[.,-]?\d{3})]?")
+        self.pattern_0 = re.compile(r"\[?(\d{4}[-/]\d{2}[-/]\d{2}\s*\d{2}[:]\d{2}[:]\d{2}[.,-]?\d{3})]?")
         self.pattern_1 = re.compile(r"AA\s*(\d+)\s*[,\s]?")
         self.pattern_2 = re.compile(r"([-+]?\d*\.?\d+)[,\s]?")
         self.pattern_3 = re.compile(r"([-+]?\d*\.?\d+)[,\s]?")
@@ -91,9 +91,9 @@ class data_parser_CustomParser:
         
         return pd.DataFrame(records)
 
-    def def validate_data(self, data: Dict[str, Any]) -> bool:
+    def validate_data(self, data: Dict[str, Any]) -> bool:
         """验证数据合法性"""
-                return isinstance(data, dict) and len(data) > 0
+        return isinstance(data, dict) and len(data) > 0
 
     def get_stats(self) -> Dict[str, int]:
         """获取解析统计"""

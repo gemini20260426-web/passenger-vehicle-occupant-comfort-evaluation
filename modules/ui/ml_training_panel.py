@@ -203,30 +203,68 @@ class MLTrainingPanel(QWidget):
         self._hybrid_classifier = None
         self._model_info = {}
         self._train_thread = None
+        self._loaded_model_path = None
 
         self._init_ui()
         self._init_hybrid_classifier()
 
     def _init_hybrid_classifier(self):
-        """延迟加载 HybridBehaviorClassifier"""
+        """延迟加载 HybridBehaviorClassifier，自动检测并加载已有模型"""
         try:
             from core.core.analysis.layer4_behavior_classification import HybridBehaviorClassifier
             self._hybrid_classifier = HybridBehaviorClassifier(context_window_size=10)
             if self._hybrid_classifier.ml_classifier.is_ready():
                 self._update_model_info_from_classifier()
-                self.logger.info("ML 分类器已就绪")
+                self._refresh_feature_importance()
+                self.logger.info("ML 分类器已就绪 (启动自动加载)")
+                self.status_indicator.setText("● 模型已加载")
+                self.status_indicator.setStyleSheet("color: #2ecc71; font-size: 13px; font-weight: bold;")
+            else:
+                # 模型未自动加载: 显式提示用户
+                self.logger.info("启动时未检测到已训练模型，需手动训练或加载")
+                from core.core.analysis.layer4_behavior_classification.model_persistence import ModelPersistence
+                mp = ModelPersistence()
+                if mp.model_exists():
+                    # 模型文件存在但加载失败 — 这是异常情况
+                    self.logger.warning("模型文件存在但 auto-load 失败，尝试显式重载...")
+                    loaded = self._hybrid_classifier.ml_classifier.load_or_train()
+                    if loaded:
+                        self.logger.info("显式重载成功")
+                        self._update_model_info_from_classifier()
+                        self._refresh_feature_importance()
+                        self.status_indicator.setText("● 模型已加载")
+                        self.status_indicator.setStyleSheet("color: #2ecc71; font-size: 13px; font-weight: bold;")
         except Exception as e:
             self.logger.warning(f"HybridBehaviorClassifier 加载失败: {e}")
 
     def _update_model_info_from_classifier(self):
         """从分类器更新模型信息"""
         try:
-            meta_path = r'core\core\models\lgbm_25class_classifier_meta.json'
+            # 优先使用用户加载的模型路径，其次用默认路径
+            if self._loaded_model_path:
+                base = os.path.splitext(self._loaded_model_path)[0]
+                # 尝试多种元数据命名: _meta.json, meta.json, _metadata.json
+                meta_candidates = [
+                    f'{base}_meta.json',
+                    f'{base}meta.json',
+                    f'{base}_metadata.json',
+                ]
+                meta_path = None
+                for cand in meta_candidates:
+                    if os.path.exists(cand):
+                        meta_path = cand
+                        break
+                # 如果加载的模型没有元数据, 回退到默认
+                if meta_path is None:
+                    meta_path = r'core\core\models\lgbm_25class_classifier_meta.json'
+            else:
+                meta_path = r'core\core\models\lgbm_25class_classifier_meta.json'
+
             if os.path.exists(meta_path):
                 with open(meta_path, 'r') as f:
                     meta = json.load(f)
                 self._model_info = {
-                    'path': meta_path.replace('_meta.json', '.pkl'),
+                    'path': self._loaded_model_path or meta_path.replace('_meta.json', '.pkl'),
                     'version': meta.get('version', 1),
                     'n_classes': meta.get('n_classes', 23),
                     'accuracy': meta.get('metrics', {}).get('accuracy', 0),
@@ -234,6 +272,19 @@ class MLTrainingPanel(QWidget):
                     'train_date': meta.get('created_at', ''),
                     'feature_count': meta.get('n_features', 55),
                     'calibrated': bool(meta.get('calibration', {}).get('is_fitted', False)),
+                }
+                self._display_model_info()
+            elif self._loaded_model_path:
+                # 加载了模型但没有元数据, 显示基本信息
+                self._model_info = {
+                    'path': self._loaded_model_path,
+                    'version': '?',
+                    'n_classes': '?',
+                    'accuracy': 0,
+                    'f1': 0,
+                    'train_date': '',
+                    'feature_count': '?',
+                    'calibrated': False,
                 }
                 self._display_model_info()
         except Exception as e:
@@ -649,16 +700,31 @@ class MLTrainingPanel(QWidget):
             self.status_indicator.setText(f"● 训练完成 ({acc:.1f}%)")
             self.status_indicator.setStyleSheet("color: #27ae60; font-size: 13px; font-weight: bold;")
             self._log(f"训练成功! 准确率: {acc:.1f}%, F1: {result.get('f1_macro', 0):.3f}")
+
+            # 重新加载模型到内存 (训练保存后 in-memory 分类器仍是旧状态)
+            model_path = result.get('model_path', '')
+            if model_path:
+                self._loaded_model_path = model_path
+            try:
+                if self._hybrid_classifier and hasattr(self._hybrid_classifier, 'ml_classifier'):
+                    loaded = self._hybrid_classifier.ml_classifier.load_or_train()
+                    if loaded:
+                        self._log("模型已重新加载到内存分类器")
+                    else:
+                        self._log("警告: 模型文件可能未正确保存，无法加载到内存")
+            except Exception as reload_err:
+                self._log(f"重新加载模型到内存失败: {reload_err}")
+
             self._update_model_info_from_classifier()
             self._refresh_feature_importance()
             self.training_finished.emit(result)
 
-            model_path = result.get('model_path', 'core/core/models/lgbm_25class_classifier.pkl')
+            model_path_display = model_path or 'core/core/models/lgbm_25class_classifier.pkl'
             QMessageBox.information(self, "训练完成",
                 f"模型训练成功!\n\n准确率: {acc:.1f}%\n"
                 f"F1 Macro: {result.get('f1_macro', 0):.3f}\n"
                 f"样本数: {result.get('n_samples', 'N/A')}\n"
-                f"模型路径: {model_path}")
+                f"模型路径: {model_path_display}")
         else:
             self.status_indicator.setText("● 训练失败")
             self.status_indicator.setStyleSheet("color: #e74c3c; font-size: 13px; font-weight: bold;")
@@ -679,6 +745,7 @@ class MLTrainingPanel(QWidget):
         if not path:
             return
         try:
+            self._loaded_model_path = path
             self.model_path_label.setText(os.path.basename(path))
             self.model_path_label.setStyleSheet("color: #27ae60; font-size: 11px; font-weight: bold;")
             self._update_model_info_from_classifier()

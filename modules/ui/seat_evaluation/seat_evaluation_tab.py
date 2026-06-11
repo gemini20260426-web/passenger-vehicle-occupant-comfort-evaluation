@@ -297,7 +297,16 @@ class SeatEvaluationTab(QWidget, ClearableResource):
                 }
                 result = self.evaluation_engine.evaluate_by_event(trigger)
                 if result:
-                    self._queue_engine.update_result(str(eid), result)
+                    # 兼容 engine_v2 返回 EvaluationResult 对象 (非 dict)
+                    if hasattr(result, 'metrics') and not isinstance(result, dict):
+                        result_dict = {
+                            'scores': {'overall': getattr(result, 'overall_score', 0.0)},
+                            'metrics': getattr(result, 'metrics', {}),
+                            'status': getattr(result, 'risk_level', 'UNKNOWN'),
+                        }
+                    else:
+                        result_dict = result
+                    self._queue_engine.update_result(str(eid), result_dict)
                     count += 1
             except Exception as e:
                 self.logger.error(f"批量评测事件失败: {e}")

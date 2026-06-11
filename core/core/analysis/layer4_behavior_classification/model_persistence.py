@@ -190,27 +190,47 @@ class ModelPersistence:
         Returns:
             (model, meta_dict) — 如果模型文件不存在则返回 (None, {})
         """
-        if not os.path.exists(self.model_path):
+        # 1. 优先最新版本化文件（更可靠，不受默认 pkl 缺失影响）
+        latest_ver = self._get_latest_version()
+        if latest_ver > 0:
+            load_path = self._versioned_path(latest_ver)
+        # 2. 回退默认路径
+        elif os.path.exists(self.model_path):
+            load_path = self.model_path
+        else:
             logger.warning(f"模型文件不存在: {self.model_path}")
             return None, {}
 
+        if not os.path.exists(load_path):
+            logger.warning(f"模型文件不存在: {load_path}")
+            return None, {}
+
         try:
-            with open(self.model_path, 'rb') as f:
+            with open(load_path, 'rb') as f:
                 model = pickle.load(f)
         except Exception as e:
-            logger.error(f"加载模型失败: {e}")
+            logger.warning(f"加载模型失败 (非致命): {e}")
             return None, {}
 
         meta = {}
-        if os.path.exists(self.meta_path):
+        # 元数据：优先同版本文件，回退默认文件
+        if load_path != self.model_path:
+            ver_meta = load_path.replace('.pkl', '_meta.json')
+            if os.path.exists(ver_meta):
+                meta_path = ver_meta
+            else:
+                meta_path = self.meta_path
+        else:
+            meta_path = self.meta_path
+        if os.path.exists(meta_path):
             try:
-                with open(self.meta_path, 'r', encoding='utf-8') as f:
+                with open(meta_path, 'r', encoding='utf-8') as f:
                     meta = json.load(f)
             except Exception as e:
                 logger.warning(f"加载元数据失败: {e}")
 
         logger.info(
-            f"模型已加载: {self.model_path} "
+            f"模型已加载: {load_path} "
             f"(n_classes={meta.get('n_classes', '?')}, "
             f"v{meta.get('version', '?')}, "
             f"created={meta.get('created_at', '?')})"
@@ -245,7 +265,9 @@ class ModelPersistence:
         return True
 
     def model_exists(self) -> bool:
-        return os.path.exists(self.model_path)
+        if os.path.exists(self.model_path):
+            return True
+        return self._get_latest_version() > 0
 
     @staticmethod
     def _get_lgbm_version() -> str:
@@ -257,13 +279,28 @@ class ModelPersistence:
 
     def get_model_info(self) -> Dict[str, Any]:
         """获取模型信息摘要 (不加载模型本体)"""
-        if not os.path.exists(self.meta_path):
+        # 优先版本化元数据，回退默认
+        meta_candidates = []
+        latest_ver = self._get_latest_version()
+        if latest_ver > 0:
+            meta_candidates.append(self._versioned_meta_path(latest_ver))
+        meta_candidates.append(self.meta_path)
+
+        meta_path = None
+        for mp in meta_candidates:
+            if os.path.exists(mp):
+                meta_path = mp
+                break
+
+        if not meta_path:
             return {'exists': False}
         try:
-            with open(self.meta_path, 'r', encoding='utf-8') as f:
+            with open(meta_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
             meta['exists'] = True
-            meta['model_path'] = self.model_path
+            # 报告实际存在的模型文件路径
+            model_p = self._versioned_path(latest_ver) if latest_ver > 0 else self.model_path
+            meta['model_path'] = model_p if os.path.exists(model_p) else self.model_path
             return meta
         except Exception:
             return {'exists': False}

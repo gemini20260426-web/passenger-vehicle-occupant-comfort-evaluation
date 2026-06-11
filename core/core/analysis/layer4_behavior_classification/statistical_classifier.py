@@ -4,7 +4,6 @@
 统计分类器 — 基于特征分布的模糊边界分类
 """
 
-import numpy as np
 from typing import Dict, Optional, Tuple
 from ..core_types import ManeuverEvent, FrameFeatures, BehaviorCategory
 

@@ -337,7 +337,7 @@ class CoreUIComponents:
             if not data_bridge:
                 if retry_count < 10:
                     delay = 300 * (retry_count + 1)
-                    self.logger.warning(f"DataBridge 未初始化，{delay}ms后第{retry_count+1}次重试")
+                    self.logger.debug(f"DataBridge 未初始化，{delay}ms后第{retry_count+1}次重试")
                     QTimer.singleShot(delay, lambda: self._inject_data_bridge(retry_count + 1))
                 else:
                     self.logger.error("DataBridge 注入失败：超过最大重试次数")
@@ -593,13 +593,8 @@ class CoreUIComponents:
             if data_bridge:
                 data_bridge.enable_result_caching()
                 self.logger.info(f"分析结果缓存已启用: {data_bridge.get_analysis_cache().db_path if data_bridge.get_analysis_cache() else 'N/A'}")
-                self._load_events_from_previous_cache(data_bridge)
-                try:
-                    from core.core.analysis.event_distributor import EventDistributor
-                    synced = EventDistributor.instance().sync_from_cache()
-                    self.logger.info(f"EventDistributor 从缓存同步了 {synced} 个事件")
-                except Exception as e:
-                    self.logger.warning(f"EventDistributor 缓存同步失败: {e}")
+                # 不再自动从旧缓存加载事件 — 事件仅在用户显式选择 SQLite 缓存数据集并开始分析后产生
+                # 旧代码: _load_events_from_previous_cache() + EventDistributor.sync_from_cache()
 
             if hasattr(main, 'right_tab') and main.right_tab:
                 if hasattr(main.right_tab, 'set_cache'):

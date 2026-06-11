@@ -15,27 +15,35 @@
 
 import logging
 import os
+import json
+import sqlite3
+import traceback
+import statistics as _stat
 from enum import Enum
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
+from collections import defaultdict, Counter
 import csv as csv_mod
 
 import numpy as np
+import pandas as pd
 
 import matplotlib
 matplotlib.use('QtAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.colors import LogNorm
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QComboBox, QTableWidget, QTableWidgetItem,
     QProgressBar, QFileDialog, QMessageBox, QTextEdit,
     QSplitter, QFrame, QCheckBox, QSpinBox, QHeaderView,
-    QTabWidget, QScrollArea, QGridLayout, QSizePolicy, QDialog
+    QTabWidget, QScrollArea, QGridLayout, QSizePolicy, QDialog,
+    QDoubleSpinBox, QApplication,
 )
-from PySide6.QtCore import Qt, Signal, QThread, QObject, QSize
+from PySide6.QtCore import Qt, Signal, QThread, QObject, QSize, QTimer
 from PySide6.QtGui import QFont, QColor
 
 from core.core.seat_evaluation.engine_v2 import MultiChannelSeatEvaluationEngine
@@ -208,16 +216,13 @@ def _parse_csv_dataset(file_path: str):
     Returns: (multi_channel_data, vehicle_data, sample_info) 同FloorIMUParser格式
     vehicle_data 额外包含 '_raw_records' 字段，用于驾驶行为事件检测
     """
-    import csv as _csv
-    from collections import defaultdict
-
     by_imu = defaultdict(lambda: {'ax': [], 'ay': [], 'az': [],
                                    'gx': [], 'gy': [], 'gz': [],
                                    'timestamps': [], 'speed': [], 'wheel': []})
     raw_records = []  # 保留原始记录用于 DrivingEventDetector
 
     with open(file_path, 'r', encoding='utf-8-sig') as f:
-        reader = _csv.DictReader(f)
+        reader = csv_mod.DictReader(f)
         for row in reader:
             imu = row.get('imu_name', '')
             if not imu:
@@ -245,7 +250,25 @@ def _parse_csv_dataset(file_path: str):
             continue
         ts = data['timestamps']
         if len(ts) >= 2 and (ts[-1] - ts[0]) > 0:
-            sample_rate = (n - 1) / (ts[-1] - ts[0])
+            # 使用中位数时间间隔检测采样率 (抗抖动)
+            dts = np.diff(ts)
+            median_dt = np.median(dts) if len(dts) > 0 else 0.0
+            if median_dt > 0:
+                sample_rate = 1.0 / median_dt
+                std_dt = np.std(dts)
+                jitter_ratio = std_dt / median_dt
+                if jitter_ratio > 0.5 and std_dt > 0.05:
+                    logger.warning(
+                        f"时间戳抖动较大 (IMU={imu}): σ={std_dt:.4f}s, "
+                        f"中值={median_dt:.4f}s, 抖动比={jitter_ratio:.2%}"
+                    )
+                elif jitter_ratio > 0.1:
+                    logger.info(
+                        f"时间戳轻微抖动 (IMU={imu}): σ={std_dt:.4f}s, "
+                        f"中值={median_dt:.4f}s, 抖动比={jitter_ratio:.2%} (离线CSV正常)"
+                    )
+            else:
+                sample_rate = (n - 1) / (ts[-1] - ts[0])
 
         multi_channel_data[imu] = {
             'ax': data['ax'], 'ay': data['ay'], 'az': data['az'],
@@ -280,8 +303,6 @@ def _build_records_from_channel_map(channel_data_map: dict, sample_rate: float) 
     用于 CAN 文件解析路径（非 CSV 预解析格式）。
     提取 ch1 通道 IMU1_头部眉心-1 的数据作为参考通道。
     """
-    import numpy as np
-
     ref_imu = 'IMU1_头部眉心-1'
     ref_data = channel_data_map.get(ref_imu)
     if ref_data is None:
@@ -342,7 +363,6 @@ def _is_sqlite_cache_file(file_path: str) -> bool:
     if not file_path.lower().endswith('.db'):
         return False
     try:
-        import sqlite3
         conn = sqlite3.connect(file_path)
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cursor.fetchall()]
@@ -353,19 +373,21 @@ def _is_sqlite_cache_file(file_path: str) -> bool:
 
 def _parse_sqlite_cache(file_path: str):
     """从SQLite缓存文件解析数据"""
-    import sqlite3
-    import json
     
     conn = sqlite3.connect(file_path)
     cursor = conn.execute("SELECT source_type, rel_time, channel, imu_name, payload FROM data_records ORDER BY rel_time")
     
     by_imu = {}
+    bad_records = 0
+    total_records = 0
     
     for row in cursor.fetchall():
+        total_records += 1
         source_type, rel_time, channel, imu_name, payload = row
         try:
             record = json.loads(payload)
         except json.JSONDecodeError:
+            bad_records += 1
             continue
         
         imu = imu_name or record.get('imu_name', record.get('_imu_name', channel or 'unknown'))
@@ -396,7 +418,11 @@ def _parse_sqlite_cache(file_path: str):
             by_imu[imu]['wheel'].append(float(record.get('wheel', 0)))
     
     conn.close()
-    
+
+    if bad_records > 0:
+        pct = bad_records / float(total_records) * 100 if total_records > 0 else 0
+        logger.warning(f"SQLite缓存解析: {bad_records}/{total_records} 条损坏记录被跳过 ({pct:.1f}%)")
+
     multi_channel_data = {}
     sample_rate = 1000.0
     
@@ -538,10 +564,14 @@ class UnifiedEvaluationWorker(QObject):
                         ch_data['timestamps'], level=self._preprocess_level
                     )
                     preprocessed_channels[ch_name] = {
-                        'ax': processed['acc'][:, 0],
-                        'ay': processed['acc'][:, 1],
-                        'az': processed['acc'][:, 2],
+                        'ax': processed['acc'][:, 0] if processed['acc'].ndim > 1 else processed['acc'],
+                        'ay': processed['acc'][:, 1] if processed['acc'].ndim > 1 else np.zeros_like(processed['acc']),
+                        'az': processed['acc'][:, 2] if processed['acc'].ndim > 1 else np.zeros_like(processed['acc']),
+                        'gx': processed.get('gyro', ch_data.get('gx', np.array([]))),
+                        'gy': processed.get('gyro', ch_data.get('gy', np.array([]))),
+                        'gz': processed.get('gyro', ch_data.get('gz', np.array([]))),
                         'timestamps': processed['timestamps'],
+                        '_preprocess_level': self._preprocess_level,
                     }
                 else:
                     preprocessed_channels[ch_name] = ch_data
@@ -576,17 +606,32 @@ class UnifiedEvaluationWorker(QObject):
                         'sample_rate': ch_data.get('sample_rate', detected_sr),
                         'speed': np.array(ch_data.get('speed', [])),
                         'wheel': np.array(ch_data.get('wheel', [])),
+                        '_unit': 'g',
+                        '_converted_from': 'm/s²',
+                        '_preprocess_level': ch_data.get('_preprocess_level', 0),
                     }
 
                     metrics = {}
                     for metric_id in self._selected_metrics:
                         if metric_id == 'ATTEN_H':
                             continue  # ATTEN_H is computed post-hoc as a cross-group metric
+                        # ── 数据有效性前置检查 ──
+                        if len(ch_data.get('ax', [])) < 10:
+                            metrics[metric_id] = float('nan')
+                            metrics[f'{metric_id}_status'] = 'insufficient_data'
+                            continue
                         try:
                             value = self._engine._calculate_single_metric(metric_id, data_window)
                             metrics[metric_id] = value
+                            metrics[f'{metric_id}_status'] = 'ok'
+                        except ValueError as e:
+                            metrics[metric_id] = float('nan')
+                            metrics[f'{metric_id}_status'] = 'value_error'
+                            metrics[f'{metric_id}_error'] = str(e)[:200]
                         except Exception as e:
-                            metrics[metric_id] = -1.0
+                            metrics[metric_id] = float('nan')
+                            metrics[f'{metric_id}_status'] = 'computation_error'
+                            metrics[f'{metric_id}_error'] = f'{type(e).__name__}: {str(e)[:200]}'
 
                     profile = self._engine._build_vibration_profile(
                         data_window, metrics, loc_id
@@ -601,17 +646,16 @@ class UnifiedEvaluationWorker(QObject):
                 exp = metric_results.get('experimental', {})
                 ctrl = metric_results.get('control', {})
 
-                # ── P1修复: ATTEN_H 后计算 ──
+                # ── ATTEN_H 后计算 ──
                 # η_H = (DISP_HR_ctrl - DISP_HR_exp) / DISP_HR_ctrl × 100%
-                if 'ATTEN_H' in self._selected_metrics:
-                    exp_hr = exp.get('metrics', {}).get('DISP_HR', 0.0)
-                    ctrl_hr = ctrl.get('metrics', {}).get('DISP_HR', 0.0)
-                    if abs(ctrl_hr) > 1e-9:
-                        atten_h = (ctrl_hr - exp_hr) / ctrl_hr * 100.0
-                    else:
-                        atten_h = 0.0
-                    exp.setdefault('metrics', {})['ATTEN_H'] = atten_h
-                    ctrl.setdefault('metrics', {})['ATTEN_H'] = atten_h
+                exp_hr = exp.get('metrics', {}).get('DISP_HR', 0.0)
+                ctrl_hr = ctrl.get('metrics', {}).get('DISP_HR', 0.0)
+                if abs(ctrl_hr) > 1e-9:
+                    atten_h = (ctrl_hr - exp_hr) / ctrl_hr * 100.0
+                else:
+                    atten_h = 0.0
+                exp.setdefault('metrics', {})['ATTEN_H'] = atten_h
+                ctrl.setdefault('metrics', {})['ATTEN_H'] = atten_h
 
                 exp_profile = exp.get('profile')
                 ctrl_profile = ctrl.get('profile')
@@ -619,7 +663,9 @@ class UnifiedEvaluationWorker(QObject):
                 contrast = {}
                 if exp_profile and ctrl_profile:
                     contrast = self._engine._build_contrast_profile(
-                        exp_profile, ctrl_profile, loc_id
+                        exp_profile, ctrl_profile, loc_id,
+                        exp_metrics=exp.get('metrics'),
+                        ctrl_metrics=ctrl.get('metrics'),
                     )
 
                 location_results[loc_id] = {
@@ -666,38 +712,25 @@ class UnifiedEvaluationWorker(QObject):
                     by_type = summary.get('by_type', {})
 
                     # ── 丰富事件：附加瞬时车速查找 ──
-                    # 从 raw_records 构建时间→车速快速查找表 (单位转为 km/h)
-                    _speed_lookup = {}
-                    for rec in raw_records:
-                        ts = rec.get('rel_time', rec.get('timestamp', None))
-                        sp = rec.get('speed', None)
-                        if ts is not None and sp is not None:
-                            _speed_lookup[round(float(ts), 3)] = float(sp)
-                    _speed_keys = sorted(_speed_lookup.keys()) if _speed_lookup else []
-
-                    def _lookup_speed(t_val: float) -> float:
-                        """二分查找最接近 t_val 的车速"""
-                        if not _speed_keys:
-                            return 0.0
-                        import bisect
-                        idx = bisect.bisect_left(_speed_keys, t_val)
-                        if idx == 0:
-                            return _speed_lookup[_speed_keys[0]]
-                        if idx >= len(_speed_keys):
-                            return _speed_lookup[_speed_keys[-1]]
-                        # 取更近的
-                        if abs(_speed_keys[idx] - t_val) < abs(_speed_keys[idx - 1] - t_val):
-                            return _speed_lookup[_speed_keys[idx]]
-                        return _speed_lookup[_speed_keys[idx - 1]]
+                    # 使用 NumPy 数组 + searchsorted 替代 round() 字典，避免高采样率键冲突
+                    _speed_ts = np.array([float(rec.get('rel_time', rec.get('timestamp', 0)))
+                                           for rec in raw_records], dtype=np.float64)
+                    _speed_vals = np.array([float(rec.get('speed', 0))
+                                             for rec in raw_records], dtype=np.float64)
 
                     for evt in events:
                         t0 = evt.get('t_start', 0)
                         t1 = evt.get('t_end', 0)
-                        evt['speed_at_start'] = round(_lookup_speed(t0), 1)
-                        evt['speed_at_end'] = round(_lookup_speed(t1), 1)
+                        evt['speed_at_start'] = round(_lookup_speed_by_time(_speed_ts, _speed_vals, t0), 1)
+                        evt['speed_at_end'] = round(_lookup_speed_by_time(_speed_ts, _speed_vals, t1), 1)
                         evt['speed_delta'] = round(evt['speed_at_end'] - evt['speed_at_start'], 1)
 
-                    behavior_summary['events'] = events[:200]
+                    MAX_DISPLAY_EVENTS = 200
+                    behavior_summary['events'] = events[:MAX_DISPLAY_EVENTS]
+                    behavior_summary['_truncated'] = len(events) > MAX_DISPLAY_EVENTS
+                    behavior_summary['_total_detected'] = len(events)
+                    if behavior_summary['_truncated']:
+                        logger.warning(f"驾驶事件列表被截断: 展示{MAX_DISPLAY_EVENTS}/{len(events)}个事件")
                     behavior_summary['total_events'] = len(events)
                     behavior_summary['event_types'] = {
                         et: info['count']
@@ -720,7 +753,6 @@ class UnifiedEvaluationWorker(QObject):
                     )
                 except Exception as e:
                     logger.warning(f"驾驶行为检测失败(非致命): {e}")
-                    import traceback
                     traceback.print_exc()
             
             self.progress_updated.emit(72, '正在生成报告...')
@@ -753,12 +785,18 @@ class UnifiedEvaluationWorker(QObject):
                 vehicle_summary['speed_std'] = float(np.std(combined_speed))
                 vehicle_summary['speed_median'] = float(np.median(combined_speed))
                 vehicle_summary['speed_max'] = float(np.max(combined_speed))
-                speed_bins = [0, 5, 10, 15, 20, 25, 30, 35, 40, 50, 70]
+                # 自适应 bins: Freedman-Diaconis 规则，适应不同车速范围
+                iqr = np.percentile(combined_speed, 75) - np.percentile(combined_speed, 25)
+                bin_width = 2 * iqr / (len(combined_speed) ** (1/3))
+                bin_width = max(2.0, min(20.0, bin_width))  # clamp [2, 20] km/h
+                vmax = np.percentile(combined_speed, 99)
+                vmin = 0.0
+                speed_bins = list(np.arange(vmin, vmax + bin_width, bin_width))
                 hist, _ = np.histogram(combined_speed, bins=speed_bins)
                 vehicle_summary['speed_histogram'] = {
                     'bins': speed_bins,
-                    'counts': hist.tolist(),
-                    'labels': [f'{speed_bins[i]}-{speed_bins[i+1]}' for i in range(len(speed_bins)-1)],
+                    'counts': hist,
+                    'labels': [f'{speed_bins[i]:.0f}-{speed_bins[i+1]:.0f}' for i in range(len(speed_bins)-1)],
                 }
             if all_wheels:
                 combined_wheel = np.concatenate(all_wheels)
@@ -787,7 +825,11 @@ class UnifiedEvaluationWorker(QObject):
                 evaluator.window_analysis()
                 
                 if not self._is_running: return
-                self.progress_updated.emit(86, '频谱分析...')
+                self.progress_updated.emit(86, '事件窗口分析...')
+                evaluator.event_analysis()
+                
+                if not self._is_running: return
+                self.progress_updated.emit(87, '频谱分析...')
                 evaluator.spectrum_analysis()
                 
                 if not self._is_running: return
@@ -808,26 +850,39 @@ class UnifiedEvaluationWorker(QObject):
                     f"expert_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 )
                 
-                if not self._is_running: return
-                self.progress_updated.emit(96, '生成报告...')
-                evaluator.generate_report(output_dir)
-                
-                if not self._is_running: return
-                self.progress_updated.emit(98, '生成图表...')
-                viz_manager = VisualizationManager()
-                viz_manager.generate_all_plots(evaluator, output_dir)
-                
-                num_plots = len([f for f in os.listdir(output_dir) if f.endswith('.png')])
-                
+                # 构建 results 数据（在 generate_report 之前，避免因 to_csv 等异常丢失数据）
                 full_timeseries_result = {
                     'events': evaluator.events,
                     'results': evaluator.results,
-                    'output_dir': output_dir,
-                    'num_plots': num_plots,
                 }
+                
+                if not self._is_running: return
+                self.progress_updated.emit(96, '生成报告...')
+                try:
+                    evaluator.generate_report(output_dir)
+                    full_timeseries_result['output_dir'] = output_dir
+                except Exception as report_err:
+                    logger.warning(f"报告生成失败(非致命): {report_err}")
+                
+                if not self._is_running: return
+                self.progress_updated.emit(98, '生成图表...')
+                try:
+                    viz_manager = VisualizationManager()
+                    viz_manager.generate_all_plots(evaluator, output_dir)
+                    num_plots = len([f for f in os.listdir(output_dir) if f.endswith('.png')])
+                    full_timeseries_result['num_plots'] = num_plots
+                except Exception as plot_err:
+                    logger.warning(f"PNG图表生成失败(非致命): {plot_err}")
+                    full_timeseries_result['num_plots'] = 0
             except Exception as e:
-                logger.warning(f"全时域评测失败(非致命): {e}")
-                full_timeseries_result = {'error': str(e)}
+                tb = traceback.format_exc()
+                logger.warning(f"全时域评测失败(非致命): {e}\n{tb}")
+                full_timeseries_result = {'error': str(e), 'traceback': tb}
+                if hasattr(self, '_status_label') and self._status_label:
+                    self._status_label.setText(f"⚠ 全时域评测失败: {e}")
+                    self._status_label.setStyleSheet(
+                        f"color: #E74C3C; font-size: 11px; padding: 7px 12px; "
+                        f"background: {LC['bg_card']}; border: 1px solid #E74C3C; border-radius: 6px;")
 
             location_results['_full_timeseries'] = full_timeseries_result
 
@@ -842,11 +897,27 @@ class UnifiedEvaluationWorker(QObject):
                     imu_num = int(ch_name.split('_')[0].replace('IMU', ''))
                 except (ValueError, IndexError):
                     continue
-                is_head = 'head' in ch_name.lower() or '头部' in ch_name
-                if imu_num % 2 == 1 and is_head and exp_head_ch is None:
+                # 第一优先: 查找座垫R点通道 (IMU5_座垫R点-1 / IMU6_座垫R点-2)
+                is_seat_r = '座垫' in ch_name or 'R点' in ch_name or 'seat_r' in ch_name.lower()
+                if imu_num % 2 == 1 and is_seat_r and exp_head_ch is None:
                     exp_head_ch = ch_name
-                elif imu_num % 2 == 0 and is_head and ctrl_head_ch is None:
+                elif imu_num % 2 == 0 and is_seat_r and ctrl_head_ch is None:
                     ctrl_head_ch = ch_name
+
+            # 第二优先: 查找头部通道 (IMU1_头部眉心-1 / IMU2_头部眉心-2)
+            if exp_head_ch is None or ctrl_head_ch is None:
+                for ch_name in channel_data_map:
+                    if ch_name.startswith('_'):
+                        continue
+                    try:
+                        imu_num = int(ch_name.split('_')[0].replace('IMU', ''))
+                    except (ValueError, IndexError):
+                        continue
+                    is_head = 'head' in ch_name.lower() or '头部' in ch_name
+                    if imu_num % 2 == 1 and is_head and exp_head_ch is None:
+                        exp_head_ch = ch_name
+                    elif imu_num % 2 == 0 and is_head and ctrl_head_ch is None:
+                        ctrl_head_ch = ch_name
 
             # 回退：如果没找到 head 通道，取第一个实验/对照通道
             for ch_name in channel_data_map:
@@ -868,18 +939,28 @@ class UnifiedEvaluationWorker(QObject):
                 # 速度/方向盘取任意通道
                 sp_arr = np.array(exp_data.get('speed', []))
                 wh_arr = np.array(exp_data.get('wheel', []))
+
+                # 按通道名判断实际 IMU 位置，用于图表标题动态显示
+                if '座垫' in exp_head_ch or 'R点' in exp_head_ch or 'seat_r' in exp_head_ch.lower():
+                    loc_label = '座垫R点'
+                elif '头部' in exp_head_ch or 'head' in exp_head_ch.lower():
+                    loc_label = '头部眉心'
+                else:
+                    loc_label = exp_head_ch.split('_')[0] if '_' in exp_head_ch else exp_head_ch[:8]
+
                 overview_data = {
-                    'timestamps': ts.tolist() if hasattr(ts, 'tolist') else list(ts),
-                    'speed': sp_arr.tolist() if hasattr(sp_arr, 'tolist') else list(sp_arr),
-                    'wheel': wh_arr.tolist() if hasattr(wh_arr, 'tolist') else list(wh_arr),
-                    'exp_ax': exp_data.get('ax', np.array([])).tolist() if hasattr(exp_data.get('ax', np.array([])), 'tolist') else list(exp_data.get('ax', [])),
-                    'exp_ay': exp_data.get('ay', np.array([])).tolist() if hasattr(exp_data.get('ay', np.array([])), 'tolist') else list(exp_data.get('ay', [])),
-                    'exp_az': exp_data.get('az', np.array([])).tolist() if hasattr(exp_data.get('az', np.array([])), 'tolist') else list(exp_data.get('az', [])),
-                    'ctrl_ax': ctrl_data.get('ax', np.array([])).tolist() if hasattr(ctrl_data.get('ax', np.array([])), 'tolist') else list(ctrl_data.get('ax', [])),
-                    'ctrl_ay': ctrl_data.get('ay', np.array([])).tolist() if hasattr(ctrl_data.get('ay', np.array([])), 'tolist') else list(ctrl_data.get('ay', [])),
-                    'ctrl_az': ctrl_data.get('az', np.array([])).tolist() if hasattr(ctrl_data.get('az', np.array([])), 'tolist') else list(ctrl_data.get('az', [])),
+                    'timestamps': ts,
+                    'speed': sp_arr,
+                    'wheel': wh_arr,
+                    'exp_ax': exp_data.get('ax', np.array([])),
+                    'exp_ay': exp_data.get('ay', np.array([])),
+                    'exp_az': exp_data.get('az', np.array([])),
+                    'ctrl_ax': ctrl_data.get('ax', np.array([])),
+                    'ctrl_ay': ctrl_data.get('ay', np.array([])),
+                    'ctrl_az': ctrl_data.get('az', np.array([])),
                     'exp_channel': exp_head_ch,
                     'ctrl_channel': ctrl_head_ch,
+                    'location_label': loc_label,
                 }
             location_results['_overview_data'] = overview_data
 
@@ -1154,6 +1235,27 @@ ALL_METRIC_GROUPS: List[tuple] = [
 ]
 
 
+def _extract_metric_value(raw):
+    """从指标值中提取纯数值，兼容 enriched 格式 {'value': N} 和裸值"""
+    if isinstance(raw, dict):
+        return raw.get('value')
+    if isinstance(raw, (int, float)):
+        return raw
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lookup_speed_by_time(speed_ts: np.ndarray, speed_vals: np.ndarray, t_val: float) -> float:
+    """NumPy 二分查找最接近 t_val 的车速"""
+    if len(speed_ts) == 0:
+        return 0.0
+    idx = np.searchsorted(speed_ts, t_val)
+    idx = min(idx, len(speed_vals) - 1)
+    return float(speed_vals[idx])
+
+
 class StatisticsAnalysisTab(QWidget):
     """序列统计分析与驾驶行为事件分析标签页"""
 
@@ -1179,6 +1281,7 @@ class StatisticsAnalysisTab(QWidget):
         self._current_timeseries_result = None
         self._contrast_data = []
         self._dataset_path = ''
+        self._selected_metrics = []  # 用户勾选的评测指标
 
         self._pipeline_labels = ['加载数据', '提取通道', '预处理', '指标计算', '生成报告']
         self._sort_column = -1
@@ -1238,7 +1341,7 @@ class StatisticsAnalysisTab(QWidget):
         # ════════════════════════════════════════════════════════════
 
         # ════ 1. 分析总览 ════
-        self._overview_group = self._create_section_group("分析总览")
+        self._overview_group = self._create_section_group("1. 分析总览")
         self._overview_group.setVisible(True)
         main_layout.addWidget(self._overview_group)
 
@@ -1248,16 +1351,20 @@ class StatisticsAnalysisTab(QWidget):
         self._condition_overview_card = self._create_condition_overview_card()
         self._overview_group._content_layout.addWidget(self._condition_overview_card)
 
-        # ════ 2. 驾驶行为事件 ════
+        # ════ 1.2 驾驶行为事件 ════
         self._behavior_events_card = self._create_behavior_events_card()
         main_layout.addWidget(self._behavior_events_card)
 
-        # ════ 3. 行程时间轴 ════
+        # ════ 1.3 座垫R点三轴加速度 ════
+        self._head_accel_card = self._create_head_accel_overview_card()
+        main_layout.addWidget(self._head_accel_card)
+
+        # ════ 2. 行程时间轴 ════
         timeline_card = self._create_timeline_card()
         main_layout.addWidget(timeline_card)
 
-        # ════ 4. 多通道剖面分析 ════
-        self._profile_group = self._create_section_group("多通道剖面分析")
+        # ════ 3. 多通道剖面分析 ════
+        self._profile_group = self._create_section_group("3. 多通道剖面分析")
         self._profile_group.setVisible(True)
         main_layout.addWidget(self._profile_group)
 
@@ -1276,8 +1383,8 @@ class StatisticsAnalysisTab(QWidget):
         self._temporal_card = self._create_temporal_card()
         self._profile_group._content_layout.addWidget(self._temporal_card)
 
-        # ════ 5. 指标对照分析 ════
-        self._contrast_group = self._create_section_group("指标对照分析")
+        # ════ 4. 指标对照分析 ════
+        self._contrast_group = self._create_section_group("4. 指标对照分析")
         self._contrast_group.setVisible(True)
         main_layout.addWidget(self._contrast_group)
 
@@ -1287,16 +1394,21 @@ class StatisticsAnalysisTab(QWidget):
         comparison_card = self._create_indicator_comparison_card()
         self._contrast_group._content_layout.addWidget(comparison_card)
 
-        # ════ 6. 全时域滑动窗口评测 ════
-        self._fulltimeseries_group = self._create_section_group("全时域滑动窗口评测")
+        # ════ 5. 全时域滑动窗口评测 ════
+        self._fulltimeseries_group = self._create_section_group("5. 全时域滑动窗口评测")
         self._fulltimeseries_group.setVisible(True)
         main_layout.addWidget(self._fulltimeseries_group)
 
         self._sliding_window_card = self._create_sliding_window_card()
         self._fulltimeseries_group._content_layout.addWidget(self._sliding_window_card)
 
+        # ════ 6. 全部驾驶事件 Ay对比 ════
+        self._events_ay_overview_card = self._create_events_ay_overview_card()
+        self._events_ay_overview_card.setVisible(True)
+        main_layout.addWidget(self._events_ay_overview_card)
+
         # ════ 7. 频段衰减分析 ════
-        self._spectrum_group = self._create_section_group("频段衰减分析")
+        self._spectrum_group = self._create_section_group("7. 频段衰减分析")
         self._spectrum_group.setVisible(True)
         main_layout.addWidget(self._spectrum_group)
 
@@ -1307,50 +1419,54 @@ class StatisticsAnalysisTab(QWidget):
         self._stft_card = self._create_stft_card()
         self._spectrum_group._content_layout.addWidget(self._stft_card)
 
-        # ════ 8. 统计检验分析 ════
-        self._statistics_group = self._create_section_group("统计检验分析")
+        # ════ 8. 频段衰减雷达图 ════
+        self._band_radar_card = self._create_band_radar_card()
+        self._band_radar_card.setVisible(True)
+        main_layout.addWidget(self._band_radar_card)
+
+        # ════ 9. 事件时间线 ════
+        self._advanced_timeline_card = self._create_advanced_card("9. 事件时间线",
+            "车速 + 方向盘转角 + 驾驶事件色块标记", "timeline")
+        main_layout.addWidget(self._advanced_timeline_card)
+
+        # ════ 10. PSD 功率谱密度对比 ════
+        self._advanced_psd_card = self._create_advanced_card("10. PSD 功率谱密度对比",
+            "实验组 vs 对照组 三轴功率谱", "psd")
+        main_layout.addWidget(self._advanced_psd_card)
+
+        # ════ 11. 衰减效率柱状图 ════
+        self._advanced_attenuation_card = self._create_advanced_card("11. 衰减效率柱状图",
+            "各指标改善率排序 (±百分比)", "attenuation")
+        main_layout.addWidget(self._advanced_attenuation_card)
+
+        # ════ 12. 雷达对比图 ════
+        self._advanced_radar_card = self._create_advanced_card("12. 雷达对比图",
+            "多维度指标归一化对比", "radar")
+        main_layout.addWidget(self._advanced_radar_card)
+
+        # ════ 13. 三轴加速度时域波形 ════
+        self._advanced_accel_card = self._create_advanced_card("13. 三轴加速度时域波形",
+            "前3通道 实验组 Ax/Ay/Az 10s截面", "accel")
+        main_layout.addWidget(self._advanced_accel_card)
+
+        # ════ 14. SRS 冲击响应谱 ════
+        self._advanced_srs_card = self._create_advanced_card("14. SRS 冲击响应谱",
+            "三轴冲击响应谱对比", "srs")
+        main_layout.addWidget(self._advanced_srs_card)
+
+        # ════ 15. 统计检验分析（页尾）════
+        self._statistics_group = self._create_section_group("15. 统计检验分析")
         self._statistics_group.setVisible(True)
         main_layout.addWidget(self._statistics_group)
 
         self._statistics_card = self._create_statistics_card()
         self._statistics_group._content_layout.addWidget(self._statistics_card)
 
-        # ════ 9. 高级可视化图表 ════
-        self._advanced_viz_group = self._create_section_group("高级可视化图表")
-        self._advanced_viz_group.setVisible(True)
-        main_layout.addWidget(self._advanced_viz_group)
+        # ════ 16. 统计特征(算子级输出) ════
+        self._stat_features_card = self._create_stat_features_card()
+        main_layout.addWidget(self._stat_features_card)
 
-        # 9.1 事件时间线
-        self._advanced_timeline_card = self._create_advanced_card(" 事件时间线",
-            "车速 + 方向盘转角 + 驾驶事件色块标记", "timeline")
-        self._advanced_viz_group._content_layout.addWidget(self._advanced_timeline_card)
-
-        # 9.2 PSD 功率谱密度对比
-        self._advanced_psd_card = self._create_advanced_card(" PSD 功率谱密度对比",
-            "实验组 vs 对照组 各通道 Z轴功率谱", "psd")
-        self._advanced_viz_group._content_layout.addWidget(self._advanced_psd_card)
-
-        # 9.3 衰减效率柱状图
-        self._advanced_attenuation_card = self._create_advanced_card(" 衰减效率柱状图",
-            "各指标改善率排序 (±百分比)", "attenuation")
-        self._advanced_viz_group._content_layout.addWidget(self._advanced_attenuation_card)
-
-        # 9.4 雷达对比图
-        self._advanced_radar_card = self._create_advanced_card(" 雷达对比图",
-            "多维度指标归一化对比", "radar")
-        self._advanced_viz_group._content_layout.addWidget(self._advanced_radar_card)
-
-        # 9.5 三轴加速度波形
-        self._advanced_accel_card = self._create_advanced_card(" 三轴加速度时域波形",
-            "前3通道 实验组 Ax/Ay/Az 10s截面", "accel")
-        self._advanced_viz_group._content_layout.addWidget(self._advanced_accel_card)
-
-        # 9.6 SRS 冲击响应谱
-        self._advanced_srs_card = self._create_advanced_card(" SRS 冲击响应谱",
-            "头部眉心 X轴 频响对比", "srs")
-        self._advanced_viz_group._content_layout.addWidget(self._advanced_srs_card)
-
-        # ════ 10. 统一输出：QTabWidget（报告预览 + 对比数据表）════
+        # ════ 17. 统一输出：QTabWidget（报告预览 + 对比数据表）════
         self._output_tab_widget = QTabWidget()
         self._output_tab_widget.setStyleSheet(f"""
             QTabWidget::pane {{
@@ -1394,7 +1510,7 @@ class StatisticsAnalysisTab(QWidget):
         ec_layout = QHBoxLayout(export_control)
         ec_layout.setContentsMargins(4, 0, 4, 4)
 
-        ec_title = QLabel("综合分析报告")
+        ec_title = QLabel("17. 综合分析报告")
         ec_title.setStyleSheet(
             f"color: {LC['text_primary']}; font-size: 12px; font-weight: 600; background: transparent;"
         )
@@ -1453,7 +1569,7 @@ class StatisticsAnalysisTab(QWidget):
         cdf_layout = QHBoxLayout(cd_filter_bar)
         cdf_layout.setContentsMargins(4, 0, 4, 4)
 
-        cd_title = QLabel("实验组 vs 对照组 指标对比")
+        cd_title = QLabel("4.2 实验组 vs 对照组 指标对比")
         cd_title.setStyleSheet(
             f"color: {LC['text_primary']}; font-size: 12px; font-weight: 600; background: transparent;"
         )
@@ -1697,7 +1813,6 @@ class StatisticsAnalysisTab(QWidget):
         self._sqlite_row.addWidget(self._cache_combo, 1)
 
         self._sqlite_row.addWidget(QLabel("时间:"))
-        from PySide6.QtWidgets import QDoubleSpinBox
         self._t_min_spin = QDoubleSpinBox()
         self._t_min_spin.setDecimals(1)
         self._t_min_spin.setSingleStep(1.0)
@@ -2149,7 +2264,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setSpacing(8)
 
         title_row = QHBoxLayout()
-        title = QLabel("倍频程能量分布")
+        title = QLabel("3.3 倍频程能量分布")
         title.setStyleSheet(
             f"font-family: Microsoft YaHei; font-size: 12px; font-weight: 600; color: {LC['text_primary']};"
         )
@@ -2174,7 +2289,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setSpacing(8)
 
         title_row = QHBoxLayout()
-        title = QLabel("传递特性链")
+        title = QLabel("3.4 传递特性链")
         title.setStyleSheet(
             f"font-family: Microsoft YaHei; font-size: 12px; font-weight: 600; color: {LC['text_primary']};"
         )
@@ -2204,7 +2319,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setSpacing(8)
 
         title_row = QHBoxLayout()
-        title = QLabel("时间分段分析 (10s 窗口)")
+        title = QLabel("3.5 时间分段分析 (10s 窗口)")
         title.setStyleSheet(
             f"font-family: Microsoft YaHei; font-size: 12px; font-weight: 600; color: {LC['text_primary']};"
         )
@@ -2261,7 +2376,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        title = QLabel("驾驶工况概览")
+        title = QLabel("1.1 驾驶工况概览")
         title.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {LC['text_primary']};")
         layout.addWidget(title)
 
@@ -2303,7 +2418,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        title = QLabel("驾驶行为事件")
+        title = QLabel("1.2 驾驶行为事件")
         title.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {LC['text_primary']};")
         layout.addWidget(title)
 
@@ -2346,6 +2461,32 @@ class StatisticsAnalysisTab(QWidget):
 
         return card
 
+    def _create_head_accel_overview_card(self) -> QFrame:
+        """创建头部三轴加速度对比卡片（从驾驶行为事件中提取）"""
+        card = QFrame()
+        card.setObjectName("proCard")
+        card.setStyleSheet(CARD_STYLE)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        title = QLabel("座垫R点三轴加速度")
+        title.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {LC['text_primary']};")
+        layout.addWidget(title)
+
+        desc = QLabel("主动座椅 vs 被动座椅 座垫R点 Ax/Ay/Az 加速度时域波形")
+        desc.setStyleSheet(f"font-size: 10px; color: {LC['text_muted']}; margin-bottom: 2px;")
+        layout.addWidget(desc)
+
+        self._head_accel_overview_chart = QWidget()
+        self._head_accel_overview_chart.setLayout(QVBoxLayout())
+        self._head_accel_overview_chart.layout().setContentsMargins(0, 0, 0, 0)
+        self._head_accel_overview_chart.setMinimumHeight(180)
+        self._head_accel_overview_chart.setVisible(False)
+        layout.addWidget(self._head_accel_overview_chart)
+
+        return card
+
     def _create_contrast_profile_card(self) -> QFrame:
         card = QFrame()
         card.setObjectName("proCard")
@@ -2355,7 +2496,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setSpacing(8)
 
         title_row = QHBoxLayout()
-        title = QLabel("⚖️ 实验组 vs 对照组 基线对比")
+        title = QLabel("4.1 ⚖️ 实验组 vs 对照组 基线对比")
         title.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {LC['text_primary']};")
         title_row.addWidget(title)
         
@@ -2653,7 +2794,7 @@ class StatisticsAnalysisTab(QWidget):
         speed_hist = vehicle_summary.get('speed_histogram', {})
         labels = speed_hist.get('labels', [])
         counts = speed_hist.get('counts', [])
-        if labels and counts:
+        if labels and len(counts) > 0:
             self._populate_speed_histogram(labels, counts)
 
         self._condition_overview_card.setVisible(True)
@@ -2661,7 +2802,8 @@ class StatisticsAnalysisTab(QWidget):
     def _generate_events_overview_chart(self, card_widget: QWidget, overview_data: Optional[Dict], events: List[Dict]) -> Optional[Figure]:
         """生成事件概览图（参照 OccupantMotionEvaluator.fig2_events）
 
-        网格布局：每个子图展示一个事件的实验组(蓝) vs 对照组(红) 头部Ay对比
+        网格布局：每个子图展示一个事件的实验组(蓝) vs 对照组(红) Ay对比
+        标题会根据实际选中的 IMU 位置动态变化（头部 / 座垫R点 / 或通道原名）
         Returns: Figure 对象，失败返回 None
         """
         if not overview_data or not events:
@@ -2673,6 +2815,11 @@ class StatisticsAnalysisTab(QWidget):
         ctrl_ay = np.array(overview_data.get('ctrl_ay', []))
         if len(exp_ay) == 0 or len(ctrl_ay) == 0:
             return None
+
+        # 读取实际使用的 IMU 通道信息，用于动态标题
+        exp_ch = overview_data.get('exp_channel', '')
+        ctrl_ch = overview_data.get('ctrl_channel', '')
+        loc_label = overview_data.get('location_label', '头部')  # 默认"头部"
 
         n = len(ts_arr)
         if len(exp_ay) > n: exp_ay = exp_ay[:n]
@@ -2687,6 +2834,42 @@ class StatisticsAnalysisTab(QWidget):
         n_ev = min(len(events), 12)
         ncols = 4
         nrows = max(1, (n_ev + ncols - 1) // ncols)
+
+        # 事件类型 → 中文显示映射
+        EVENT_CN = {
+            # 转弯类
+            'left_turn': '左转', '左转': '左转',
+            'right_turn': '右转', '右转': '右转',
+            'u_turn': 'U型转弯', 'U型转弯': 'U型转弯', 'u_turn': 'U型转弯',
+            'lane_change_left': '左变道', 'lane_change_right': '右变道',
+            'sharp_turn': '急转弯', '小半径转弯': '小半径转弯',
+            'quick_lane_change': '急速变向', '急速变向': '急速变向',
+            # 速度类
+            'hard_braking': '急刹车', '急刹车': '急刹车', 'stopping': '急停',
+            'hard_acceleration': '急加速', '急加速': '急加速',
+            'aggressive_accel': '急加速', 'aggressive': '急加速',
+            'constant_speed': '匀速', 'cruising': '匀速',
+            'parking': '驻车', '驻车': '驻车',
+            'lane_keeping': '车道保持', '车道保持': '车道保持',
+            'normal_acceleration': '正常加速', '正常加速': '正常加速',
+            # 蛇形类
+            'weaving': '蛇形驾驶', 'weavin': '蛇形驾驶', '蛇形驾驶': '蛇形驾驶',
+            'slalom': '蛇形驾驶',
+            # 其它
+            'emergency': '紧急情况', 'emerge': '紧急',
+            'bump': '颠簸', 'severe_bump': '剧烈颠簸',
+        }
+
+        def _cn_event(etype: str) -> str:
+            if not etype or etype == '?':
+                return '事件'
+            cn = EVENT_CN.get(etype)
+            if cn:
+                return cn
+            # 去重：如果已经是中文原样返回；英文截断为前8字符
+            if any('\u4e00' <= c <= '\u9fff' for c in etype):
+                return etype[:8]
+            return etype[:8]
 
         try:
             fig, axes, scale = card_adapted_figure(card_widget, nrows, ncols, height_mul=float(nrows))
@@ -2708,16 +2891,21 @@ class StatisticsAnalysisTab(QWidget):
 
                 t_seg = ts_arr[s:e] - t_s
                 ax = axes_flat[i]
-                ax.plot(t_seg, exp_ay[s:e], 'b-', linewidth=ChartStyle.LW_MAIN * scale, alpha=0.8, label='Active')
-                ax.plot(t_seg, ctrl_ay[s:e], 'r--', linewidth=ChartStyle.LW_MAIN * scale * 0.9, alpha=0.8, label='Passive')
+                ax.plot(t_seg, exp_ay[s:e], 'b-', linewidth=ChartStyle.LW_MAIN * scale,
+                        alpha=0.85, label='实验组 (Active)')
+                ax.plot(t_seg, ctrl_ay[s:e], 'r--', linewidth=ChartStyle.LW_MAIN * scale * 0.9,
+                        alpha=0.85, label='对照组 (Passive)')
                 ax.axvline(x=0, color='k', linestyle=':', alpha=0.4)
                 if ev.get('duration', 0) > 0:
-                    ax.axvspan(0, ev.get('duration', 0.1), alpha=0.1, color='yellow')
+                    ax.axvspan(0, ev.get('duration', 0.1), alpha=0.12, color='yellow')
 
-                ev_type = ev.get('type', '?')[:6]
-                ax.set_title(f'E{i+1}: {ev_type} t={t_s:.1f}s',
+                ev_type_raw = ev.get('type', ev.get('event_type', '?'))
+                ev_name = _cn_event(ev_type_raw)
+                ax.set_title(f'E{i+1} {ev_name} t={t_s:.1f}s',
                             fontsize=max(7, int(ChartStyle.TITLE_SIZE * fs)))
-                ax.grid(True, alpha=0.2)
+                ax.set_ylabel('加速度 (m/s$^2$)', fontsize=max(6, int(ChartStyle.LABEL_SIZE * fs * 0.9)))
+                ax.set_xlabel('时间 (s)', fontsize=max(6, int(ChartStyle.LABEL_SIZE * fs * 0.9)))
+                ax.grid(True, alpha=0.2, linestyle='-')
 
                 evals = exp_ay[s:e]
                 cvals = ctrl_ay[s:e]
@@ -2729,17 +2917,20 @@ class StatisticsAnalysisTab(QWidget):
                         atn = (1 - e_rms / c_rms) * 100
                         color = '#27AE60' if atn > 0 else '#E74C3C'
                         ax.text(0.95, 0.95, f'Δ={atn:.0f}%', transform=ax.transAxes,
-                                ha='right', va='top', fontsize=max(6, int(ChartStyle.ANNOT_SIZE * fs)),
+                                ha='right', va='top', fontsize=max(7, int(ChartStyle.ANNOT_SIZE * fs)),
                                 color=color, fontweight='bold')
 
             if n_ev > 0:
-                axes_flat[0].legend(fontsize=max(6, ChartStyle.LEGEND_SIZE * fs), loc='upper left')
+                axes_flat[0].legend(fontsize=max(6, ChartStyle.LEGEND_SIZE * fs), loc='upper left',
+                                    framealpha=0.8)
             for i in range(n_ev, nrows * ncols):
                 axes_flat[i].set_visible(False)
 
-            fig.suptitle('全部驾驶事件 — 主动座椅(蓝) vs 被动座椅(红) 头部Ay对比',
-                        fontsize=max(8, int(ChartStyle.SUPTITLE_SIZE * fs)))
-            fig.tight_layout(pad=1.2 * scale)
+            fig.suptitle(f'全部驾驶事件 — 实验组(蓝) vs 对照组(红) {loc_label}Ay对比',
+                        fontsize=max(8, int(ChartStyle.SUPTITLE_SIZE * fs)), fontweight='bold')
+            # 显式布局：为 suptitle 预留 94% 空间，避免标题与子图重叠
+            fig.subplots_adjust(top=0.90, bottom=0.08, left=0.06, right=0.98,
+                                wspace=0.22, hspace=0.35)
             return fig
         except Exception as e:
             logger.warning(f"生成事件概览图失败: {e}")
@@ -2778,12 +2969,12 @@ class StatisticsAnalysisTab(QWidget):
                 ctrl_psd = np.array(s.get('ctrl_psd', []))
                 if len(exp_psd) > 0:
                     ax.semilogy(f_arr, exp_psd, color=ChartStyle.C_EXP,
-                               linewidth=ChartStyle.LW_MAIN * scale, alpha=0.8, label='Active Seat')
+                               linewidth=ChartStyle.LW_MAIN * scale, alpha=0.8, label='主动座椅')
                 if len(ctrl_psd) > 0:
                     ax.semilogy(f_arr, ctrl_psd, color=ChartStyle.C_CTRL,
-                               linewidth=ChartStyle.LW_MAIN * scale, alpha=0.8, label='Passive Seat')
-                ax.set_title(f'{axis_name} — PSD', fontsize=max(7, int(ChartStyle.TITLE_SIZE * fs)))
-                ax.set_xlabel('Frequency (Hz)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+                               linewidth=ChartStyle.LW_MAIN * scale, alpha=0.8, label='被动座椅')
+                ax.set_title(f'{axis_name}轴 — PSD', fontsize=max(7, int(ChartStyle.TITLE_SIZE * fs)))
+                ax.set_xlabel('频率 (Hz)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
                 ax.set_ylabel('PSD (m²/s⁴/Hz)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
                 ax.legend(fontsize=max(6, ChartStyle.LEGEND_SIZE * fs))
                 ax.grid(True, alpha=0.15)
@@ -2826,7 +3017,6 @@ class StatisticsAnalysisTab(QWidget):
         ctrl_filt = ctrl_spec[f_mask, :len(t_arr)] if ctrl_spec.shape[0] == len(f_arr) else None
 
         try:
-            from matplotlib.colors import LogNorm
             fig, axes, scale = card_adapted_figure(card_widget, 2, 1, height_mul=2.0, radar=False)
             fs = np.sqrt(max(0.6, min(1.8, scale)))
             ax1, ax2 = axes[0], axes[1]
@@ -2835,16 +3025,16 @@ class StatisticsAnalysisTab(QWidget):
                 im1 = ax1.pcolormesh(t_arr, f_filt, exp_filt,
                                      shading='gouraud', cmap='viridis', norm=LogNorm())
                 plt.colorbar(im1, ax=ax1, label='Magnitude')
-            ax1.set_ylabel('Freq (Hz)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
-            ax1.set_title('Active Seat — Head Ay STFT', fontsize=max(8, int(ChartStyle.TITLE_SIZE * fs)))
+            ax1.set_ylabel('频率 (Hz)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            ax1.set_title('主动座椅 — 头部Ay 时频谱', fontsize=max(8, int(ChartStyle.TITLE_SIZE * fs)))
 
             if ctrl_filt is not None and ctrl_filt.size > 0:
                 im2 = ax2.pcolormesh(t_arr, f_filt, ctrl_filt,
-                                     shading='gouraud', cmap='inferno', norm=LogNorm())
+                                     shading='gouraud', cmap='viridis', norm=LogNorm())
                 plt.colorbar(im2, ax=ax2, label='Magnitude')
-            ax2.set_ylabel('Freq (Hz)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
-            ax2.set_xlabel('Time (s)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
-            ax2.set_title('Passive Seat — Head Ay STFT', fontsize=max(8, int(ChartStyle.TITLE_SIZE * fs)))
+            ax2.set_ylabel('频率 (Hz)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            ax2.set_xlabel('时间 (s)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            ax2.set_title('被动座椅 — 头部Ay 时频谱', fontsize=max(8, int(ChartStyle.TITLE_SIZE * fs)))
 
             fig.suptitle('时频分析 (STFT) — Ay 横向加速度',
                         fontsize=max(8, int(ChartStyle.SUPTITLE_SIZE * fs)), fontweight='bold')
@@ -2953,11 +3143,14 @@ class StatisticsAnalysisTab(QWidget):
 
             ax.set_xticks(angles[:-1])
             ax.set_xticklabels(bands_5, fontsize=max(7, int(ChartStyle.TICK_SIZE * fs)))
-            ax.set_title('Frequency Band Attenuation Radar\n(Active vs Passive Seat)',
+            ax.set_title('频段衰减雷达图\n(主动座椅 vs 被动座椅)',
                          fontsize=max(8, int(ChartStyle.TITLE_SIZE * fs)), fontweight='bold', pad=10)
             ax.legend(loc='upper right', bbox_to_anchor=(1.2, 1.0),
                      fontsize=max(6, ChartStyle.LEGEND_SIZE * fs))
-            ax.set_ylim(-100, 200)
+            # 数据自适应范围，至少覆盖 ±50
+            ax.set_ylim(-50, max(100, ax.get_ylim()[1]))
+            # 添加 0% 衰减率参考圆环
+            ax.plot(angles, [0] * len(angles), 'k--', linewidth=0.6, alpha=0.3)
             fig.tight_layout(pad=1.2 * scale)
             return fig
         except Exception as e:
@@ -2968,10 +3161,66 @@ class StatisticsAnalysisTab(QWidget):
                 pass
             return None
 
-    def _generate_behavior_overview_chart(self, card_widget: QWidget, overview_data: Optional[Dict]) -> Optional[Figure]:
-        """生成驾驶行为时序概览图（参照 OccupantMotionEvaluator.fig1_overview）
+    def _generate_stat_features_chart(self, card_widget: QWidget, metrics: Dict) -> Optional[Figure]:
+        """生成统计特征(算子级输出)图表 — 2x3 子图: VDV/Crest/Skew/Kurt/MAV/Impulse
+        
+        Returns: Figure 对象，失败返回 None
+        """
+        if not metrics:
+            return None
 
-        4面板: 车速 | 方向盘 | 实验组头部加速度 | 对照组头部加速度
+        try:
+            fig, axes, scale = card_adapted_figure(card_widget, nrows=2, ncols=3, height_mul=2.0)
+            fs = np.sqrt(max(0.6, min(1.8, scale)))
+            axes_flat = np.array(axes).ravel()
+
+            metric_keys = ['VDV', 'CrestFactor', 'Skewness', 'Kurtosis', 'MAV', 'ImpulseFactor']
+            metric_labels = ['VDV', 'Crest Factor', 'Skewness', 'Kurtosis(excess)', 'MAV', 'Impulse Factor']
+            axes_names = ['Ax', 'Ay', 'Az']
+            x = np.arange(len(axes_names))
+            width = 0.35
+
+            for idx, (mkey, mlabel) in enumerate(zip(metric_keys, metric_labels)):
+                ax = axes_flat[idx]
+                exp_vals = []
+                ctrl_vals = []
+                for a in axes_names:
+                    ev = metrics.get(f'exp_{a}_{mkey}', np.nan)
+                    cv = metrics.get(f'ctrl_{a}_{mkey}', np.nan)
+                    exp_vals.append(ev if np.isfinite(ev) else 0.0)
+                    ctrl_vals.append(cv if np.isfinite(cv) else 0.0)
+
+                x_pos = np.arange(len(axes_names))
+                ax.bar(x_pos - width/2, exp_vals, width, label='Active',
+                       color=ChartStyle.C_EXP, edgecolor='white', linewidth=0.5)
+                ax.bar(x_pos + width/2, ctrl_vals, width, label='Passive',
+                       color=ChartStyle.C_CTRL, edgecolor='white', linewidth=0.5)
+
+                ax.set_title(mlabel, fontsize=max(8, int(ChartStyle.TITLE_SIZE * fs)),
+                            fontweight='bold')
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels(axes_names, fontsize=max(7, int(ChartStyle.TICK_SIZE * fs)))
+                ax.tick_params(axis='y', labelsize=max(6, int(ChartStyle.TICK_SIZE * fs * 0.9)))
+                if idx == 0:
+                    ax.legend(fontsize=max(6, int(ChartStyle.LEGEND_SIZE * fs)),
+                             loc='upper left')
+
+            fig.suptitle('统计特征 (算子级输出) — 实验组 vs 对照组',
+                        fontsize=max(9, int(ChartStyle.SUPTITLE_SIZE * fs)),
+                        fontweight='bold', y=0.99)
+            fig.tight_layout(rect=[0, 0, 1, 0.95], pad=1.0 * scale)
+            return fig
+        except Exception as e:
+            logger.warning(f"生成统计特征图表失败: {e}")
+            try:
+                plt.close('all')
+            except Exception:
+                pass
+            return None
+
+    def _generate_behavior_overview_chart(self, card_widget: QWidget, overview_data: Optional[Dict], events: List[Dict] = None) -> Optional[Figure]:
+        """生成驾驶行为时序概览图 — 2面板: 车速 | 方向盘转角，并叠加事件色块标注
+
         Returns: Figure 对象，失败返回 None
         """
         if not overview_data:
@@ -2982,12 +3231,154 @@ class StatisticsAnalysisTab(QWidget):
         ts_arr = np.array(ts)
         sp_arr = np.array(overview_data.get('speed', []))
         wh_arr = np.array(overview_data.get('wheel', []))
+        events = events or []
+
+        # 事件类型 → 颜色映射（与表格/高级图表保持一致）
+        EVENT_COLORS = {
+            'hard_acceleration': '#E74C3C',
+            'hard_braking': '#E74C3C',
+            'sharp_turning': '#9B59B6',
+            'overspeeding': '#F39C12',
+            'lane_change': '#3498DB',
+            'severe_bump': '#16A085',
+            'skid_risk': '#C0392B',
+            'rollover_risk': '#C0392B',
+        }
+        EVENT_CN = {
+            'hard_acceleration': '急加速',
+            'hard_braking': '急刹车',
+            'sharp_turning': '急转弯',
+            'overspeeding': '超速',
+            'lane_change': '变道',
+            'severe_bump': '颠簸',
+            'skid_risk': '侧滑',
+            'rollover_risk': '侧翻风险',
+        }
+
+        try:
+            fig, axes, scale = card_adapted_figure(card_widget, 2, 1, height_mul=3.0)
+            fs = np.sqrt(max(0.6, min(1.8, scale)))
+
+            # ── 数据降采样：超过 3000 点时抽稀，避免曲线过于密集卡顿 ──
+            n_raw = max(len(sp_arr), len(wh_arr))
+            MAX_POINTS = 3000
+            ds_every = max(1, n_raw // MAX_POINTS) if n_raw > MAX_POINTS else 1
+
+            if ds_every > 1:
+                ts_ds = ts_arr[::ds_every]
+                sp_ds = sp_arr[::ds_every] if len(sp_arr) > 1 else sp_arr
+                wh_ds = wh_arr[::ds_every] if len(wh_arr) > 1 else wh_arr
+            else:
+                ts_ds = ts_arr
+                sp_ds = sp_arr
+                wh_ds = wh_arr
+
+            lw = max(0.9, ChartStyle.LW_MAIN * scale * 1.8)
+
+            # ── 车速 y 轴范围（预先算好，给事件色块定位用）──
+            sp_max = float(np.nanmax(sp_arr)) if len(sp_arr) > 0 else 40.0
+            sp_max = max(sp_max, 10.0)
+            ylim_top = sp_max * 1.35
+            ylim_band_top = sp_max * 1.15
+            ylim_band_bottom = sp_max * 1.02
+
+            # Panel 1: 车速
+            if len(sp_ds) > 1:
+                sp_smooth = _smooth_curve(sp_ds, window=5)
+                axes[0].plot(ts_ds[:len(sp_smooth)], sp_smooth,
+                            color=ChartStyle.C_EXP, linewidth=lw,
+                            solid_capstyle='round', alpha=0.95)
+                axes[0].fill_between(ts_ds[:len(sp_smooth)], 0, sp_smooth,
+                                    alpha=0.10, color=ChartStyle.C_EXP)
+            else:
+                axes[0].text(0.5, 0.5, '无车速数据', transform=axes[0].transAxes,
+                            ha='center', va='center', fontsize=10, color='#999')
+
+            # ── 事件色块（限前 12 个，避免视觉混乱）──
+            for idx, evt in enumerate(events[:12]):
+                if not isinstance(evt, dict):
+                    continue
+                t0 = float(evt.get('t_start', evt.get('start_time', 0)))
+                t1 = float(evt.get('t_end', evt.get('end_time', t0 + 0.5)))
+                if t1 <= t0:
+                    t1 = t0 + 0.5
+                et = evt.get('event_type', evt.get('type', ''))
+                ename = evt.get('event_name', evt.get('name', EVENT_CN.get(et, et)))
+                color = EVENT_COLORS.get(et, ChartStyle.C_RED)
+
+                # 上下两个 panel 同时画色块
+                for ax in axes:
+                    ax.axvspan(t0, t1, alpha=0.15, color=color, linewidth=0)
+
+                # 只在车速图顶部加文字标注（交替上下排防重叠）
+                if idx % 2 == 0:
+                    y_text = ylim_band_top
+                else:
+                    y_text = ylim_band_top - (ylim_band_top - ylim_band_bottom) * 0.4
+
+                display_name = ename if ename else EVENT_CN.get(et, '事件')
+                axes[0].text((t0 + t1) / 2.0, y_text, display_name,
+                            ha='center', va='bottom', fontsize=max(6, int(7 * fs)),
+                            color=color, fontweight='bold', rotation=0,
+                            bbox=dict(boxstyle='round,pad=0.15', facecolor='white',
+                                     edgecolor=color, linewidth=0.5, alpha=0.85))
+
+            axes[0].set_ylabel('车速 (km/h)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            axes[0].set_title('驾驶行为时序概览（含事件标注）', fontsize=max(8, int(ChartStyle.SUPTITLE_SIZE * fs)), fontweight='bold')
+            axes[0].grid(True, alpha=0.25, linewidth=0.5)
+            axes[0].set_ylim(bottom=0, top=ylim_top)
+
+            # Panel 2: 方向盘转角
+            if len(wh_ds) > 1:
+                wh_smooth = _smooth_curve(wh_ds, window=7)
+                axes[1].plot(ts_ds[:len(wh_smooth)], wh_smooth,
+                            color=ChartStyle.C_PURPLE, linewidth=lw,
+                            solid_capstyle='round', alpha=0.95)
+                axes[1].fill_between(ts_ds[:len(wh_smooth)], 0, wh_smooth,
+                                    alpha=0.08, color=ChartStyle.C_PURPLE)
+                axes[1].axhline(y=0, color=ChartStyle.C_NEUTRAL, linewidth=0.6, linestyle='--', alpha=0.5)
+            else:
+                axes[1].text(0.5, 0.5, '无方向盘数据', transform=axes[1].transAxes,
+                            ha='center', va='center', fontsize=10, color='#999')
+            axes[1].set_ylabel('方向盘 (°)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            axes[1].set_xlabel('时间 (s)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            axes[1].grid(True, alpha=0.25, linewidth=0.5)
+
+            for ax in axes:
+                ax.tick_params(colors='#555555')
+
+            # 显式布局：标题空间 + 事件文字上方间距
+            fig.subplots_adjust(top=0.88, bottom=0.12, left=0.09, right=0.98, hspace=0.28)
+            return fig
+        except Exception as e:
+            logger.warning(f"生成行为概览图失败: {e}")
+            try:
+                plt.close('all')
+            except Exception:
+                pass
+            return None
+
+    def _generate_head_accel_overview_chart(self, card_widget: QWidget, overview_data: Optional[Dict]) -> Optional[Figure]:
+        """生成三轴加速度对比图 — 2面板: 实验组 | 对照组
+
+        标题与实际使用的 IMU 位置同步（头部眉心 / 座垫R点 / 或通道原名）
+        Returns: Figure 对象，失败返回 None
+        """
+        if not overview_data:
+            return None
+        ts = overview_data.get('timestamps', [])
+        if len(ts) < 2:
+            return None
+        ts_arr = np.array(ts)
         exp_ax = np.array(overview_data.get('exp_ax', []))
         exp_ay = np.array(overview_data.get('exp_ay', []))
         exp_az = np.array(overview_data.get('exp_az', []))
         ctrl_ax = np.array(overview_data.get('ctrl_ax', []))
         ctrl_ay = np.array(overview_data.get('ctrl_ay', []))
         ctrl_az = np.array(overview_data.get('ctrl_az', []))
+
+        # 动态读取实际 IMU 位置标签
+        loc_label = overview_data.get('location_label', '头部眉心')
 
         n = len(ts_arr)
         if len(exp_ax) > n: exp_ax = exp_ax[:n]
@@ -2998,52 +3389,50 @@ class StatisticsAnalysisTab(QWidget):
         if len(ctrl_az) > n: ctrl_az = ctrl_az[:n]
 
         try:
-            fig, axes, scale = card_adapted_figure(card_widget, 4, 1, height_mul=4.0)
+            fig, axes, scale = card_adapted_figure(card_widget, 2, 1, height_mul=3.0)
             fs = np.sqrt(max(0.6, min(1.8, scale)))
 
-            # Panel 1: 车速
-            if len(sp_arr) >= n:
-                sp_arr = sp_arr[:n]
-            axes[0].plot(ts_arr, sp_arr, 'b-', linewidth=ChartStyle.LW_MAIN * scale)
-            axes[0].set_ylabel('Speed\n(km/h)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
-            axes[0].set_title('驾驶行为时序概览 — 实验组 vs 对照组 头部响应',
-                             fontsize=max(8, int(ChartStyle.SUPTITLE_SIZE * fs)), fontweight='bold')
-            axes[0].grid(True, alpha=0.3)
+            # 计算 Y轴范围: 排除极端离群点，基于所有6条曲线的 P2-P98 百分位
+            all_vals = np.concatenate([v for v in (exp_ax, exp_ay, exp_az, ctrl_ax, ctrl_ay, ctrl_az) if len(v) > 0]).ravel()
+            if len(all_vals) > 0:
+                y_lo = float(np.percentile(all_vals, 2))
+                y_hi = float(np.percentile(all_vals, 98))
+                y_pad = max(0.02, (y_hi - y_lo) * 0.15)
+                y_lim = (y_lo - y_pad, y_hi + y_pad)
+            else:
+                y_lim = None
 
-            # Panel 2: 方向盘转角
-            if len(wh_arr) >= n:
-                wh_arr = wh_arr[:n]
-            axes[1].plot(ts_arr, wh_arr, 'r-', linewidth=ChartStyle.LW_MAIN * scale)
-            axes[1].set_ylabel('Wheel\n(deg)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
-            axes[1].grid(True, alpha=0.3)
-
-            # Panel 3: 实验组头部三轴
-            for vals, name, color in [(exp_ax, 'Ax', '#2196F3'), (exp_ay, 'Ay', '#4CAF50'), (exp_az, 'Az', '#FF9800')]:
+            # Panel 1: 主动座椅三轴加速度
+            for vals, name, color in [(exp_ax, 'X轴', ChartStyle.C_EXP), (exp_ay, 'Y轴', ChartStyle.C_DIFF), (exp_az, 'Z轴', ChartStyle.C_CTRL)]:
                 if len(vals) > 0:
-                    axes[2].plot(ts_arr[:len(vals)], vals, color=color,
-                                linewidth=ChartStyle.LW_MAIN * 0.5 * scale, alpha=0.6, label=name)
-            axes[2].set_ylabel('Exp Head\n(m/s²)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
-            axes[2].legend(fontsize=max(6, ChartStyle.LEGEND_SIZE * fs), loc='upper right', ncol=3)
-            axes[2].grid(True, alpha=0.3)
+                    axes[0].plot(ts_arr[:len(vals)], vals, color=color,
+                                linewidth=ChartStyle.LW_MAIN * 0.7 * scale, alpha=0.75, label=name)
+            axes[0].set_ylabel('加速度 (m/s$^2$)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            axes[0].set_title(f'实验组 — {loc_label}三轴加速度', fontsize=max(8, int(ChartStyle.SUPTITLE_SIZE * fs)), fontweight='bold')
+            axes[0].legend(fontsize=max(6, ChartStyle.LEGEND_SIZE * fs), loc='upper right', ncol=3, framealpha=0.8)
+            axes[0].grid(True, alpha=0.25, linestyle='-')
+            if y_lim: axes[0].set_ylim(*y_lim)
 
-            # Panel 4: 对照组头部三轴
-            for vals, name, color in [(ctrl_ax, 'Ax', '#2196F3'), (ctrl_ay, 'Ay', '#4CAF50'), (ctrl_az, 'Az', '#FF9800')]:
+            # Panel 2: 被动座椅三轴加速度
+            for vals, name, color in [(ctrl_ax, 'X轴', ChartStyle.C_EXP), (ctrl_ay, 'Y轴', ChartStyle.C_DIFF), (ctrl_az, 'Z轴', ChartStyle.C_CTRL)]:
                 if len(vals) > 0:
-                    axes[3].plot(ts_arr[:len(vals)], vals, color=color,
-                                linewidth=ChartStyle.LW_MAIN * 0.5 * scale, alpha=0.6, label=name)
-            axes[3].set_ylabel('Ctrl Head\n(m/s²)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
-            axes[3].set_xlabel('Time (s)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
-            axes[3].legend(fontsize=max(6, ChartStyle.LEGEND_SIZE * fs), loc='upper right', ncol=3)
-            axes[3].grid(True, alpha=0.3)
+                    axes[1].plot(ts_arr[:len(vals)], vals, color=color,
+                                linewidth=ChartStyle.LW_MAIN * 0.7 * scale, alpha=0.75, label=name)
+            axes[1].set_ylabel('加速度 (m/s$^2$)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            axes[1].set_xlabel('时间 (s)', fontsize=max(7, int(ChartStyle.LABEL_SIZE * fs)))
+            axes[1].set_title(f'对照组 — {loc_label}三轴加速度', fontsize=max(8, int(ChartStyle.SUPTITLE_SIZE * fs)), fontweight='bold')
+            axes[1].legend(fontsize=max(6, ChartStyle.LEGEND_SIZE * fs), loc='upper right', ncol=3, framealpha=0.8)
+            axes[1].grid(True, alpha=0.25, linestyle='-')
+            if y_lim: axes[1].set_ylim(*y_lim)
 
-            # 统一刻度标签颜色
             for ax in axes:
                 ax.tick_params(colors='#555555')
 
-            fig.tight_layout(pad=1.2 * scale)
+            # 显式布局：为标题与 xlabel 留出空间
+            fig.subplots_adjust(top=0.90, bottom=0.10, left=0.10, right=0.98, hspace=0.30)
             return fig
         except Exception as e:
-            logger.warning(f"生成行为概览图失败: {e}")
+            logger.warning(f"生成头部加速度概览图失败: {e}")
             try:
                 plt.close('all')
             except Exception:
@@ -3057,13 +3446,30 @@ class StatisticsAnalysisTab(QWidget):
         overview_data = report.get('_overview_data')
         if overview_data:
             adapted_ov = self._adapt_chart_overview_data(overview_data)
-            fig = self._generate_behavior_overview_chart(self._behavior_overview_chart, adapted_ov)
+            # 从报告中获取事件数据
+            ev = []
+            try:
+                ev = report.get('behavior_summary', {}).get('events', [])
+                if not ev:
+                    ev = getattr(self, '_behavior_events_for_timeline', [])
+            except Exception:
+                ev = []
+            fig = self._generate_behavior_overview_chart(self._behavior_overview_chart, adapted_ov, ev)
             if fig:
                 self._create_chart_canvas(fig, self._behavior_overview_chart)
             else:
                 self._behavior_overview_chart.setVisible(False)
+            # ── 头部三轴加速度对比图 ──
+            fig_accel = self._generate_head_accel_overview_chart(self._head_accel_overview_chart, adapted_ov)
+            if fig_accel:
+                self._create_chart_canvas(fig_accel, self._head_accel_overview_chart)
+                self._head_accel_overview_chart.setVisible(True)
+            else:
+                self._head_accel_overview_chart.setVisible(False)
         else:
             self._behavior_overview_chart.setVisible(False)
+            if hasattr(self, '_head_accel_overview_chart'):
+                self._head_accel_overview_chart.setVisible(False)
 
         behavior_summary = report.get('behavior_summary', {})
         events = behavior_summary.get('events', [])
@@ -3249,7 +3655,7 @@ class StatisticsAnalysisTab(QWidget):
         """将速度频次数据填入 QTableWidget（3列：速度区间、频次、占比）"""
         table = self._cond_speed_hist_table
         table.setRowCount(0)
-        total = sum(counts) if counts else 0
+        total = sum(counts) if len(counts) > 0 else 0
         table.setRowCount(len(labels))
         for i, (label, count_val) in enumerate(zip(labels, counts)):
             table.setItem(i, 0, QTableWidgetItem(str(label)))
@@ -3684,7 +4090,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setSpacing(8)
 
         header = QHBoxLayout()
-        title = QLabel("滑动窗口评坚决果 — 实验组/对照组 RMS 衰减率时序")
+        title = QLabel("5.1 滑动窗口评坚决果 — 实验组/对照组 RMS 衰减率时序")
         title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
         header.addWidget(title)
         header.addStretch()
@@ -3722,7 +4128,24 @@ class StatisticsAnalysisTab(QWidget):
         self._window_summary_label.setWordWrap(True)
         layout.addWidget(self._window_summary_label)
 
-        # 事件概览图（fig2_events: 各事件实验组/对照组 Ay 对比）
+        return card
+
+    def _create_events_ay_overview_card(self) -> QFrame:
+        """创建独立的「全部驾驶事件 — Ay对比」卡片
+
+        从全时域滑动窗口评测卡片中提取出来，独立展示。
+        """
+        card = QFrame()
+        card.setObjectName("proCard")
+        card.setStyleSheet(CARD_STYLE)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        title = QLabel("6. 全部驾驶事件 — 主动座椅(蓝) vs 被动座椅(红) 头部Ay对比")
+        title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
+        layout.addWidget(title)
+
         self._events_overview_chart = QWidget()
         self._events_overview_chart.setLayout(QVBoxLayout())
         self._events_overview_chart.layout().setContentsMargins(0, 0, 0, 0)
@@ -3740,7 +4163,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        title = QLabel("统计检验 — 配对t检验 + Cohen's d + 95%置信区间")
+        title = QLabel("15.1 统计检验 — 配对t检验 + Cohen's d + 95%置信区间")
         title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
         layout.addWidget(title)
 
@@ -3767,7 +4190,53 @@ class StatisticsAnalysisTab(QWidget):
         self._stats_distribution_chart.setVisible(False)
         layout.addWidget(self._stats_distribution_chart)
 
-        # 全频段衰减雷达图（fig6_band_radar）
+        return card
+
+    def _create_stat_features_card(self) -> QFrame:
+        """创建统计特征(算子级输出)卡片 — VDV/Crest/Skew/Kurt/MAV/Impulse"""
+        card = QFrame()
+        card.setObjectName("proCard")
+        card.setStyleSheet(CARD_STYLE)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        title = QLabel("16. 统计特征 (算子级输出) — VDV / Crest / Skew / Kurt / MAV / Impulse")
+        title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
+        layout.addWidget(title)
+
+        desc = QLabel("实验组 vs 对照组 三轴算子级统计量对比")
+        desc.setStyleSheet(f"font-size: 11px; color: {LC['text_secondary']};")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # 图表容器
+        self._stat_features_chart = QWidget()
+        self._stat_features_chart.setLayout(QVBoxLayout())
+        self._stat_features_chart.layout().setContentsMargins(0, 0, 0, 0)
+        self._stat_features_chart.setMinimumHeight(300)
+        self._stat_features_chart.setVisible(False)
+        layout.addWidget(self._stat_features_chart)
+
+        return card
+
+    def _create_band_radar_card(self) -> QFrame:
+        """创建全频段衰减雷达图卡片（从统计检验分析中提取）"""
+        card = QFrame()
+        card.setObjectName("proCard")
+        card.setStyleSheet(CARD_STYLE)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        title = QLabel("8. 频段衰减雷达图")
+        title.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {LC['text_primary']};")
+        layout.addWidget(title)
+
+        desc = QLabel("主动座椅 vs 被动座椅 各频段衰减率对比")
+        desc.setStyleSheet(f"font-size: 10px; color: {LC['text_muted']}; margin-bottom: 2px;")
+        layout.addWidget(desc)
+
         self._band_radar_chart = QWidget()
         self._band_radar_chart.setLayout(QVBoxLayout())
         self._band_radar_chart.layout().setContentsMargins(0, 0, 0, 0)
@@ -3815,7 +4284,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        title = QLabel("频谱与频段衰减分析")
+        title = QLabel("7.1 频谱与频段衰减分析")
         title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
         layout.addWidget(title)
 
@@ -3858,7 +4327,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        title = QLabel("统计特征（算子级输出）— VDV / Crest / Skew / Kurt / MAV / Impulse")
+        title = QLabel("7.2 统计特征（算子级输出）— VDV / Crest / Skew / Kurt / MAV / Impulse")
         title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
         layout.addWidget(title)
 
@@ -3896,7 +4365,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        title = QLabel("时频分析（STFT 时频谱）— 主动座椅 vs 被动座椅 Ay")
+        title = QLabel("7.3 时频分析（STFT 时频谱）— 主动座椅 vs 被动座椅 Ay")
         title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {LC['text_primary']};")
         layout.addWidget(title)
 
@@ -3917,7 +4386,6 @@ class StatisticsAnalysisTab(QWidget):
             return {}
 
         normalized = {}
-        import pandas as pd
 
         # ── 1. 滑动窗口: DataFrame → list[dict] (列名映射) ──
         windows_raw = raw_results.get('windows', pd.DataFrame())
@@ -4141,11 +4609,22 @@ class StatisticsAnalysisTab(QWidget):
         layout = card_widget.layout()
         if layout is None:
             return
-        # 清除旧 canvas
+        # 清除旧 canvas 并关闭旧 Figure 释放内存
         while layout.count():
             item = layout.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                old_widget = item.widget()
+                # 提取旧 Canvas 的 Figure 并关闭
+                if hasattr(old_widget, 'figure'):
+                    try:
+                        plt.close(old_widget.figure)
+                    except Exception:
+                        pass
+                old_widget.deleteLater()
+
+        # 统一 Figure DPI 为屏幕 DPI，避免 DESIGN_DPI(200) 导致的像素尺寸翻倍
+        screen_dpi = ChartStyle.screen_dpi()
+        fig.set_dpi(screen_dpi)
 
         # FigureCanvas: 使用 figure 自带的 DPI, 不缩放
         canvas = FigureCanvas(fig)
@@ -4172,7 +4651,6 @@ class StatisticsAnalysisTab(QWidget):
 
         # 统一转换为 list[dict] 格式
         try:
-            import pandas as pd
             if isinstance(window_results, pd.DataFrame):
                 records = window_results.to_dict('records')
             else:
@@ -4348,14 +4826,12 @@ class StatisticsAnalysisTab(QWidget):
         try:
             if fmt == 'window_csv':
                 with open(path, 'w', newline='', encoding='utf-8-sig') as f:
-                    import csv
-                    import pandas as pd
                     normalized = self._normalize_timeseries_data(ts_result.get('results', {}))
                     windows = normalized.get('windows', [])
                     if isinstance(windows, pd.DataFrame):
                         windows = windows.to_dict('records')
                     if windows:
-                        w = csv.DictWriter(f, fieldnames=list(windows[0].keys()))
+                        w = csv_mod.DictWriter(f, fieldnames=list(windows[0].keys()))
                         w.writeheader()
                         w.writerows(windows)
             QMessageBox.information(self, "成功", f"已导出至 {path}")
@@ -4535,7 +5011,6 @@ class StatisticsAnalysisTab(QWidget):
 
         # --- ISO 舒适区 ---
         if iso_zones:
-            from collections import Counter
             iso_counter = Counter(iso_zones)
             top_iso = iso_counter.most_common(1)[0][0]
             if has_ctrl and ctrl_iso_zones:
@@ -4603,7 +5078,11 @@ class StatisticsAnalysisTab(QWidget):
             QMessageBox.warning(self, "错误", "请先选择有效的数据集文件")
             return
 
-        selected_metrics = self._get_selected_metrics()
+        # 全部注册表指标参与计算（不限于页首勾选项）
+        selected_metrics = list(self._registry.indicators.keys())
+        # ATTEN_H 是后计算跨组指标，注册表中无定义，需显式加入
+        if 'ATTEN_H' not in selected_metrics:
+            selected_metrics.append('ATTEN_H')
         if not selected_metrics:
             QMessageBox.warning(self, "错误", "请至少选择一个评测指标")
             return
@@ -4645,6 +5124,7 @@ class StatisticsAnalysisTab(QWidget):
         )
 
         self._worker = UnifiedEvaluationWorker(self._engine, DataPreprocessor(), self._report_generator)
+        self._selected_metrics = selected_metrics  # 同步到 tab 供指标对照表过滤使用
         self._worker.configure(
             self._dataset_path, preprocess_level,
             selected_metrics, selected_locations,
@@ -4805,14 +5285,25 @@ class StatisticsAnalysisTab(QWidget):
                     self._band_radar_chart.setVisible(False)
             else:
                 self._band_radar_chart.setVisible(False)
+            # 生成统计特征(算子级输出)图表（fig8_stat_features）
+            metrics_data = full_ts.get('results', {}).get('metrics', {})
+            if metrics_data:
+                fig = self._generate_stat_features_chart(self._stat_features_chart, metrics_data)
+                if fig:
+                    self._create_chart_canvas(fig, self._stat_features_chart)
+                else:
+                    self._stat_features_chart.setVisible(False)
+            else:
+                self._stat_features_chart.setVisible(False)
             self._fulltimeseries_group.setVisible(True)
             self._statistics_group.setVisible(True)
             self._spectrum_group.setVisible(True)
             self._export_window_csv_btn.setEnabled(True)
         else:
-            self._fulltimeseries_group.setVisible(False)
-            self._statistics_group.setVisible(False)
-            self._spectrum_group.setVisible(False)
+            # 即使无 full_timeseries 结果，也保持这些分组可见，让用户知道存在这些分析区域
+            self._fulltimeseries_group.setVisible(True)
+            self._statistics_group.setVisible(True)
+            self._spectrum_group.setVisible(True)
             self._export_window_csv_btn.setEnabled(False)
 
         self._reset_ui_state()
@@ -4946,25 +5437,21 @@ class StatisticsAnalysisTab(QWidget):
                 ctrl_vals_all = []
                 for loc_d in locations.values():
                     if isinstance(loc_d, dict):
-                        ctr = (loc_d.get('contrast') or {}).get('magnitude', {})
-                        entry = ctr.get(m_id)
+                        cm = loc_d.get('control_metrics', {})
+                        entry = cm.get(m_id)
                         if isinstance(entry, dict):
-                            cv = entry.get('control', entry.get('ctrl'))
-                            if cv is not None:
+                            cv = entry.get('value')
+                            if cv is not None and isinstance(cv, (int, float)):
                                 ctrl_vals_all.append(cv)
                 if ctrl_vals_all:
-                    import statistics as _stat
                     ctrl_val = _stat.mean(ctrl_vals_all)
             else:
                 loc_data = locations.get(selected_loc) or {}
                 if isinstance(loc_data, dict):
-                    prof = loc_data.get('profile') or {}
-                    mag = prof.get('magnitude') or {}
-                    exp_val = mag.get(m_id)
-                    ctr = (loc_data.get('contrast') or {}).get('magnitude', {})
-                    entry = ctr.get(m_id)
-                    if isinstance(entry, dict):
-                        ctrl_val = entry.get('control', entry.get('ctrl'))
+                    m_entry = (loc_data.get('metrics') or {}).get(m_id)
+                    exp_val = (m_entry or {}).get('value') if isinstance(m_entry, dict) else None
+                    cm_entry = (loc_data.get('control_metrics') or {}).get(m_id)
+                    ctrl_val = (cm_entry or {}).get('value') if isinstance(cm_entry, dict) else None
 
             # 列4: 实验组
             if exp_val is not None and isinstance(exp_val, (int, float)):
@@ -5217,6 +5704,7 @@ class StatisticsAnalysisTab(QWidget):
         """从分析报告中提取 exp/ctrl 对比数据，填充到对比数据表中。
         
         数据来源：report['locations'][loc_id]['contrast']['magnitude']
+        回退: metrics/control_metrics
         每项指标包含 experimental / control / delta_pct 字段。
         """
         self._contrast_data = []  # 存储完整对比数据供过滤使用
@@ -5243,23 +5731,44 @@ class StatisticsAnalysisTab(QWidget):
             self._contrast_loc_filter.setCurrentIndex(idx)
         self._contrast_loc_filter.blockSignals(False)
 
+        # ── 辅助: 构建即席 delta ──
+        def _compute_delta(ev, cv):
+            if ev is None or cv is None:
+                return None
+            try:
+                ev_f, cv_f = float(ev), float(cv)
+                denom = max(abs(ev_f), abs(cv_f), 1e-6)
+                return (ev_f - cv_f) / denom * 100
+            except (ValueError, TypeError):
+                return None
+
         # 提取所有对比数据
         all_rows = []
         for loc_id, loc_data in locations.items():
             contrast = loc_data.get('contrast') or {}
             magnitude = contrast.get('magnitude', {})
-            if not magnitude:
-                continue
-
+            # 回退数据源
+            fallback_exp = loc_data.get('metrics') or {}
+            fallback_ctrl = loc_data.get('control_metrics') or {}
             label_cn = loc_data.get('label_cn', loc_id)
 
-            for metric_id, metric_data in magnitude.items():
-                if not isinstance(metric_data, dict):
-                    continue
+            # 收集所有可用的指标键
+            all_keys = set()
+            if isinstance(magnitude, dict):
+                all_keys.update(magnitude.keys())
+            all_keys.update(k for k in fallback_exp if not k.endswith('_status') and not k.endswith('_error'))
+            all_keys.update(k for k in fallback_ctrl if not k.endswith('_status') and not k.endswith('_error'))
 
-                exp_val = metric_data.get('experimental', metric_data.get('exp', None))
-                ctrl_val = metric_data.get('control', metric_data.get('ctrl', None))
-                delta_pct = metric_data.get('delta_pct', None)
+            for metric_id in all_keys:
+                mag_entry = magnitude.get(metric_id) if isinstance(magnitude, dict) else None
+                if isinstance(mag_entry, dict):
+                    exp_val = mag_entry.get('experimental', mag_entry.get('exp', None))
+                    ctrl_val = mag_entry.get('control', mag_entry.get('ctrl', None))
+                    delta_pct = mag_entry.get('delta_pct', None)
+                else:
+                    exp_val = _extract_metric_value(fallback_exp.get(metric_id))
+                    ctrl_val = _extract_metric_value(fallback_ctrl.get(metric_id))
+                    delta_pct = _compute_delta(exp_val, ctrl_val)
 
                 if exp_val is None and ctrl_val is None:
                     continue
@@ -5311,6 +5820,9 @@ class StatisticsAnalysisTab(QWidget):
                     'dim_order': dim_order,
                     'grade': grade,
                     'grade_color': grade_color,
+                    'exp_val': exp_val,
+                    'ctrl_val': ctrl_val,
+                    'delta_pct': delta_pct,
                 })
 
         self._contrast_data = all_rows
@@ -5345,15 +5857,9 @@ class StatisticsAnalysisTab(QWidget):
             loc_id = data['loc_id']
             metric_id = data['metric_id']
             label_cn = data['label_cn']
-
-            loc_data = locations.get(loc_id, {})
-            contrast = loc_data.get('contrast') or {}
-            magnitude = contrast.get('magnitude', {})
-            metric_data = magnitude.get(metric_id, {})
-
-            exp_val = metric_data.get('experimental', metric_data.get('exp', None))
-            ctrl_val = metric_data.get('control', metric_data.get('ctrl', None))
-            delta_pct = metric_data.get('delta_pct', None)
+            exp_val = data.get('exp_val')
+            ctrl_val = data.get('ctrl_val')
+            delta_pct = data.get('delta_pct')
 
             meta = self._registry.get_indicator_meta(metric_id)
             name_cn = meta.display_name_cn if meta else metric_id
@@ -5595,6 +6101,7 @@ class StatisticsAnalysisTab(QWidget):
         策略:
           - "总体" → 聚合全部位置取均值
           - 具体位置 → 读取该位置的 contrast.magnitude
+          - 回退: 若 contrast.magnitude 未含某指标，从 metrics/control_metrics 读取
         """
         locations = report.get('locations', {}) if isinstance(report, dict) else {}
         if not locations:
@@ -5626,22 +6133,44 @@ class StatisticsAnalysisTab(QWidget):
             agg_ctrl: Dict[str, list] = {}
             agg_delta: Dict[str, list] = {}
             for loc_id, loc_data in locations.items():
-                contrast = (loc_data.get('contrast') or {}) if isinstance(loc_data, dict) else {}
-                magnitude = contrast.get('magnitude') or {}
-                if not isinstance(magnitude, dict):
+                if not isinstance(loc_data, dict):
                     continue
-                for code, mag_entry in magnitude.items():
-                    if not isinstance(mag_entry, dict):
+                contrast = loc_data.get('contrast') or {}
+                magnitude = contrast.get('magnitude') or {}
+                # 回退数据源
+                fallback_exp = loc_data.get('metrics') or {}
+                fallback_ctrl = loc_data.get('control_metrics') or {}
+
+                if isinstance(magnitude, dict):
+                    for code, mag_entry in magnitude.items():
+                        if not isinstance(mag_entry, dict):
+                            continue
+                        exp_val = mag_entry.get('experimental', mag_entry.get('exp'))
+                        ctrl_val = mag_entry.get('control', mag_entry.get('ctrl'))
+                        delta_pct = mag_entry.get('delta_pct')
+                        if exp_val is not None:
+                            agg_exp.setdefault(code, []).append(float(exp_val))
+                        if ctrl_val is not None:
+                            agg_ctrl.setdefault(code, []).append(float(ctrl_val))
+                        if delta_pct is not None:
+                            agg_delta.setdefault(code, []).append(float(delta_pct))
+
+                # 回退: 从 metrics/control_metrics 补充 magnitude 中缺失的指标
+                all_fb_keys = set(fallback_exp.keys()) | set(fallback_ctrl.keys())
+                for code in all_fb_keys:
+                    if code in magnitude:
                         continue
-                    exp_val = mag_entry.get('experimental', mag_entry.get('exp'))
-                    ctrl_val = mag_entry.get('control', mag_entry.get('ctrl'))
-                    delta_pct = mag_entry.get('delta_pct')
-                    if exp_val is not None:
-                        agg_exp.setdefault(code, []).append(float(exp_val))
-                    if ctrl_val is not None:
-                        agg_ctrl.setdefault(code, []).append(float(ctrl_val))
-                    if delta_pct is not None:
-                        agg_delta.setdefault(code, []).append(float(delta_pct))
+                    if code.endswith('_status') or code.endswith('_error'):
+                        continue
+                    e_val = _extract_metric_value(fallback_exp.get(code))
+                    c_val = _extract_metric_value(fallback_ctrl.get(code))
+                    if e_val is not None:
+                        agg_exp.setdefault(code, []).append(float(e_val))
+                    if c_val is not None:
+                        agg_ctrl.setdefault(code, []).append(float(c_val))
+                    if e_val is not None and c_val is not None:
+                        denom = max(abs(e_val), abs(c_val), 1e-6)
+                        agg_delta.setdefault(code, []).append(float((e_val - c_val) / denom * 100))
 
             for code, row in self._indicator_row_map.items():
                 meta = self._registry.get_indicator_meta(code) if self._registry else None
@@ -5653,16 +6182,31 @@ class StatisticsAnalysisTab(QWidget):
             loc_data = (locations.get(selected_loc) or {})
             contrast = loc_data.get('contrast') or {}
             magnitude = contrast.get('magnitude') or {}
+            # 回退数据源
+            fallback_exp = loc_data.get('metrics') or {}
+            fallback_ctrl = loc_data.get('control_metrics') or {}
+
             for code, row in self._indicator_row_map.items():
                 meta = self._registry.get_indicator_meta(code) if self._registry else None
-                mag_entry = magnitude.get(code)
-                if not isinstance(mag_entry, dict):
-                    self._write_indicator_comp_row(row, meta, None, None, None)
-                    continue
-                exp_val = mag_entry.get('experimental', mag_entry.get('exp'))
-                ctrl_val = mag_entry.get('control', mag_entry.get('ctrl'))
-                delta_pct = mag_entry.get('delta_pct')
-                self._write_indicator_comp_row(row, meta, exp_val, ctrl_val, delta_pct)
+                mag_entry = magnitude.get(code) if isinstance(magnitude, dict) else None
+
+                if isinstance(mag_entry, dict):
+                    exp_val = mag_entry.get('experimental', mag_entry.get('exp'))
+                    ctrl_val = mag_entry.get('control', mag_entry.get('ctrl'))
+                    delta_pct = mag_entry.get('delta_pct')
+                    self._write_indicator_comp_row(row, meta, exp_val, ctrl_val, delta_pct)
+                else:
+                    # 回退: 从 metrics/control_metrics 读取
+                    e_val = _extract_metric_value(fallback_exp.get(code))
+                    c_val = _extract_metric_value(fallback_ctrl.get(code))
+                    if e_val is not None and c_val is not None:
+                        denom = max(abs(e_val), abs(c_val), 1e-6)
+                        delta = (e_val - c_val) / denom * 100
+                        self._write_indicator_comp_row(row, meta, e_val, c_val, delta)
+                    elif e_val is not None or c_val is not None:
+                        self._write_indicator_comp_row(row, meta, e_val, c_val, None)
+                    else:
+                        self._write_indicator_comp_row(row, meta, None, None, None)
 
     def _write_indicator_comp_row(self, row: int, meta, exp_val, ctrl_val, delta_pct):
         """向指标对照表的指定行写入实验组/对照组/差值数据"""
@@ -5851,7 +6395,6 @@ class StatisticsAnalysisTab(QWidget):
 
     def _auto_generate_charts_if_ready(self, report: Dict):
         """分析完成后自动触发高级图表生成（延迟执行确保UI先渲染）"""
-        from PySide6.QtCore import QTimer
         self._charts_pending_report = report
         QTimer.singleShot(800, self._generate_advanced_charts_from_pending)
 
@@ -5860,6 +6403,47 @@ class StatisticsAnalysisTab(QWidget):
         report = getattr(self, '_charts_pending_report', None)
         if report:
             self._generate_advanced_charts(report)
+
+    def _make_advanced_figsize(self, card_widget, default_w: float = 12, default_h: float = 5):
+        """根据卡片实际宽度动态计算高级图表的 figsize，与 card_adapted_figure 对齐。
+
+        统一使用 card_adapted_figure 的宽度获取逻辑, 确保所有 Canvas 图表尺寸一致。
+        """
+        from .visualization_manager import ChartStyle as _CS
+        if not card_widget.isVisible():
+            card_widget.show()
+        QApplication.processEvents()
+        card_widget.updateGeometry()
+        QApplication.processEvents()
+        parent = card_widget.parent()
+        if isinstance(parent, QScrollArea):
+            card_px = parent.viewport().width()
+        elif hasattr(card_widget, 'contentsRect'):
+            card_px = card_widget.contentsRect().width()
+        else:
+            card_px = card_widget.width()
+        if card_px < 200:
+            p = card_widget.parent()
+            depth = 0
+            while p and depth < 5:
+                if hasattr(p, 'viewport'):
+                    card_px = p.viewport().width()
+                    break
+                card_px = p.width()
+                if card_px >= 400:
+                    break
+                p = p.parent()
+                depth += 1
+            if card_px < 200:
+                top = card_widget.window()
+                card_px = max(400, int(top.width() * 0.65)) if top else 1200
+        dpi = _CS.screen_dpi()
+        usable_px = max(400, card_px - 60)
+        w_inch = usable_px / dpi
+        scale = w_inch / _CS.CARD_W
+        scale_clamped = max(0.5, min(1.5, scale))
+        h_inch = _CS.ROW_H * (default_h / default_w) * scale_clamped
+        return (w_inch, h_inch)
 
     def _generate_advanced_charts(self, report: Dict):
         """生成全部高级图表，嵌入到各自的卡片容器中"""
@@ -5877,20 +6461,22 @@ class StatisticsAnalysisTab(QWidget):
             wheel_arr = np.array(overview.get('wheel', []))
             if len(timestamps) > 10 and len(speed_arr) > 10:
                 try:
-                    fig = create_event_timeline(timestamps, speed_arr, wheel_arr, events)
+                    figsize = self._make_advanced_figsize(self._advanced_timeline_card, 12, 5)
+                    fig = create_event_timeline(timestamps, speed_arr, wheel_arr, events, figsize=figsize)
                     self._create_chart_canvas(fig, self._advanced_timeline_container)
                     self._advanced_timeline_container.setVisible(True)
                     charts_generated += 1
                 except Exception as e:
                     self.logger.warning(f"事件时间线生成失败: {e}")
 
-        # ── 图表2: PSD 功率谱对比 → _advanced_psd_container ──
+        # ── 图表2: PSD 功率谱对比 → _advanced_psd_container (三轴组合) ──
         if channel_data_map:
             exp_imus = [k for k in channel_data_map.keys() if k.endswith('-1')]
             ctrl_imus = [k for k in channel_data_map.keys() if k.endswith('-2')]
             if len(exp_imus) >= 2 and len(ctrl_imus) >= 2:
                 try:
-                    fig = create_psd_comparison(channel_data_map, exp_imus, ctrl_imus, axis='Z')
+                    figsize = self._make_advanced_figsize(self._advanced_psd_card, 14, 10)
+                    fig = create_psd_comparison(channel_data_map, exp_imus, ctrl_imus, axis='all', figsize=figsize)
                     if fig:
                         self._create_chart_canvas(fig, self._advanced_psd_container)
                         self._advanced_psd_container.setVisible(True)
@@ -5903,7 +6489,8 @@ class StatisticsAnalysisTab(QWidget):
         comparison = self._build_comparison_dict(report)
         if comparison:
             try:
-                fig = create_attenuation_bar(comparison)
+                figsize = self._make_advanced_figsize(self._advanced_attenuation_card, 10, 5.5)
+                fig = create_attenuation_bar(comparison, figsize=figsize)
                 if fig:
                     self._create_chart_canvas(fig, self._advanced_attenuation_container)
                     self._advanced_attenuation_container.setVisible(True)
@@ -5912,7 +6499,8 @@ class StatisticsAnalysisTab(QWidget):
                 self.logger.warning(f"衰减柱状图生成失败: {e}")
 
             try:
-                fig = create_comparison_radar(comparison)
+                figsize = self._make_advanced_figsize(self._advanced_radar_card, 7, 7)
+                fig = create_comparison_radar(comparison, figsize=figsize)
                 if fig:
                     self._create_chart_canvas(fig, self._advanced_radar_container)
                     self._advanced_radar_container.setVisible(True)
@@ -5924,7 +6512,8 @@ class StatisticsAnalysisTab(QWidget):
         exp_imus_1 = [k for k in channel_data_map.keys() if k.endswith('-1')]
         if len(exp_imus_1) >= 2:
             try:
-                fig = create_acceleration_waveform(channel_data_map, exp_imus_1[:3])
+                figsize = self._make_advanced_figsize(self._advanced_accel_card, 14, 8)
+                fig = create_acceleration_waveform(channel_data_map, exp_imus_1[:3], figsize=figsize)
                 if fig:
                     self._create_chart_canvas(fig, self._advanced_accel_container)
                     self._advanced_accel_container.setVisible(True)
@@ -5932,13 +6521,20 @@ class StatisticsAnalysisTab(QWidget):
             except Exception as e:
                 self.logger.warning(f"加速度波形生成失败: {e}")
 
-        # ── 图表6: SRS 冲击响应谱 → _advanced_srs_container ──
+        # ── 图表6: SRS 冲击响应谱 → _advanced_srs_container (三轴组合) ──
         head_exp = next((k for k in channel_data_map if '头部' in k and k.endswith('-1')), None)
         head_ctrl = next((k for k in channel_data_map if '头部' in k and k.endswith('-2')), None)
+        # 回退：无头部IMU时使用第一个可用IMU对
+        loc_name_srs = '头部眉心'
+        if not head_exp or not head_ctrl:
+            head_exp = next((k for k in channel_data_map if k.endswith('-1')), None)
+            head_ctrl = next((k for k in channel_data_map if k.endswith('-2')), None)
+            loc_name_srs = '默认位置(非头部)'
         if head_exp and head_ctrl:
             try:
+                figsize = self._make_advanced_figsize(self._advanced_srs_card, 16, 5)
                 fig = create_srs_comparison(channel_data_map, head_exp, head_ctrl,
-                                           location_name='头部眉心', axis='X')
+                                           location_name=loc_name_srs, axis='all', figsize=figsize)
                 if fig:
                     self._create_chart_canvas(fig, self._advanced_srs_container)
                     self._advanced_srs_container.setVisible(True)
@@ -6061,7 +6657,7 @@ class StatisticsAnalysisTab(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(6)
 
-        title = QLabel("行程时间轴")
+        title = QLabel("2. 行程时间轴")
         title.setStyleSheet(
             f"font-size: 12px; font-weight: 700; color: {LC['text_primary']};"
             f"padding-bottom: 4px; border-bottom: 1px solid {LC['border_light']};"
@@ -6253,3 +6849,27 @@ class StatisticsAnalysisTab(QWidget):
             self._contrast_group.setVisible(False)
             self._output_tab_widget.setVisible(False)
             self._status_label.setText(f'数据集已加载: {basename}')
+
+# ══════════════════════════════════════════════════════════════════
+# 模块级辅助函数
+# ══════════════════════════════════════════════════════════════════
+
+def _smooth_curve(data: "np.ndarray", window: int = 5) -> "np.ndarray":
+    """曲线平滑：对原始数据做滑动平均，去除高频毛刺，使曲线更美观。
+
+    Args:
+        data: 一维 numpy 数组
+        window: 滑动窗口大小（奇数），越大越平滑
+
+    Returns:
+        平滑后的一维数组（长度不变，两端用边缘值填充）
+    """
+    if window < 3 or len(data) < window:
+        return data
+    if window % 2 == 0:
+        window += 1  # 确保奇数
+    half = window // 2
+    padded = np.pad(data, (half, half), mode='edge')
+    kernel = np.ones(window) / window
+    smoothed = np.convolve(padded, kernel, mode='valid')
+    return smoothed[:len(data)]

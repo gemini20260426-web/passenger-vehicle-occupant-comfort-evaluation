@@ -6,17 +6,19 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
     QPushButton, QMessageBox, QGroupBox, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QComboBox, QScrollArea,
+    QComboBox, QScrollArea, QGridLayout, QDialog, QDialogButtonBox,
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QColor, QBrush, QPixmap, QFont
 from PySide6.QtWidgets import QSizePolicy
 
 import matplotlib
 matplotlib.use('QtAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+import matplotlib.image as mpimg
 
 import numpy as np
 
@@ -36,6 +38,26 @@ class ShakerMainPanel(QWidget):
         'r_point_x': 'R点 X', 'r_point_y': 'R点 Y', 'r_point_z': 'R点 Z',
         't8_x': 'T8 X', 't8_y': 'T8 Y', 't8_z': 'T8 Z',
         'platform_x': '平台 X', 'platform_y': '平台 Y', 'platform_z': '平台 Z',
+    }
+
+    # 专家图表 ID → 中文标题映射
+    CHART_TITLES = {
+        'time_overview': '时域波形全览',
+        'time_zoom': 'Z轴时域放大',
+        'weighted_signals': '频率加权信号对比',
+        'crest_factor': '波峰因数检测',
+        'psd_compare': 'Z轴 PSD 对比',
+        'psd_all_axes': '全轴 PSD 频谱',
+        'octave_bands': '1/3 倍频程 RMS',
+        'transmissibility': 'Z轴传递函数',
+        'trans_all_axes': '全轴传递函数',
+        'resonance_detection': '共振频率检测',
+        'seat_bar': 'SEAT 柱状图',
+        'seat_radar': 'SEAT 雷达图',
+        'vdv_comparison': 'VDV 对比',
+        'risk_heatmap': '风险热力图',
+        'iso_weighting_curves': 'ISO 频率加权曲线',
+        'diagnostic_dashboard': '综合诊断仪表盘',
     }
 
     def __init__(self, parent=None):
@@ -68,9 +90,43 @@ class ShakerMainPanel(QWidget):
         root.setSpacing(8)
         root.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinAndMaxSize)
 
-        # ── 上部: 数据导入面板 ──
+        # ── 上部: 数据导入面板 + 空白卡片 (并列) ──
+        import_row = QHBoxLayout()
+        import_row.setSpacing(8)
         self._import_panel = ShakerImportPanel()
-        root.addWidget(self._import_panel)
+        import_row.addWidget(self._import_panel, 2)
+        # 预留卡片 - 振动台架试验方案图片
+        blank_card = QGroupBox("预留卡片")
+        blank_card.setStyleSheet("""
+            QGroupBox {
+                font-size: 13px; font-weight: bold;
+                border: 1px solid #d0d7de; border-radius: 8px;
+                margin-top: 10px; padding-top: 18px;
+                background: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 14px; padding: 2px 8px;
+                color: #2c3e50;
+            }
+        """)
+        blank_layout = QVBoxLayout(blank_card)
+        blank_layout.setContentsMargins(0, 0, 0, 0)
+        blank_layout.setSpacing(0)
+
+        # 加载并显示图片，适配卡片初始大小
+        image_label = QLabel()
+        image_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(r"d:\UI重构_全量备份_20250824_233403\徐宁数据\六轴平台减振数据\振动台架试验方案\generated_a94ca78b.jpg")
+        if not pixmap.isNull():
+            scaled = pixmap.scaledToWidth(420, Qt.SmoothTransformation)
+            image_label.setPixmap(scaled)
+        else:
+            image_label.setText("图片加载失败")
+            image_label.setStyleSheet("color: #dc3545; font-size: 13px;")
+        blank_layout.addWidget(image_label)
+        import_row.addWidget(blank_card, 1)
+        root.addLayout(import_row)
 
         # ── 中部: 进度区域 (默认隐藏) ──
         self._progress_group = self._create_progress_area()
@@ -92,6 +148,9 @@ class ShakerMainPanel(QWidget):
 
         self._table_card = self._make_card("数据表格", self._create_table_result_tab())
         root.addWidget(self._table_card)
+
+        self._charts_card = self._make_card("专家图表 (ISO 10326-1 多维分析)", self._create_charts_tab())
+        root.addWidget(self._charts_card)
 
         # ── 信号连接 ──
         self._import_panel.files_loaded.connect(self._on_files_loaded)
@@ -331,6 +390,187 @@ class ShakerMainPanel(QWidget):
         return widget
 
     # ══════════════════════════════════════════════════════
+    # 专家图表标签页
+    # ══════════════════════════════════════════════════════
+
+    def _create_charts_tab(self) -> QWidget:
+        """专家图表标签页 — 16 幅缩略图网格 + 双击放大"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        # 工况选择器
+        sel_layout = QHBoxLayout()
+        sel_layout.addWidget(QLabel("选择工况:"))
+        self._charts_condition_combo = QComboBox()
+        self._charts_condition_combo.currentIndexChanged.connect(self._on_charts_condition_changed)
+        sel_layout.addWidget(self._charts_condition_combo)
+        sel_layout.addStretch()
+        layout.addLayout(sel_layout)
+
+        # 缩略图网格
+        self._charts_grid = QGridLayout()
+        self._charts_grid.setSpacing(8)
+        layout.addLayout(self._charts_grid)
+
+        # 占位提示
+        self._charts_placeholder = QLabel("加载数据并分析后显示专家图表...")
+        self._charts_placeholder.setAlignment(Qt.AlignCenter)
+        self._charts_placeholder.setStyleSheet("color: #adb5bd; font-size: 13px; font-style: italic; padding: 40px;")
+        layout.addWidget(self._charts_placeholder)
+
+        layout.addStretch()
+        return widget
+
+    def _on_charts_condition_changed(self, idx: int):
+        """切换工况时更新图表显示"""
+        if self._results and 0 <= idx < len(self._results):
+            self._display_charts_for_result(self._results[idx])
+
+    def _display_charts(self, results: list):
+        """填充图表工况选择器并展示第一个工况的图表"""
+        self._charts_condition_combo.blockSignals(True)
+        self._charts_condition_combo.clear()
+        for r in results:
+            self._charts_condition_combo.addItem(r.condition_name)
+        self._charts_condition_combo.blockSignals(False)
+
+        if results:
+            self._charts_condition_combo.setCurrentIndex(0)
+            self._on_charts_condition_changed(0)
+
+    def _display_charts_for_result(self, result):
+        """为指定工况加载并展示所有缩略图"""
+        # 清空网格
+        self._clear_grid_layout(self._charts_grid)
+
+        chart_paths = getattr(result, 'chart_paths', {})
+        if not chart_paths:
+            self._charts_placeholder.setText("该工况未生成图表")
+            self._charts_placeholder.setVisible(True)
+            return
+
+        self._charts_placeholder.setVisible(False)
+
+        # 按 chart_id 有序展示 (chart01 ~ chart16)
+        sorted_ids = sorted(chart_paths.keys())
+        cols = 3
+        thumb_w, thumb_h = 190, 130
+
+        self._chart_thumb_labels = {}  # 保存引用防止被 GC
+
+        for i, chart_id in enumerate(sorted_ids):
+            path = chart_paths[chart_id]
+            title = self.CHART_TITLES.get(chart_id, chart_id)
+
+            # 缩略图容器
+            container = QWidget()
+            container.setFixedSize(thumb_w + 12, thumb_h + 36)
+            container.setStyleSheet(
+                "QWidget { background: #f8f9fa; border: 1px solid #dee2e6; "
+                "border-radius: 6px; }"
+                "QWidget:hover { border: 2px solid #4a90d9; background: #e8f0fe; }"
+            )
+            vbox = QVBoxLayout(container)
+            vbox.setContentsMargins(4, 4, 4, 4)
+            vbox.setSpacing(2)
+
+            # 缩略图
+            thumb_label = QLabel()
+            thumb_label.setAlignment(Qt.AlignCenter)
+            thumb_label.setFixedSize(thumb_w, thumb_h)
+            thumb_label.setScaledContents(False)
+
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    thumb_w, thumb_h,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+                thumb_label.setPixmap(scaled)
+            else:
+                thumb_label.setText("⚠ 加载失败")
+                thumb_label.setStyleSheet("color: #dc3545;")
+
+            thumb_label.setToolTip(f"双击放大: {title}")
+
+            # 双击打开放大视图
+            thumb_label.mouseDoubleClickEvent = self._make_double_click_handler(path, title)
+            self._chart_thumb_labels[chart_id] = thumb_label
+
+            vbox.addWidget(thumb_label)
+
+            # 标题
+            title_label = QLabel(title)
+            title_label.setAlignment(Qt.AlignCenter)
+            title_label.setStyleSheet("font-size: 10px; color: #495057; border: none; background: transparent;")
+            title_label.setWordWrap(True)
+            title_label.setMaximumHeight(28)
+            vbox.addWidget(title_label)
+
+            row, col = divmod(i, cols)
+            self._charts_grid.addWidget(container, row, col)
+
+    def _make_double_click_handler(self, path: str, title: str):
+        """创建双击事件处理器（闭包）"""
+        def handler(event):
+            self._show_chart_zoom(path, title)
+        return handler
+
+    def _show_chart_zoom(self, path: str, title: str):
+        """弹出图表放大查看对话框（带缩放/平移工具栏）"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"📊 {title}")
+        dialog.resize(1100, 750)
+        dialog.setMinimumSize(800, 600)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        # 加载图片到 matplotlib Figure
+        fig = Figure(figsize=(10, 7), dpi=100)
+        ax = fig.add_axes([0, 0, 1, 1])  # 图片填充整个区域，无边距
+        ax.axis('off')
+
+        try:
+            img = mpimg.imread(path)
+            ax.imshow(img, aspect='equal')
+        except Exception:
+            ax.text(0.5, 0.5, "无法加载图片", ha='center', va='center',
+                    fontsize=14, color='#dc3545', transform=ax.transAxes)
+
+        # FigureCanvas
+        canvas = FigureCanvas(fig)
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # 导航工具栏（缩放/平移/保存/重置）
+        toolbar = NavigationToolbar(canvas, dialog)
+        toolbar.setStyleSheet("QToolBar { border: none; spacing: 2px; }")
+
+        layout.addWidget(toolbar)
+        layout.addWidget(canvas, 1)
+
+        # 关闭按钮
+        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
+        btn_box.rejected.connect(dialog.close)
+        layout.addWidget(btn_box)
+
+        dialog.exec()
+
+    @staticmethod
+    def _clear_grid_layout(grid: QGridLayout):
+        """清空网格布局中的所有子控件"""
+        if grid is None:
+            return
+        while grid.count():
+            item = grid.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    # ══════════════════════════════════════════════════════
     # 分析流程
     # ══════════════════════════════════════════════════════
 
@@ -376,6 +616,7 @@ class ShakerMainPanel(QWidget):
         self._display_psd_results(results, "全部 (平台/R点/T8)")
         self._display_cross_results(results, 0)
         self._display_table_results(results)
+        self._display_charts(results)
 
     # ══════════════════════════════════════════════════════
     # SEAT因子展示
@@ -482,6 +723,7 @@ class ShakerMainPanel(QWidget):
 
         if results:
             self._tf_condition_combo.setCurrentIndex(0)
+            self._on_tf_condition_changed(0)
 
     def _display_tf_for_result(self, result):
         """为单个工况展示传递函数"""
@@ -499,6 +741,7 @@ class ShakerMainPanel(QWidget):
 
         if all_paths:
             self._tf_path_combo.setCurrentIndex(0)
+            self._on_tf_path_changed(0)
 
     def _on_tf_condition_changed(self, idx: int):
         if self._results and 0 <= idx < len(self._results):
@@ -520,7 +763,7 @@ class ShakerMainPanel(QWidget):
         tr = tf_data[path_key]
 
         # 创建 matplotlib Figure
-        self._tf_fig = Figure(figsize=(9, 6), dpi=100)
+        self._tf_fig = Figure(figsize=(7, 5), dpi=100)
         ax1 = self._tf_fig.add_subplot(211)
         ax2 = self._tf_fig.add_subplot(212, sharex=ax1)
 
@@ -591,6 +834,7 @@ class ShakerMainPanel(QWidget):
 
         if results:
             self._psd_condition_combo.setCurrentIndex(0)
+            self._on_psd_selection_changed()
 
     def _display_psd_for_result(self, result, loc_mode: str):
         """渲染PSD频谱图"""
@@ -618,7 +862,7 @@ class ShakerMainPanel(QWidget):
         n_loc = len(locations)
         n_ax = len(axes)
 
-        self._psd_fig = Figure(figsize=(12, 3 * n_ax), dpi=100)
+        self._psd_fig = Figure(figsize=(7.5, 2.5 * n_ax), dpi=100)
         colors = {'platform': '#1f77b4', 'r_point': '#ff7f0e', 't8': '#2ca02c'}
         labels = {'platform': '平台', 'r_point': 'R点', 't8': 'T8'}
 
@@ -812,7 +1056,7 @@ class ShakerMainPanel(QWidget):
     @staticmethod
     def _init_placeholder_chart(layout, text: str = "等待数据..."):
         """在布局中初始化空占位 matploblib 图表"""
-        fig = Figure(figsize=(8, 3.5), dpi=100)
+        fig = Figure(figsize=(7, 3), dpi=100)
         ax = fig.add_subplot(111)
         ax.text(0.5, 0.5, text, transform=ax.transAxes,
                 ha='center', va='center', fontsize=13,

@@ -165,8 +165,16 @@ class FullTimeseriesEvaluator:
             self._aligned_cache[imu_name] = np.array(result)
 
     def load_from_csv(self, csv_path: str):
-        """从CSV文件加载数据"""
-        df = pd.read_csv(csv_path)
+        """从CSV文件加载数据（兼容 UTF-8/GBK/gb2312 编码）"""
+        for enc in ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin-1']:
+            try:
+                df = pd.read_csv(csv_path, encoding=enc)
+                self.load_from_dataframe(df)
+                return
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        # 最后兜底
+        df = pd.read_csv(csv_path, encoding='utf-8', errors='replace')
         self.load_from_dataframe(df)
 
     def get_aligned(self, imu_name: str) -> Optional[np.ndarray]:
@@ -200,7 +208,7 @@ class FullTimeseriesEvaluator:
             return
 
         # ── 优先级 1: ML 检测 (主力) ──
-        if self._ml_classifier and self._ml_classifier.ml_classifier.is_ready():
+        if self._ml_classifier and self._ml_classifier.ml_classifier and self._ml_classifier.ml_classifier.is_ready():
             logger.info("  使用 ML 检测 (HybridBehaviorClassifier, 25 种)")
             self._detect_by_ml()
         else:
@@ -265,25 +273,37 @@ class FullTimeseriesEvaluator:
             )
             from core.core.analysis.core_types import DEPRECATED_EVENT_MAPPING
 
-            detector = DrivingEventDetector()
-
-            # 构建 records 数据
+            # 构建 records 数据（含加速度用于完整事件检测）
             records = []
             if self.sw is not None and len(self.sw) > 0:
+                # 获取第一个实验组IMU数据作为参考加速度
+                ref_ax = ref_ay = ref_az = ref_gx = ref_gy = ref_gz = None
+                if self.exp:
+                    first_exp = list(self.exp.values())[0]
+                    ref_ax = first_exp[:, 0] if first_exp.ndim > 1 and first_exp.shape[1] >= 1 else None
+                    ref_ay = first_exp[:, 1] if first_exp.ndim > 1 and first_exp.shape[1] >= 2 else None
+                    ref_az = first_exp[:, 2] if first_exp.ndim > 1 and first_exp.shape[1] >= 3 else None
+
                 for i in range(len(self.sw)):
                     rec = {
                         'rel_time': self.sw[i, 0],
                         'speed': self.sw[i, 1],
                         'wheel': self.sw[i, 2],
                     }
+                    # 附加加速度数据（如有）
+                    if ref_ax is not None and i < len(ref_ax):
+                        rec['ax'] = float(ref_ax[i])
+                        rec['ay'] = float(ref_ay[i]) if ref_ay is not None and i < len(ref_ay) else 0.0
+                        rec['az'] = float(ref_az[i]) if ref_az is not None and i < len(ref_az) else 0.0
                     records.append(rec)
 
             if not records:
                 logger.warning("  无法构建 records 数据，跳过规则回退")
                 return
 
-            # 使用 DrivingEventDetector 检测所有事件
-            rule_events = detector.detect_all(records)
+            # 使用 DrivingEventDetector 检测所有事件（from_records + detect_all）
+            detector = DrivingEventDetector.from_records(records)
+            rule_events = detector.detect_all()
 
             for evt in rule_events:
                 etype = evt.event_type
@@ -887,7 +907,9 @@ class FullTimeseriesEvaluator:
         if len(windows) > 0:
             windows.to_csv(os.path.join(out_dir, 'window_analysis.csv'), index=False)
         events_df = self.results.get('events', pd.DataFrame())
-        if len(events_df) > 0:
+        if isinstance(events_df, list):
+            events_df = pd.DataFrame(events_df)
+        if isinstance(events_df, pd.DataFrame) and len(events_df) > 0:
             events_df.to_csv(os.path.join(out_dir, 'event_analysis.csv'), index=False)
         pd.DataFrame([metrics]).to_csv(os.path.join(out_dir, 'comprehensive_metrics.csv'), index=False)
 

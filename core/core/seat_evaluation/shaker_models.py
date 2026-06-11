@@ -215,6 +215,9 @@ class AnalysisResult:
     # 低激励通道 (平台信号 std < 0.1 → SEAT 不可靠)
     low_excitation_channels: List[str] = field(default_factory=list)
 
+    # 专家图表 (ShakerChartGenerator 生成)
+    chart_paths: Dict[str, str] = field(default_factory=dict)  # {chart_id: file_path}
+
 
 @dataclass
 class CrossConditionReport:

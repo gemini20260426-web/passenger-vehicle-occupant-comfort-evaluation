@@ -12,7 +12,7 @@
 
 import os
 import numpy as np
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
 import logging
 
 import matplotlib
@@ -21,21 +21,23 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.font_manager import FontProperties
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 
 logger = logging.getLogger(__name__)
 
-# ── 配色方案（专业实验室风格）──
+# 导入统一样式（必须在 COLOR/EVENT_COLORS 之前）
+from .visualization_manager import ChartStyle, CN_FONT, CN_FONT_FAMILY, CN_FONT_LIST
+
+# ── 配色方案（统一使用 ChartStyle Okabe-Ito 色盲友好配色）──
 COLORS = {
-    'primary':   '#2E75B6',
+    'primary':   ChartStyle.C_EXP,
     'secondary': '#1F3864',
-    'accent':    '#E74C3C',
-    'green':     '#27AE60',
-    'orange':    '#F39C12',
-    'purple':    '#8E44AD',
-    'exp':       '#2E75B6',
-    'ctrl':      '#E67E22',
-    'grey':      '#95A5A6',
+    'accent':    ChartStyle.C_RED,
+    'green':     ChartStyle.C_DIFF,
+    'orange':    ChartStyle.C_CTRL,
+    'purple':    ChartStyle.C_PURPLE,
+    'exp':       ChartStyle.C_EXP,
+    'ctrl':      ChartStyle.C_CTRL,
+    'grey':      ChartStyle.C_NEUTRAL,
 }
 
 # ── 事件类型配色 ──
@@ -59,25 +61,8 @@ EVENT_COLORS = {
     'constant_speed':          '#2980B9',
 }
 
-# ── 中文字体配置 ──
-CN_FONT_FAMILY = 'Microsoft YaHei'
-
-plt.rcParams.update({
-    'font.family': 'sans-serif',
-    'font.sans-serif': [CN_FONT_FAMILY, 'SimHei', 'DejaVu Sans'],
-    'axes.unicode_minus': False,
-})
-
-# ── 图表尺寸限制（防止超出UI容器）──
-MAX_FIGSIZE_W = 12
-MAX_FIGSIZE_H = 10
-
-def _constrain_figsize(figsize: Tuple[float, float]) -> Tuple[float, float]:
-    """约束图表尺寸，防止超出UI容器"""
-    w, h = figsize
-    scale_factor = min(1.0, MAX_FIGSIZE_W / w) if w > 0 else 1.0
-    scale_factor = min(scale_factor, MAX_FIGSIZE_H / h) if h > 0 else scale_factor
-    return (w * scale_factor, h * scale_factor)
+# ── 中文字体配置：复用 visualization_manager 统一检测结果 ──
+# CN_FONT / CN_FONT_FAMILY / CN_FONT_LIST 由 visualization_manager 模块级导入
 
 # ══════════════════════════════════════════════════════════════════
 # 图表1: 驾驶事件时间线
@@ -85,58 +70,83 @@ def _constrain_figsize(figsize: Tuple[float, float]) -> Tuple[float, float]:
 
 def create_event_timeline(t: np.ndarray, speed: np.ndarray, wheel: np.ndarray,
                           events: List[Dict], title: str = "驾驶事件时间线",
-                          figsize: tuple = (12, 5)) -> Figure:
-    """生成驾驶事件时间线图（车速曲线 + 方向盘曲线 + 事件色块标注）"""
-    figsize = _constrain_figsize(figsize)
-    fig = Figure(figsize=figsize, dpi=100)
-    fig.patch.set_facecolor('white')
-    
-    gs = fig.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.05)
+                          figsize: tuple = (14, 6)):
+    """生成驾驶事件时间线图（车速曲线 + 方向盘曲线 + 事件色块标注）
+
+    对标参考图标准：2 行布局，清晰层次，事件色块限制在顶部 15% 区域。
+    """
+    if len(t) == 0 or len(speed) == 0:
+        return None
+
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(2, 1, height_ratios=[3, 2], hspace=0.12)
     ax1 = fig.add_subplot(gs[0])
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
-    
+
+    # ── 数据降采样：超过 3000 点时抽稀 ──
+    n_raw = min(len(speed), len(wheel), len(t))
+    MAX_POINTS = 3000
+    ds_every = max(1, n_raw // MAX_POINTS) if n_raw > MAX_POINTS else 1
+    if ds_every > 1:
+        t = t[::ds_every]
+        speed = speed[::ds_every]
+        wheel = wheel[::ds_every]
+
+    # ── 图标题（figure suptitle） ──
+    fig.suptitle(title, fontsize=15, fontweight='bold',
+                 fontfamily=CN_FONT_FAMILY, y=0.97)
+
     # ── 上车速曲线 ──
-    ax1.plot(t, speed, color=COLORS['primary'], linewidth=1.5, label='车速')
-    ax1.fill_between(t, 0, speed, alpha=0.08, color=COLORS['primary'])
-    ax1.set_ylabel('车速 (km/h)', fontsize=10, fontfamily=CN_FONT_FAMILY)
-    ax1.set_title(title, fontsize=13, fontweight='bold', fontfamily=CN_FONT_FAMILY)
-    
-    # ── 事件色块标注 ──
-    y_top = speed.max() * 0.88
-    y_step = speed.max() * 0.06
-    label_positions = []
-    for i, evt in enumerate(events):
+    vmax = max(float(np.nanmax(speed)), 1.0)
+    ax1.plot(t, speed, color=COLORS['exp'], linewidth=1.8,
+             solid_capstyle='round', alpha=0.95)
+    ax1.fill_between(t, 0, speed, alpha=0.10, color=COLORS['exp'])
+    ax1.set_ylabel('车速 (km/h)', fontsize=11, fontfamily=CN_FONT_FAMILY)
+    ax1.grid(True, alpha=0.20, linestyle='-')
+    ax1.set_ylim(bottom=0, top=vmax * 1.15)
+
+    # ── 事件色块 + 标签（限制在顶部 15% 区域，最多 12 个标签） ──
+    event_band_top = vmax * 0.90
+    event_band_bottom = vmax * 0.72
+    band_height = event_band_top - event_band_bottom
+    events_sorted = sorted(events, key=lambda e: (e.get('t_start', e.get('start_time', 0))))
+
+    for i, evt in enumerate(events_sorted):
         t0 = evt.get('t_start', evt.get('start_time', 0))
         t1 = evt.get('t_end', evt.get('end_time', t0 + 0.5))
+        if t1 <= t0:
+            t1 = t0 + 0.5
         etype = evt.get('event_type', evt.get('type', ''))
-        ename = evt.get('event_name', evt.get('name', etype))
-        color = EVENT_COLORS.get(etype, '#3498DB')
-        
-        ax1.axvspan(t0, t1, alpha=0.12, color=color)
-        # 避免标签重叠
-        mid = (t0 + t1) / 2
-        y_idx = 0
-        for prev_mid, prev_y in label_positions:
-            if abs(mid - prev_mid) < 0.5:
-                y_idx = max(y_idx, prev_y + 1)
-        label_positions.append((mid, y_idx))
-        y_label = y_top - y_idx * y_step
-        ax1.annotate(ename, (mid, y_label), fontsize=6, ha='center',
-                     color=color, fontfamily=CN_FONT_FAMILY, rotation=35,
-                     alpha=0.85)
-    
-    ax1.legend(loc='upper right', prop={'family': CN_FONT_FAMILY, 'size': 8})
-    ax1.grid(True, alpha=0.2)
-    
+        ename = evt.get('event_name', evt.get('name', etype)) or etype or '事件'
+        color = EVENT_COLORS.get(etype, COLORS['red'])
+
+        # 事件色块只画在事件带区域（不覆盖曲线）
+        ax1.axvspan(t0, t1, ymin=event_band_bottom / ax1.get_ylim()[1],
+                    ymax=event_band_top / ax1.get_ylim()[1],
+                    alpha=0.25, color=color, linewidth=0)
+
+        # 仅前 12 个事件加文字标签（避免拥挤）
+        if i < 12:
+            y_text = event_band_top + band_height * 0.10
+            ax1.text((t0 + t1) / 2.0, y_text, ename,
+                     ha='center', va='bottom',
+                     fontsize=8, color=color,
+                     fontfamily=CN_FONT_FAMILY,
+                     bbox=dict(boxstyle='round,pad=0.15',
+                               facecolor='white', edgecolor=color,
+                               linewidth=0.5, alpha=0.85))
+
     # ── 下方向盘曲线 ──
-    ax2.plot(t, wheel, color=COLORS['purple'], linewidth=0.8)
-    ax2.fill_between(t, 0, wheel, alpha=0.06, color=COLORS['purple'])
-    ax2.axhline(y=0, color='grey', linewidth=0.5, linestyle='--', alpha=0.5)
-    ax2.set_xlabel('时间 (s)', fontsize=10, fontfamily=CN_FONT_FAMILY)
-    ax2.set_ylabel('转角 (°)', fontsize=10, fontfamily=CN_FONT_FAMILY)
-    ax2.grid(True, alpha=0.2)
-    
-    fig.tight_layout()
+    ax2.plot(t, wheel, color=COLORS['purple'], linewidth=1.5,
+             solid_capstyle='round', alpha=0.95)
+    ax2.fill_between(t, 0, wheel, alpha=0.08, color=COLORS['purple'])
+    ax2.axhline(y=0, color='grey', linewidth=0.6, linestyle='--', alpha=0.6)
+    ax2.set_xlabel('时间 (s)', fontsize=11, fontfamily=CN_FONT_FAMILY)
+    ax2.set_ylabel('转角 (°)', fontsize=11, fontfamily=CN_FONT_FAMILY)
+    ax2.grid(True, alpha=0.20, linestyle='-')
+
+    # ── 布局：预留 suptitle 空间 ──
+    fig.subplots_adjust(top=0.88, bottom=0.10, left=0.07, right=0.98)
     return fig
 
 
@@ -148,88 +158,130 @@ def create_psd_comparison(channel_data_map: Dict[str, Dict],
                           exp_imus: List[str], ctrl_imus: List[str],
                           positions: List[tuple] = None,
                           axis: str = 'Z',
-                          figsize: tuple = (14, 4.5)) -> Optional[Figure]:
-    """
-    生成 PSD 功率谱密度对比图。
-    
-    Args:
-        channel_data_map: {imu_name: {channel: numpy_array}}
-        exp_imus: 实验组 IMU 名称列表
-        ctrl_imus: 对照组 IMU 名称列表
-        positions: [(位置名, exp_imu, ctrl_imu), ...]
-        axis: 分析轴 ('X', 'Y', 'Z')
+                          figsize: tuple = None):
+    """生成 PSD 功率谱密度对比图（对标参考图标准）。
+
+    布局：
+      - axis='all'  → 3 行 × N 列（每行为一个轴 X/Y/Z，每列为一个位置）
+      - axis='X'/'Y'/'Z' → 1 行 × N 列（单轴，多位置对比 — 最接近参考图）
+
+    设计规范：统一蓝实线(实验组) / 橙虚线(对照组)，单图例在左上角，suptitle 与子图 title 双层结构。
     """
     from scipy import signal as sp_signal
-    
+
     if positions is None:
         paired = []
-        for exp_name in exp_imus:
-            body_part = exp_name.split('_', 1)[1].rsplit('-', 1)[0] if '_' in exp_name else exp_name
-            ctrl_name = next((k for k in ctrl_imus if body_part in k), None)
-            location = body_part
-            if ctrl_name:
-                paired.append((location, exp_name, ctrl_name))
+        for exp_name in exp_imus[:3]:
+            ctrl_name = exp_name.replace('-1', '-2')
+            location = exp_name.split('_')[1] if '_' in exp_name else exp_name
+            paired.append((location, exp_name, ctrl_name if ctrl_name in ctrl_imus else None))
         positions = paired
-
-    logger.debug(f"PSD对比: exp_imus={exp_imus}, ctrl_imus={ctrl_imus}, positions={positions}")
-    logger.debug(f"PSD对比: channel_data_map keys={list(channel_data_map.keys())}")
 
     valid_positions = [(loc, e, c) for loc, e, c in positions
                        if e in channel_data_map and c and c in channel_data_map]
 
-    logger.debug(f"PSD对比: valid_positions={valid_positions}")
-
     if len(valid_positions) < 1:
-        logger.warning(f"PSD对比图无法生成: 有效位置数={len(valid_positions)} (需要>=1), "
-                       f"exp_imus={exp_imus}, ctrl_imus={ctrl_imus}")
         return None
-    
-    n = len(valid_positions)
-    raw_figsize = (5 * n, 4.5)
-    figsize = _constrain_figsize(raw_figsize)
-    fig, axes = plt.subplots(1, n, figsize=figsize)
-    if n == 1:
-        axes = [axes]
-    
-    channel_key = 'az' if axis == 'Z' else axis.lower()
-    
-    for ax, (loc, exp_imu, ctrl_imu) in zip(axes, valid_positions):
-        for label, imu, style in [
-            ('实验组', exp_imu, {'color': COLORS['exp'], 'ls': '-'}),
-            ('对照组', ctrl_imu, {'color': COLORS['ctrl'], 'ls': '--'})
-        ]:
-            data_dict = channel_data_map.get(imu, {})
-            ch_data = data_dict.get(channel_key)
-            if ch_data is None:
-                continue
-            
-            # 估算采样率
-            if 'timestamps' in data_dict:
-                t_arr = data_dict['timestamps']
-                fs = 1.0 / np.median(np.diff(t_arr)) if len(t_arr) > 1 else 512
-            else:
-                fs = 512
-            
-            nperseg = min(1024, len(ch_data) // 2)
-            noverlap = min(512, nperseg // 2)
-            try:
-                f, pxx = sp_signal.welch(ch_data, fs, nperseg=nperseg,
-                                         noverlap=noverlap, window='hann')
-                mask = (f >= 0.5) & (f <= 80)
-                ax.semilogx(f[mask], 10 * np.log10(pxx[mask] + 1e-12),
-                           label=label, linewidth=1.5, **style)
-            except Exception as e:
-                logger.debug(f"PSD计算失败 {imu}: {e}")
-        
-        ax.set_xlabel('频率 (Hz)', fontsize=10, fontfamily=CN_FONT_FAMILY)
-        ax.set_ylabel(f'{axis}轴 PSD (dB)', fontsize=10, fontfamily=CN_FONT_FAMILY)
-        ax.set_title(f'{loc} {axis}轴PSD', fontsize=11, fontfamily=CN_FONT_FAMILY)
-        ax.legend(prop={'family': CN_FONT_FAMILY, 'size': 8})
-        ax.grid(True, alpha=0.25)
-    
-    fig.suptitle(f'座椅各点位 {axis}轴 功率谱密度对比', fontsize=14,
-                 fontweight='bold', fontfamily=CN_FONT_FAMILY, y=1.02)
-    fig.tight_layout()
+
+    n_pos = len(valid_positions)
+    if axis == 'all':
+        axes_list = ['X', 'Y', 'Z']
+    else:
+        axes_list = [axis.upper()]
+    n_rows = len(axes_list)
+
+    # ── 画布尺寸按网格算：每列 ~5 inch, 每行 ~3.2 inch ──
+    if figsize is None:
+        fig_w = max(10.0, min(18.0, 4.5 * n_pos))
+        fig_h = max(4.5, 2.8 * n_rows + 1.2)
+        figsize = (fig_w, fig_h)
+
+    fig, axes_grid = plt.subplots(n_rows, n_pos, figsize=figsize,
+                                  sharex='col', squeeze=False)
+
+    # ── 统一频率范围 & 每一列的 PSD Y 轴对齐范围（便于横向比较）──
+    ylim_buffer: Dict[int, List[float]] = {col: [np.inf, -np.inf] for col in range(n_pos)}
+
+    line_style_map = {
+        '实验组': {'color': COLORS['exp'], 'ls': '-', 'lw': 1.8},
+        '对照组': {'color': COLORS['ctrl'], 'ls': '--', 'lw': 1.6},
+    }
+
+    for row, ax_name in enumerate(axes_list):
+        ch_key = f"a{ax_name.lower()}"
+        for col, (loc, exp_imu, ctrl_imu) in enumerate(valid_positions):
+            ax = axes_grid[row, col]
+
+            for label, imu in [('实验组', exp_imu), ('对照组', ctrl_imu)]:
+                data_dict = channel_data_map.get(imu, {})
+                ch_data = data_dict.get(ch_key)
+                if ch_data is None or len(ch_data) < 256:
+                    continue
+
+                fs = data_dict.get('sample_rate', 0)
+                if not fs and 'timestamps' in data_dict:
+                    t_arr = data_dict['timestamps']
+                    fs = 1.0 / np.median(np.diff(t_arr)) if len(t_arr) > 1 else 512
+                if not fs:
+                    fs = 512
+
+                n_samp = len(ch_data)
+                nperseg = min(1024, max(256, n_samp // 4))
+                noverlap = nperseg // 2
+                try:
+                    f, pxx = sp_signal.welch(ch_data, fs, nperseg=nperseg,
+                                             noverlap=noverlap, window='hann')
+                    mask = (f >= 0.5) & (f <= 80)
+                    y_db = 10.0 * np.log10(pxx[mask] + 1e-12)
+                    ls = line_style_map[label]
+                    # 只在 (0, 0) 画 legend 一次
+                    lab = label if (row == 0 and col == 0) else None
+                    ax.semilogx(f[mask], y_db, label=lab, color=ls['color'],
+                               linestyle=ls['ls'], linewidth=ls['lw'])
+
+                    # 追踪每列 Y 轴范围
+                    lo, hi = float(np.nanmin(y_db)), float(np.nanmax(y_db))
+                    ylim_buffer[col][0] = min(ylim_buffer[col][0], lo)
+                    ylim_buffer[col][1] = max(ylim_buffer[col][1], hi)
+                except Exception as e:
+                    logger.debug(f"PSD计算失败 {imu} {ax_name}: {e}")
+
+            # ── 子图标签：只在第 0 列加 ylabel，只在第 0 行加 title，只在末行加 xlabel ──
+            if col == 0:
+                ax.set_ylabel(f'{ax_name}轴 PSD (dB)',
+                              fontsize=10, fontfamily=CN_FONT_FAMILY)
+            if row == 0:
+                ax.set_title(f'{loc} {ax_name}轴PSD' if n_rows == 1 else f'{loc}',
+                            fontsize=11, fontfamily=CN_FONT_FAMILY)
+            if row == n_rows - 1:
+                ax.set_xlabel('频率 (Hz)', fontsize=10, fontfamily=CN_FONT_FAMILY)
+            ax.grid(True, alpha=0.20, linestyle='-')
+            ax.tick_params(axis='both', labelsize=9)
+
+    # ── 统一每列的 Y 轴范围（同位置 X/Y/Z 轴共用一个 Y 刻度范围便于比较）──
+    for col in range(n_pos):
+        lo, hi = ylim_buffer[col]
+        if not np.isfinite(lo) or not np.isfinite(hi):
+            continue
+        pad = max(2.0, (hi - lo) * 0.08)
+        for row in range(n_rows):
+            axes_grid[row, col].set_ylim(lo - pad, hi + pad)
+
+    # ── Figure suptitle ──
+    if n_rows == 1:
+        main_title = f'座椅各点位 {axes_list[0]}轴 功率谱密度对比'
+    else:
+        main_title = '座椅各点位 三轴功率谱密度对比'
+    fig.suptitle(main_title, fontsize=15, fontweight='bold',
+                 fontfamily=CN_FONT_FAMILY, y=0.98)
+
+    # ── 单图例（只在左上角出现一次）──
+    axes_grid[0, 0].legend(loc='upper right', frameon=True,
+                          prop={'family': CN_FONT_FAMILY, 'size': 10})
+
+    # ── 显式布局：预留 suptitle 空间，控制 wspace/hspace ──
+    fig.subplots_adjust(top=0.87, bottom=0.12, left=0.07, right=0.98,
+                        wspace=0.25, hspace=0.22)
     return fig
 
 
@@ -238,51 +290,79 @@ def create_psd_comparison(channel_data_map: Dict[str, Dict],
 # ══════════════════════════════════════════════════════════════════
 
 def create_comparison_radar(comparison_data: Dict[str, Dict],
-                            figsize: tuple = (7, 7)) -> Optional[Figure]:
+                            figsize: tuple = None):
+    """生成归一化雷达对比图（对标参考图标准）。
+
+    选择策略：按 |atten_pct| 从大到小排序，截取最显著的前 8 个指标。
+    对照组作为 r=1 的正八边形基准线，实验组为其归一化值。
     """
-    生成归一化雷达对比图。
-    
-    Args:
-        comparison_data: {指标名: {'exp': float, 'ctrl': float, 'atten_pct': float, ...}}
-    """
-    items = []
+    # ── 1. 提取并筛选标量指标 ──
+    candidates = []
     for key, val in comparison_data.items():
-        if isinstance(val, dict) and 'exp' in val and 'ctrl' in val:
-            e, c = val['exp'], val['ctrl']
-            if abs(c) > 1e-9:
-                items.append((key[:10], e / c))
-    
-    if len(items) < 3:
+        if not (isinstance(val, dict) and 'exp' in val and 'ctrl' in val):
+            continue
+        e, c = float(val['exp']), float(val['ctrl'])
+        if abs(c) < 1e-9:
+            continue
+        atten = val.get('atten_pct', (e - c) / abs(c) * 100)
+        ratio = e / c
+        if not np.isfinite(ratio):
+            continue
+        candidates.append((key, ratio, float(atten)))
+
+    if len(candidates) < 3:
         return None
-    
-    labels = [it[0] for it in items]
-    exp_vals = [it[1] for it in items]
-    ctrl_vals = [1.0] * len(items)
-    
-    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
-    exp_vals_plot = exp_vals + [exp_vals[0]]
-    ctrl_vals_plot = ctrl_vals + [ctrl_vals[0]]
-    angles_plot = angles + [angles[0]]
-    
-    figsize = _constrain_figsize(figsize)
+
+    # ── 2. 选择最显著的 TOP 8（控制标签密度）──
+    candidates_sorted = sorted(candidates, key=lambda x: abs(x[2]), reverse=True)[:8]
+    labels_raw = [c[0] for c in candidates_sorted]
+    exp_ratios = [c[1] for c in candidates_sorted]
+    n = len(labels_raw)
+
+    # 标签截断至 ~8 汉字（保持可读性）
+    labels = [l[:8] for l in labels_raw]
+
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    angles_close = np.concatenate([angles, [angles[0]]])
+    exp_close = np.array(exp_ratios + [exp_ratios[0]])
+    ctrl_close = np.array([1.0] * (n + 1))
+
+    # ── 3. 画布尺寸 ──
+    if figsize is None:
+        side = max(5.5, min(7.5, 5.0 + n * 0.2))
+        figsize = (side, side)
+
     fig, ax = plt.subplots(figsize=figsize, subplot_kw={'projection': 'polar'})
-    
-    ax.fill(angles_plot, exp_vals_plot, alpha=0.2, color=COLORS['exp'])
-    ax.plot(angles_plot, exp_vals_plot, color=COLORS['exp'], linewidth=2,
-            marker='o', markersize=6, label='实验组')
-    ax.fill(angles_plot, ctrl_vals_plot, alpha=0.1, color=COLORS['ctrl'])
-    ax.plot(angles_plot, ctrl_vals_plot, color=COLORS['ctrl'], linewidth=2,
-            marker='s', markersize=6, linestyle='--', label='对照组(基准=1.0)')
-    
+
+    # ── 4. 绘制两条闭合多边形 ──
+    ax.fill(angles_close, exp_close, alpha=0.18, color=COLORS['exp'], edgecolor=None)
+    ax.plot(angles_close, exp_close, color=COLORS['exp'], linewidth=2.2,
+            marker='o', markersize=7, label='实验组')
+
+    ax.fill(angles_close, ctrl_close, alpha=0.10, color=COLORS['ctrl'], edgecolor=None)
+    ax.plot(angles_close, ctrl_close, color=COLORS['ctrl'], linewidth=1.8,
+            linestyle='--', marker='s', markersize=5, label='对照组 (基准=1.0)')
+
+    # ── 5. 坐标轴与标签 ──
     ax.set_xticks(angles)
-    ax.set_xticklabels(labels, fontsize=9, fontfamily=CN_FONT_FAMILY)
-    ax.set_yticklabels([])
-    ax.set_title('实验组 vs 对照组 — 归一化对比 (对照组=1.0)',
-                 fontsize=13, fontweight='bold', fontfamily=CN_FONT_FAMILY, pad=20)
-    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.05),
-              prop={'family': CN_FONT_FAMILY, 'size': 9})
-    
-    fig.tight_layout()
+    ax.set_xticklabels(labels, fontsize=10, fontfamily=CN_FONT_FAMILY)
+    # 径向范围：数据波动 ± 10%
+    rmin = max(0.2, float(np.nanmin(exp_ratios)) * 0.85)
+    rmax = min(3.0, float(np.nanmax(exp_ratios)) * 1.15)
+    if rmax <= rmin:
+        rmax = rmin + 1.0
+    ax.set_rlim(rmin, rmax)
+    ax.set_yticklabels([])  # 隐藏径向刻度文字，保持参考图简洁风格
+    ax.grid(True, alpha=0.25)
+
+    # ── 6. 标题与图例 ──
+    fig.suptitle('实验组 vs 对照组 — 归一化对比 (对照组=1.0)',
+                 fontsize=14, fontweight='bold', fontfamily=CN_FONT_FAMILY, y=0.97)
+
+    ax.legend(loc='upper right', bbox_to_anchor=(1.25, 1.1),
+              frameon=True, prop={'family': CN_FONT_FAMILY, 'size': 10})
+
+    fig.subplots_adjust(top=0.88, bottom=0.10, left=0.08, right=0.92)
     return fig
 
 
@@ -291,52 +371,88 @@ def create_comparison_radar(comparison_data: Dict[str, Dict],
 # ══════════════════════════════════════════════════════════════════
 
 def create_attenuation_bar(comparison_data: Dict[str, Dict],
-                           figsize: tuple = (10, 5.5)) -> Optional[Figure]:
+                           figsize: tuple = None):
+    """生成衰减效率柱状图（对标参考图标准）。
+
+    策略：
+      1. 按 |atten_pct| 从大到小排序，截取最显著的 TOP 15
+      2. 从顶部向下排列（最大绝对值在最上面），符合阅读习惯
+      3. 正值=绿色=实验组更优；负值=红色=对照组更优
+      4. 数值标注放在条形末端，避免溢出
     """
-    生成衰减效率柱状图。
-    
-    Args:
-        comparison_data: {指标名: {'exp': float, 'ctrl': float, 'atten_pct': float, ...}}
-    """
-    items = {}
+    # ── 1. 提取并筛选 ──
+    items_raw = []
     for key, val in comparison_data.items():
         if isinstance(val, dict) and 'atten_pct' in val:
-            items[key[:18]] = val['atten_pct']
-    
-    if not items:
+            v = float(val['atten_pct'])
+            if np.isfinite(v):
+                items_raw.append((key, v))
+
+    if not items_raw:
         return None
-    
-    labels = list(items.keys())
-    values = list(items.values())
-    bar_colors = [COLORS['green'] if v > 0 else COLORS['accent'] for v in values]
-    
-    figsize = _constrain_figsize(figsize)
+
+    # ── 2. 排序 + TOP 15 截断 ──
+    items_raw.sort(key=lambda x: abs(x[1]), reverse=True)
+    items_raw = items_raw[:15]
+    # 再按数值本身排序，把最大正值放在顶部（默认 matplotlib barh 0 从底部，invert_yaxis 后 0 到顶部）
+    items_raw.sort(key=lambda x: x[1])  # 从小到大（底部为最小，顶部为最大）
+
+    labels = [k[:18] for k, _ in items_raw]
+    values = [v for _, v in items_raw]
+    n = len(values)
+
+    bar_colors = []
+    for v in values:
+        bar_colors.append(COLORS['green'] if v >= 0 else COLORS['red'])
+
+    # ── 3. 画布尺寸：每条 ~0.35 inch + 头部 1.2 inch ──
+    if figsize is None:
+        w = max(10.0, min(14.0, 8.0 + max(abs(v) for v in values) * 0.04))
+        h = max(5.0, min(9.0, 2.5 + n * 0.38))
+        figsize = (w, h)
+
     fig, ax = plt.subplots(figsize=figsize)
-    
-    bars = ax.barh(range(len(labels)), values, color=bar_colors,
-                   edgecolor='white', height=0.6)
-    
-    ax.set_yticks(range(len(labels)))
-    ax.set_yticklabels(labels, fontsize=9, fontfamily=CN_FONT_FAMILY)
-    ax.axvline(x=0, color='black', linewidth=0.8)
-    ax.axvline(x=10, color=COLORS['green'], linewidth=0.8, linestyle='--', alpha=0.4)
-    ax.axvline(x=-10, color=COLORS['accent'], linewidth=0.8, linestyle='--', alpha=0.4)
-    
+
+    bars = ax.barh(range(n), values, color=bar_colors,
+                   edgecolor='white', linewidth=0.8, height=0.65)
+
+    # ── 4. 坐标轴 ──
+    ax.set_yticks(range(n))
+    ax.set_yticklabels(labels, fontsize=10, fontfamily=CN_FONT_FAMILY)
+    ax.axvline(x=0, color='#333333', linewidth=1.0)
+    ax.set_xlabel('衰减率 (%)', fontsize=12, fontfamily=CN_FONT_FAMILY)
+
+    # ── 5. 数值标注（条形末端）──
+    vrange = max(abs(max(values)), abs(min(values)))
+    label_offset = vrange * 0.025 if vrange > 0 else 1.0
     for bar, val in zip(bars, values):
-        x_pos = bar.get_width() + (1.5 if val >= 0 else -1.5)
+        if val >= 0:
+            x_pos = val + label_offset
+            ha = 'left'
+        else:
+            x_pos = val - label_offset
+            ha = 'right'
         ax.text(x_pos, bar.get_y() + bar.get_height() / 2,
-                f'{val:+.1f}%', va='center', fontsize=8,
-                fontfamily=CN_FONT_FAMILY,
-                ha='left' if val >= 0 else 'right',
-                fontweight='bold')
-    
-    ax.set_xlabel('衰减率 (%)', fontsize=11, fontfamily=CN_FONT_FAMILY)
-    ax.set_title('实验组 vs 对照组 — 各指标衰减效率',
-                 fontsize=13, fontweight='bold', fontfamily=CN_FONT_FAMILY)
+                f'{val:+.1f}%', va='center', ha=ha,
+                fontsize=9, fontfamily=CN_FONT_FAMILY, fontweight='bold')
+
+    # ── 6. 标题（figure suptitle）与图例 ──
+    fig.suptitle('实验组 vs 对照组 — 各指标衰减效率',
+                 fontsize=14, fontweight='bold',
+                 fontfamily=CN_FONT_FAMILY, y=0.97)
+
     ax.invert_yaxis()
-    ax.grid(axis='x', alpha=0.2)
-    
-    fig.tight_layout()
+    ax.grid(axis='x', alpha=0.20, linestyle='-')
+
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor=COLORS['green'], label='Active 更优 (衰减率 > 0)'),
+        Patch(facecolor=COLORS['red'], label='Passive 更优 (衰减率 < 0)'),
+    ]
+    ax.legend(handles=legend_elements, loc='lower right',
+              prop={'family': CN_FONT_FAMILY, 'size': 10})
+
+    fig.subplots_adjust(top=0.89, bottom=0.10, left=0.22, right=0.96)
     return fig
 
 
@@ -345,70 +461,78 @@ def create_attenuation_bar(comparison_data: Dict[str, Dict],
 # ══════════════════════════════════════════════════════════════════
 
 def create_acceleration_waveform(channel_data_map: Dict[str, Dict],
-                                 exp_imus: List[str] = None,
-                                 ctrl_imus: List[str] = None,
-                                 figsize: tuple = (14, 8)) -> Optional[Figure]:
-    if exp_imus is None:
-        exp_imus = [k for k in channel_data_map.keys()
-                    if k.endswith('-1')][:3]
-    if ctrl_imus is None:
-        ctrl_imus = [k for k in channel_data_map.keys()
-                     if k.endswith('-2')][:3]
+                                 imu_names: List[str] = None,
+                                 figsize: tuple = None):
+    """生成三轴加速度时域波形（对标参考图标准）。
 
-    if not exp_imus and not ctrl_imus:
+    关键改进：每个 IMU 使用**不同的颜色**（不是同一颜色+不同透明度），
+    这样 3 条曲线可以被明确区分。布局为 3 行 × 1 列（X/Y/Z 轴）。
+    """
+    if imu_names is None:
+        imu_names = [k for k in channel_data_map.keys()
+                     if k.endswith('-1')][:3]
+
+    if not imu_names:
         return None
 
-    axes_keys = ['ax', 'ay', 'az']
-    axis_labels = ['X轴 (纵向) m/s²', 'Y轴 (侧向) m/s²', 'Z轴 (垂向) m/s²']
-    exp_colors = [COLORS['accent'], COLORS['primary'], COLORS['green']]
-    ctrl_colors = [COLORS['secondary'], COLORS['accent'], COLORS['purple']]
-    alphas = [0.85, 0.65, 0.5]
+    # ── 每个 IMU 分配一个独立的、高对比的颜色 ──
+    imu_colors = [COLORS['exp'], COLORS['ctrl'], COLORS['purple']]
+    imu_display_names = []
+    for name in imu_names:
+        imu_display_names.append(name.replace('_', ' ').replace('-1', ''))
 
-    figsize = _constrain_figsize(figsize)
+    axes_keys = ['ax', 'ay', 'az']
+    axis_labels = ['X轴 (纵向) m/s$^2$', 'Y轴 (侧向) m/s$^2$', 'Z轴 (垂向) m/s$^2$']
+
+    # ── 画布尺寸 ──
+    if figsize is None:
+        figsize = (15.0, 7.5)
+
     fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True)
 
+    # ── 收集所有子图的有效时间轴 ──
+    global_t = None
     for row, (axis_key, ylabel) in enumerate(zip(axes_keys, axis_labels)):
         ax = axes[row]
-        exp_color = exp_colors[row]
-        ctrl_color = ctrl_colors[row]
-
-        for i, (imu_name, alpha) in enumerate(zip(exp_imus, alphas)):
-            if i >= len(exp_imus):
-                break
+        plotted = False
+        for i, (imu_name, color, display) in enumerate(
+                zip(imu_names, imu_colors, imu_display_names)):
             data_dict = channel_data_map.get(imu_name, {})
             ch_data = data_dict.get(axis_key)
-            if ch_data is None:
+            if ch_data is None or len(ch_data) == 0:
                 continue
-            t_arr = data_dict.get('timestamps', np.arange(len(ch_data)))
+            t_arr = data_dict.get('timestamps',
+                                   np.arange(len(ch_data)) / data_dict.get('sample_rate', 512))
             if len(t_arr) != len(ch_data):
-                t_arr = np.linspace(0, len(ch_data) / 512, len(ch_data))
-            label = imu_name.split('_', 1)[1].rsplit('-', 1)[0] if '_' in imu_name else imu_name.replace('-1', '')
-            ax.plot(t_arr, ch_data, alpha=alpha, linewidth=0.8,
-                    label=f'实验组-{label}', color=exp_color)
+                t_arr = np.linspace(0, len(ch_data) / 512.0, len(ch_data))
+            # 降采样：超过 2 万点时抽稀（保持视觉清晰度）
+            max_points = 20000
+            if len(ch_data) > max_points:
+                step = len(ch_data) // max_points
+                t_arr = t_arr[::step]
+                ch_data = ch_data[::step]
 
-        for i, (imu_name, alpha) in enumerate(zip(ctrl_imus, alphas)):
-            if i >= len(ctrl_imus):
-                break
-            data_dict = channel_data_map.get(imu_name, {})
-            ch_data = data_dict.get(axis_key)
-            if ch_data is None:
-                continue
-            t_arr = data_dict.get('timestamps', np.arange(len(ch_data)))
-            if len(t_arr) != len(ch_data):
-                t_arr = np.linspace(0, len(ch_data) / 512, len(ch_data))
-            label = imu_name.split('_', 1)[1].rsplit('-', 1)[0] if '_' in imu_name else imu_name.replace('-2', '')
-            ax.plot(t_arr, ch_data, alpha=alpha, linewidth=0.8,
-                    label=f'对照组-{label}', color=ctrl_color, linestyle='--')
+            ax.plot(t_arr, ch_data, color=color, linewidth=1.2,
+                    label=display, alpha=0.92, solid_capstyle='round')
+            plotted = True
+            if global_t is None and len(t_arr) > 0:
+                global_t = t_arr
 
         ax.set_ylabel(ylabel, fontsize=10, fontfamily=CN_FONT_FAMILY)
-        ax.legend(loc='upper right', prop={'family': CN_FONT_FAMILY, 'size': 7}, ncol=3)
-        ax.grid(True, alpha=0.2)
+        ax.grid(True, alpha=0.20, linestyle='-')
+        ax.tick_params(axis='both', labelsize=9)
 
-    axes[0].set_title('三轴加速度时域波形 (实验组 vs 对照组)', fontsize=13,
-                      fontweight='bold', fontfamily=CN_FONT_FAMILY)
+    # ── 标题与图例 ──
+    fig.suptitle('三轴加速度时域波形 (实验组)', fontsize=15,
+                 fontweight='bold', fontfamily=CN_FONT_FAMILY, y=0.97)
+
     axes[-1].set_xlabel('时间 (s)', fontsize=11, fontfamily=CN_FONT_FAMILY)
 
-    fig.tight_layout()
+    # 图例放在顶部，避免遮挡曲线
+    axes[0].legend(loc='upper right', frameon=True, ncol=min(len(imu_names), 3),
+                   prop={'family': CN_FONT_FAMILY, 'size': 10})
+
+    fig.subplots_adjust(top=0.88, bottom=0.08, left=0.06, right=0.98, hspace=0.15)
     return fig
 
 
@@ -420,73 +544,101 @@ def create_srs_comparison(channel_data_map: Dict[str, Dict],
                           exp_imu: str, ctrl_imu: str,
                           location_name: str = "",
                           axis: str = 'X',
-                          figsize: tuple = (10, 4.5)) -> Optional[Figure]:
+                          figsize: tuple = None):
+    """生成 SRS 冲击响应谱对比（对标参考图标准）。
+
+    布局：
+      - axis='all' → 1 行 × 3 列（X/Y/Z 三列，同参考图 PSD 风格
+      - 单轴 → 1 行 × 1 列
+
+    使用 scipy.signal.lfilter 向量化递归计算。
     """
-    生成 SRS 冲击响应谱对比。
-    
-    Args:
-        channel_data_map: {imu_name: {channel: numpy_array}}
-        exp_imu: 实验组 IMU 名称
-        ctrl_imu: 对照组 IMU 名称
-        location_name: 位置名称
-        axis: 分析轴 ('X', 'Y', 'Z')
-    """
-    channel_key = {'X': 'ax', 'Y': 'ay', 'Z': 'az'}.get(axis.upper(), axis.lower())
-    
-    figsize = _constrain_figsize(figsize)
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    for label, imu, ls in [('实验组', exp_imu, '-'), ('对照组', ctrl_imu, '--')]:
-        data_dict = channel_data_map.get(imu, {})
-        ch_data = data_dict.get(channel_key)
-        if ch_data is None:
-            continue
-        
-        if 'timestamps' in data_dict:
-            t_arr = data_dict['timestamps']
-            fs = 1.0 / np.median(np.diff(t_arr)) if len(t_arr) > 1 else 512
+    from scipy.signal import lfilter
+
+    # ── 1. 轴列表 ──
+    if axis == 'all':
+        axes_list = ['X', 'Y', 'Z']
+    else:
+        axes_list = [axis.upper()]
+    n_axes = len(axes_list)
+
+    # ── 2. 画布尺寸 ──
+    if figsize is None:
+        if n_axes == 1:
+            figsize = (10.0, 4.5)
         else:
-            fs = 512
-        
-        # 简化 SRS 计算 (小波叠加法)
-        fn = np.logspace(np.log10(0.5), np.log10(100), 60)
-        Q = 10
-        zeta = 1 / (2 * Q)
-        dt = 1 / fs
-        
-        srs = np.zeros(len(fn))
-        acc = np.asarray(ch_data, dtype=np.float64)
-        
-        for i_f, f in enumerate(fn):
-            wn = 2 * np.pi * f
-            wd = wn * np.sqrt(1 - zeta ** 2)
-            E_val = np.exp(-zeta * wn * dt)
-            Ev = E_val * np.sin(wd * dt)
-            Ec = E_val * np.cos(wd * dt)
-            b1 = 2 * Ec
-            b2 = -E_val ** 2
-            a0 = 1 - wn * dt * E_val * wd ** (-1) * np.sqrt(1 - zeta ** 2) ** (-1) * Ev
-            a1 = a0 - E_val * (Ev / (wd * dt) + Ec)
-            r = np.zeros(len(acc))
-            for j in range(2, len(acc)):
-                r[j] = b1 * r[j-1] + b2 * r[j-2] + a0 * acc[j] + a1 * acc[j-1]
-            srs[i_f] = np.max(np.abs(r))
-        
-        style = {'color': COLORS['exp'] if '实验' in label else COLORS['ctrl'],
-                 'linestyle': ls, 'linewidth': 1.5}
-        ax.loglog(fn, srs / 9.81, label=label, **style)
-    
-    ax.set_xlabel('频率 (Hz)', fontsize=10, fontfamily=CN_FONT_FAMILY)
-    ax.set_ylabel('SRS (g)', fontsize=10, fontfamily=CN_FONT_FAMILY)
-    ax.set_title(f'{location_name} {axis}轴 冲击响应谱' if location_name
-                 else f'{axis}轴 SRS冲击响应谱',
-                 fontsize=11, fontfamily=CN_FONT_FAMILY)
-    ax.legend(prop={'family': CN_FONT_FAMILY, 'size': 8})
-    ax.grid(True, alpha=0.25, which='both')
-    
-    fig.suptitle(f'冲击响应谱(SRS)对比 — Q=10', fontsize=13,
-                 fontweight='bold', fontfamily=CN_FONT_FAMILY)
-    fig.tight_layout()
+            figsize = (16.0, 5.0)
+
+    fig, axes_arr = plt.subplots(1, n_axes, figsize=figsize, squeeze=False)
+    axes_arr = axes_arr[0]  # 展开成一维，1 行
+
+    # ── 3. 固定参数 ──
+    fn = np.logspace(np.log10(0.5), np.log10(100.0), 60)
+    Q = 10
+    zeta = 1.0 / (2.0 * Q)
+
+    # ── 4. 逐轴计算与绘制 ──
+    line_styles = {
+        '实验组': {'color': COLORS['exp'], 'ls': '-', 'lw': 1.8},
+        '对照组': {'color': COLORS['ctrl'], 'ls': '--', 'lw': 1.6},
+    }
+
+    for col, ax_name in enumerate(axes_list):
+        ax = axes_arr[col]
+        channel_key = f"a{ax_name.lower()}"
+
+        for label, imu in [('实验组', exp_imu), ('对照组', ctrl_imu)]:
+            data_dict = channel_data_map.get(imu, {})
+            ch_data = data_dict.get(channel_key)
+            if ch_data is None or len(ch_data) == 0:
+                continue
+
+            fs = data_dict.get('sample_rate', 0)
+            if not fs and 'timestamps' in data_dict:
+                t_arr = data_dict['timestamps']
+                fs = 1.0 / np.median(np.diff(t_arr)) if len(t_arr) > 1 else 512
+            if not fs:
+                fs = 512
+
+            dt = 1.0 / fs
+            acc = np.asarray(ch_data, dtype=np.float64)
+            srs = np.zeros(len(fn))
+
+            for i_f, f in enumerate(fn):
+                wn = 2.0 * np.pi * f
+                wd = wn * np.sqrt(1.0 - zeta ** 2)
+                E = np.exp(-zeta * wn * dt)
+                a_coeff = [1.0, -2.0 * E * np.cos(wd * dt), E * E]
+                A_val = 1.0 - wn * dt
+                B_val = wn * dt * E * np.sin(wd * dt) / wd
+                b_coeff = [A_val * B_val, A_val * (E * np.cos(wd * dt) - 1.0) - B_val]
+                filtered = lfilter(b_coeff, a_coeff, acc)
+                srs[i_f] = np.max(np.abs(filtered))
+
+            ls = line_styles[label]
+            lab = label if col == 0 else None  # 只在第 1 个轴加 legend
+            ax.loglog(fn, srs / 9.81, color=ls['color'],
+                      linestyle=ls['ls'], linewidth=ls['lw'],
+                      label=lab)
+
+        ax.set_title(f'{ax_name}轴 SRS', fontsize=11, fontfamily=CN_FONT_FAMILY)
+        ax.set_xlabel('频率 (Hz)', fontsize=10, fontfamily=CN_FONT_FAMILY)
+        if col == 0:
+            ax.set_ylabel(f'SRS (g)', fontsize=10, fontfamily=CN_FONT_FAMILY)
+        ax.grid(True, alpha=0.20, linestyle='-')
+        ax.tick_params(axis='both', labelsize=9)
+        if col == 0:
+            ax.legend(loc='upper right', frameon=True,
+                     prop={'family': CN_FONT_FAMILY, 'size': 10})
+
+    # ── 5. Figure 标题 ──
+    title = f'冲击响应谱(SRS)对比 — Q=10'
+    if location_name:
+        title += f'  |  {location_name}'
+    fig.suptitle(title, fontsize=15, fontweight='bold',
+                 fontfamily=CN_FONT_FAMILY, y=0.98)
+
+    fig.subplots_adjust(top=0.88, bottom=0.12, left=0.07, right=0.98, wspace=0.28)
     return fig
 
 

@@ -59,7 +59,7 @@ class HybridBehaviorClassifier:
         self._resolver = MultiBehaviorResolver()
 
         # ── E1: lightgbm 可用性检查 + 优雅降级 ──
-        self._ml_available = _lightgbm_available and self._check_lightgbm_runtime()
+        self._ml_available = _lightgbm_available
 
         if self._ml_available:
             self._ml_classifier = LightGBMClassifier()
@@ -77,10 +77,11 @@ class HybridBehaviorClassifier:
                 self._ml_available = False
         else:
             self._ml_classifier = None
-            self._logger.warning(
-                "lightgbm 未安装或不可用。安装方法: pip install lightgbm==4.3.0\n"
-                "当前将使用规则+统计模式 (准确率 ~75%, 22种事件)"
-            )
+            if not hasattr(HybridBehaviorClassifier, '_ml_warned'):
+                HybridBehaviorClassifier._ml_warned = True
+                self._logger.info(
+                    "lightgbm 未安装，使用规则+统计模式 (准确率 ~75%, 22种事件)"
+                )
 
         # ── F3: 置信度精炼器集成 (消除孤岛模块) ──
         self._confidence_refiner = None
@@ -93,15 +94,6 @@ class HybridBehaviorClassifier:
                 self._logger.info("置信度精炼器已集成 (EventConfidenceRefiner)")
             except Exception as e:
                 self._logger.warning(f"置信度精炼器加载失败: {e}")
-
-    @staticmethod
-    def _check_lightgbm_runtime() -> bool:
-        """E1: 运行时检查 lightgbm 是否可用"""
-        try:
-            import lightgbm
-            return True
-        except ImportError:
-            return False
 
     def classify(self, event: ManeuverEvent, features: Optional[FrameFeatures] = None) -> ManeuverEvent:
         """分类入口 — 五源融合 (Phase 2)

@@ -10,6 +10,9 @@ import numpy as np
 from typing import Dict, List, Optional
 import logging
 import time
+import os
+import tempfile
+import atexit
 
 from .shaker_models import (
     ShakerData, ProcessedShakerData, AnalysisResult,
@@ -26,6 +29,7 @@ from .operators import (
     SEATOperator, CrestFactorOperator, TransferFunctionOperator,
     PSDNormalizedOperator, VDVOperator, MTVVOperator
 )
+from .shaker_charts import ShakerChartContext, ShakerChartGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -301,8 +305,145 @@ class ShakerAnalysisPipeline:
                     resolution=psd_data['resolution'],
                 )
 
+        # ── 专家图表生成 (所有图表都在后台线程中完成) ──
+        try:
+            result.chart_paths = self._generate_charts(data, processed, result)
+        except Exception as e:
+            logger.warning(f"图表生成失败 (非致命): {e}")
+
         return result
+
+    def _generate_charts(self, data: ShakerData, processed: ProcessedShakerData,
+                          result: AnalysisResult) -> Dict[str, str]:
+        """构建 ShakerChartContext 并生成 16 幅专家图表"""
+
+        # ── 短名称映射工具 ──
+        def _short_loc(loc_name: str) -> str:
+            return {'platform': 'platform', 'r_point': 'r', 't8': 't8'}[loc_name]
+
+        def _chart_loc(loc_name: str) -> str:
+            return {'platform': 'Platform', 'r_point': 'R', 't8': 'T8'}[loc_name]
+
+        def _wtype_for(loc_name: str, ax: str) -> str:
+            """获取加权类型: r_point→seat, t8→backrest"""
+            std_loc = {'r_point': 'seat', 't8': 'backrest', 'platform': 'platform'}[loc_name]
+            return self.filter.get_weighting_for_channel(std_loc, ax).capitalize()
+
+        # ── 构建 detrended (去直流原始信号) — 同时提供大/小写键 ──
+        detrended = {}
+        for loc_name in ['platform', 'r_point', 't8']:
+            loc_raw = getattr(processed, f'{loc_name}_raw')
+            long_pfx = _chart_loc(loc_name)     # 'Platform', 'R', 'T8'
+            short_pfx = _short_loc(loc_name)    # 'platform', 'r', 't8'
+            for ax in ['x', 'y', 'z']:
+                val = getattr(loc_raw, ax)
+                detrended[f'{long_pfx}_{ax.lower()}'] = val
+                detrended[f'{short_pfx}_{ax.lower()}'] = val
+
+        # ── 构建 weighted (加权后时域信号) ──
+        weighted_signals = {}
+        for loc_name in ['platform', 'r_point', 't8']:
+            loc_weighted = getattr(processed, f'{loc_name}_weighted')
+            short_pfx = _short_loc(loc_name)
+            for ax in ['x', 'y', 'z']:
+                wtype = _wtype_for(loc_name, ax)
+                signal_w = getattr(loc_weighted[wtype], ax)
+                weighted_signals[f'{short_pfx}_{ax}'] = signal_w
+
+        # ── seat_factors (格式: R_z_Wk, T8_x_Wc 等) ──
+        seat_factors_chart = {}
+        for raw_key, sf_val in result.seat.seat_values.items():
+            loc, ax = raw_key.rsplit('_', 1)                # "r_point_z" → ("r_point","z")
+            loc_code = _chart_loc(loc).upper()              # "R_point" → "R" (取首字母)
+            if loc == 'r_point':
+                loc_code = 'R'
+            elif loc == 't8':
+                loc_code = 'T8'
+            wtype = _wtype_for(loc, ax).capitalize()
+            chart_key = f'{loc_code}_{ax}_{wtype}'
+            seat_factors_chart[chart_key] = sf_val
+
+        # ── tf_data → {name: (freq, H, coh)} ──
+        tf_data = {}
+        for path_key, tr in result.transfer_functions.items():
+            parts = path_key.rsplit('_', 1)
+            if len(parts) == 2:
+                loc_code = _chart_loc(parts[0]).upper()
+                if parts[0] == 'r_point':
+                    loc_code = 'R'
+                elif parts[0] == 't8':
+                    loc_code = 'T8'
+                tf_data[f'{loc_code}_{parts[1]}'] = (tr.frequencies, tr.magnitude, tr.coherence)
+
+        # ── psd_data → {name: (freq, psd, resolution)} — 仅用短键 ──
+        psd_data = {}
+        for key, pr in result.psd.items():
+            parts = key.rsplit('_', 1)
+            short_key = f'{_short_loc(parts[0])}_{parts[1]}'
+            psd_data[short_key] = (pr.frequencies, pr.psd, pr.resolution)
+
+        # ── crest_factors / vdv_vals — 仅用短键 ──
+        crest_factors = {}
+        vdv_vals = {}
+        for ch_key, td in result.time_domain.items():
+            parts = ch_key.rsplit('_', 1)
+            short_key = f'{_short_loc(parts[0])}_{parts[1]}'
+            crest_factors[short_key] = td.crest_factor
+            vdv_vals[short_key] = td.vdv
+
+        # ── weighted_rms ──
+        weighted_rms = dict(result.weighted_rms)
+
+        # ── resonance_peaks → {name: {freq, gain, coherence}} ──
+        resonance_peaks = {}
+        for path_key, rs in result.resonance_summary.items():
+            parts = path_key.rsplit('_', 1)
+            if len(parts) == 2:
+                loc_code = _chart_loc(parts[0]).upper()
+                if parts[0] == 'r_point':
+                    loc_code = 'R'
+                elif parts[0] == 't8':
+                    loc_code = 'T8'
+                resonance_peaks[f'{loc_code}_{parts[1]}'] = {
+                    'freq': rs.get('freq', 0),
+                    'gain': rs.get('gain', 0),
+                    'coherence': rs.get('coherence', 0),
+                }
+
+        # ── 输出目录 (临时) ──
+        output_dir = tempfile.mkdtemp(prefix='shaker_charts_')
+        atexit.register(lambda d=output_dir: _cleanup_dir(d))
+
+        # ── 构建上下文生成图表 ──
+        ctx = ShakerChartContext(
+            fs=data.fs,
+            time=data.time,
+            detrended=detrended,
+            weighted=weighted_signals,
+            seat_factors=seat_factors_chart,
+            weighted_rms=weighted_rms,
+            vdv_vals=vdv_vals,
+            tf_data=tf_data,
+            psd_data=psd_data,
+            crest_factors=crest_factors,
+            resonance_peaks=resonance_peaks,
+            output_dir=output_dir,
+        )
+
+        generator = ShakerChartGenerator(ctx)
+        chart_paths = generator.generate_all()
+        return chart_paths
 
     def _check_cancel(self):
         if self._cancel_requested:
             raise InterruptedError("分析已取消")
+
+
+def _cleanup_dir(dir_path: str):
+    """清理临时图表输出目录"""
+    try:
+        import shutil
+        if os.path.isdir(dir_path):
+            shutil.rmtree(dir_path, ignore_errors=True)
+    except Exception:
+        pass

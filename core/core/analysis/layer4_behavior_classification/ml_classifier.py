@@ -151,7 +151,7 @@ class LightGBMClassifier:
 
         # 3. 无数据: 创建空白模型 (推理时回退到规则引擎)
         self._build_model()
-        logger.warning("无训练数据，LightGBM 模型未训练，将回退到规则引擎")
+        logger.info("无训练数据，LightGBM 模型未训练，将回退到规则引擎")
         return False
 
     def _validate_model_types(self, meta: Dict) -> bool:

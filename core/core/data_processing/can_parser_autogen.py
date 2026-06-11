@@ -25,7 +25,7 @@ class can_parser_CustomParser:
 
     def _init_patterns(self):
         """初始化解析模式"""
-                self.pattern_0 = re.compile(r"CSV")
+        self.pattern_0 = re.compile(r"CSV")
 
     def set_parse_callback(self, callback):
         """设置解析回调"""
@@ -86,9 +86,9 @@ class can_parser_CustomParser:
         
         return pd.DataFrame(records)
 
-    def def validate_data(self, data: Dict[str, Any]) -> bool:
+    def validate_data(self, data: Dict[str, Any]) -> bool:
         """验证数据合法性"""
-                return True
+        return True
 
     def get_stats(self) -> Dict[str, int]:
         """获取解析统计"""

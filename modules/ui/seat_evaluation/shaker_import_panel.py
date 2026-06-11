@@ -4,28 +4,34 @@
 from PySide6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
     QListWidget, QListWidgetItem, QLabel, QRadioButton, QButtonGroup,
-    QFileDialog, QMessageBox
+    QFileDialog, QMessageBox, QWidget
 )
 from PySide6.QtCore import Signal, Qt
 
 
-class ShakerImportPanel(QGroupBox):
+class ShakerImportPanel(QWidget):
     """数据导入面板 — 选择文件/文件夹，管理已加载数据"""
     
     files_loaded = Signal(list)       # list of filepaths
     start_analysis = Signal(str)      # mode: "single" or "batch"
     
     def __init__(self, parent=None):
-        super().__init__("数据导入", parent)
+        super().__init__(parent)
         self._loaded_files = []       # list of filepath strings
         self._init_ui()
         self._connect_signals()
     
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # ── 第1行: 路径选择 ──
+        # ═══ 合并卡片: 数据导入 ═══
+        card = QGroupBox("数据导入")
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(6)
+
+        # 路径选择
         path_layout = QHBoxLayout()
         self._path_edit = QLineEdit()
         self._path_edit.setReadOnly(True)
@@ -40,37 +46,26 @@ class ShakerImportPanel(QGroupBox):
         path_layout.addWidget(self._btn_select_file)
         path_layout.addWidget(self._btn_select_folder)
         path_layout.addWidget(self._btn_clear_path)
-        main_layout.addLayout(path_layout)
+        card_layout.addLayout(path_layout)
 
-        # ── 第2行: 文件列表 + 检测信息 ──
+        # 文件列表
         self._file_list_widget = QListWidget()
         self._file_list_widget.setMinimumHeight(60)
         self._file_list_widget.setMaximumHeight(100)
-        main_layout.addWidget(self._file_list_widget)
+        card_layout.addWidget(self._file_list_widget)
 
+        # 信息标签 + 移除选中按钮
+        info_row = QHBoxLayout()
         self._info_label = QLabel("采样率: --  时长: --  通道数: --")
         self._info_label.setStyleSheet("color: #666; font-size: 11px; padding: 1px;")
-        main_layout.addWidget(self._info_label)
-
-        # ── 第3行: 全选/反选/删除 | 模式 | 开始/停止 (合并为一行) ──
-        action_row = QHBoxLayout()
-        action_row.setSpacing(8)
-
-        self._btn_select_all = QPushButton("全选")
-        self._btn_invert_selection = QPushButton("反选")
+        info_row.addWidget(self._info_label, 1)
         self._btn_remove_selected = QPushButton("移除选中")
-        action_row.addWidget(self._btn_select_all)
-        action_row.addWidget(self._btn_invert_selection)
-        action_row.addWidget(self._btn_remove_selected)
+        info_row.addWidget(self._btn_remove_selected)
+        card_layout.addLayout(info_row)
 
-        action_row.addSpacing(12)
-
-        # 分隔线
-        sep = QLabel("|")
-        sep.setStyleSheet("color: #ccc; font-size: 14px;")
-        action_row.addWidget(sep)
-        action_row.addSpacing(6)
-
+        # 模式选择 + 分析按钮
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(8)
         self._radio_single = QRadioButton("单工况")
         self._radio_batch = QRadioButton("多工况对比")
         self._radio_single.setChecked(True)
@@ -79,27 +74,25 @@ class ShakerImportPanel(QGroupBox):
         self._mode_group.addButton(self._radio_single, 0)
         self._mode_group.addButton(self._radio_batch, 1)
 
-        action_row.addWidget(self._radio_single)
-        action_row.addWidget(self._radio_batch)
-
-        action_row.addStretch()
+        bottom_row.addWidget(self._radio_single)
+        bottom_row.addWidget(self._radio_batch)
+        bottom_row.addStretch()
 
         self._btn_start = QPushButton("开始分析")
         self._btn_start.setStyleSheet("font-weight: bold; min-width: 80px;")
         self._btn_stop = QPushButton("停止")
         self._btn_stop.setEnabled(False)
         self._btn_stop.setStyleSheet("min-width: 60px;")
-        action_row.addWidget(self._btn_start)
-        action_row.addWidget(self._btn_stop)
+        bottom_row.addWidget(self._btn_start)
+        bottom_row.addWidget(self._btn_stop)
+        card_layout.addLayout(bottom_row)
 
-        main_layout.addLayout(action_row)
+        main_layout.addWidget(card)
     
     def _connect_signals(self):
         self._btn_select_file.clicked.connect(self._on_select_file)
         self._btn_select_folder.clicked.connect(self._on_select_folder)
         self._btn_clear_path.clicked.connect(self._on_clear)
-        self._btn_select_all.clicked.connect(self._on_select_all)
-        self._btn_invert_selection.clicked.connect(self._on_invert_selection)
         self._btn_remove_selected.clicked.connect(self._on_remove_selected)
         self._btn_start.clicked.connect(self._on_start)
         self._btn_stop.clicked.connect(self._on_stop)
@@ -170,21 +163,6 @@ class ShakerImportPanel(QGroupBox):
         self._loaded_files.clear()
         self.set_info()
         self.files_loaded.emit([])
-    
-    def _on_select_all(self):
-        for i in range(self._file_list_widget.count()):
-            item = self._file_list_widget.item(i)
-            if item:
-                item.setCheckState(Qt.CheckState.Checked)
-    
-    def _on_invert_selection(self):
-        for i in range(self._file_list_widget.count()):
-            item = self._file_list_widget.item(i)
-            if item:
-                current = item.checkState()
-                item.setCheckState(
-                    Qt.CheckState.Unchecked if current == Qt.CheckState.Checked else Qt.CheckState.Checked
-                )
     
     def _on_remove_selected(self):
         to_remove = []

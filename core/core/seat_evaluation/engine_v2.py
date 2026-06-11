@@ -1218,14 +1218,18 @@ class MultiChannelSeatEvaluationEngine(QObject):
             return {'error': str(e)}
 
     def _build_contrast_profile(self, exp_profile: Dict, ctrl_profile: Dict,
-                                location_id: str) -> Dict[str, Any]:
+                                location_id: str,
+                                exp_metrics: Optional[Dict[str, float]] = None,
+                                ctrl_metrics: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
         """
-        构建两组对照剖面差量（v3.0）
+        构建两组对照剖面差量（v3.1 — 全指标对比）
 
         Args:
             exp_profile: 实验组剖面（-1组）
             ctrl_profile: 对照组剖面（-2组）
             location_id: 位置ID
+            exp_metrics: 实验组全部指标 (v3.1新增)
+            ctrl_metrics: 对照组全部指标 (v3.1新增)
 
         Returns:
             对照剖面字典，含各维度差量
@@ -1234,6 +1238,9 @@ class MultiChannelSeatEvaluationEngine(QObject):
 
         def _safe_delta(e_val, c_val, default=0.0):
             if isinstance(e_val, (int, float)) and isinstance(c_val, (int, float)):
+                # 跳过无效值（-1.0 表示数据不足）
+                if e_val == METRIC_INSUFFICIENT_DATA or c_val == METRIC_INSUFFICIENT_DATA:
+                    return {'exp': e_val, 'ctrl': c_val, 'delta_pct': None, 'abs_diff': None}
                 denominator = max(abs(e_val), abs(c_val), 1e-6)
                 delta = (e_val - c_val) / denominator * 100
                 return {
@@ -1242,7 +1249,7 @@ class MultiChannelSeatEvaluationEngine(QObject):
                     'delta_pct': round(delta, 1),
                     'abs_diff': round(e_val - c_val, 4),
                 }
-            return {'exp': e_val, 'ctrl': c_val, 'delta_pct': 0.0, 'abs_diff': 0.0}
+            return {'exp': e_val, 'ctrl': c_val, 'delta_pct': None, 'abs_diff': None}
 
         mag_e = (exp_profile or {}).get('magnitude', {})
         mag_c = (ctrl_profile or {}).get('magnitude', {})
@@ -1255,6 +1262,21 @@ class MultiChannelSeatEvaluationEngine(QObject):
             c_rms = (mag_c.get(axis, {}) or {}).get('rms')
             if e_rms is not None or c_rms is not None:
                 mag_contrast[f'{axis}_rms'] = _safe_delta(e_rms, c_rms)
+
+        # v3.1: 纳入全部计算指标到 magnitude 对比
+        if exp_metrics and ctrl_metrics:
+            all_metric_keys = set(exp_metrics.keys()) | set(ctrl_metrics.keys())
+            # 排除已处理的剖面维度键和状态键
+            for key in sorted(all_metric_keys):
+                if key in mag_contrast:
+                    continue
+                if key.endswith('_status') or key.endswith('_error'):
+                    continue
+                e_val = exp_metrics.get(key)
+                c_val = ctrl_metrics.get(key)
+                if e_val is not None or c_val is not None:
+                    mag_contrast[key] = _safe_delta(e_val, c_val)
+
         contrast['magnitude'] = mag_contrast
 
         freq_e = (exp_profile or {}).get('frequency', {})

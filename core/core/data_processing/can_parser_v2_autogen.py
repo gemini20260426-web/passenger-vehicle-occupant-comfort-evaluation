@@ -25,7 +25,7 @@ class can_parser_v2_AutoGenParser:
 
     def _init_patterns(self):
         """初始化解析模式"""
-                self.pattern_0 = re.compile(r"d:\UI重构_全量备份_20250824_233403\徐宁数据\2026_05_07_180932_ID0001")
+        self.pattern_0 = re.compile(r"d:\UI重构_全量备份_20250824_233403\徐宁数据\2026_05_07_180932_ID0001")
         self.pattern_1 = re.compile(r"CSV")
 
     def set_parse_callback(self, callback):
@@ -87,9 +87,9 @@ class can_parser_v2_AutoGenParser:
         
         return pd.DataFrame(records)
 
-    def def validate_data(self, data: Dict[str, Any]) -> bool:
+    def validate_data(self, data: Dict[str, Any]) -> bool:
         """验证数据合法性"""
-                return True
+        return True
 
     def get_stats(self) -> Dict[str, int]:
         """获取解析统计"""

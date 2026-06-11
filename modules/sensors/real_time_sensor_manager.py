@@ -411,9 +411,9 @@ class RealTimeSensorManager:
                 # 等待下次更新
                 time.sleep(self.update_interval)
                 
-                    except Exception as e:
-            logger.error(f"❌ 数据采集循环错误: {e}")
-            time.sleep(1.0)  # 错误时等待1秒
+            except Exception as e:
+                logger.error(f"❌ 数据采集循环错误: {e}")
+                time.sleep(1.0)  # 错误时等待1秒
     
     def _assess_data_quality(self, sensor_type: str, data: dict) -> str:
         """🚨 评估数据质量"""
@@ -887,71 +887,6 @@ class SimulatedWheelSpeed:
         
         return {
             'speed': base_speed + speed_variation,
-            'rpm': (base_speed + speed_variation) * 100,  # 简化的RPM计算
-            'wheel': int(time_offset * 10) % 100,  # 模拟脉冲计数
-            'timestamp': current_time
-        }
-
-
-if __name__ == "__main__":
-    # 测试代码
-    logging.basicConfig(level=logging.INFO)
-    
-    sensor_manager = RealTimeSensorManager()
-    sensor_manager.start_monitoring()
-    
-    try:
-        while True:
-            data = sensor_manager.get_latest_data()
-            print(f"📊 实时数据: {json.dumps(data, indent=2, ensure_ascii=False)}")
-            time.sleep(1)
-    except KeyboardInterrupt:
-        sensor_manager.stop_monitoring()
-        print("\n👋 测试结束")
-            'rpm': (base_speed + speed_variation) * 100,  # 简化的RPM计算
-            'wheel': int(time_offset * 10) % 100,  # 模拟脉冲计数
-            'timestamp': current_time
-        }
-
-
-if __name__ == "__main__":
-    # 测试代码
-    logging.basicConfig(level=logging.INFO)
-    
-    sensor_manager = RealTimeSensorManager()
-    sensor_manager.start_monitoring()
-    
-    try:
-        while True:
-            data = sensor_manager.get_latest_data()
-            print(f"📊 实时数据: {json.dumps(data, indent=2, ensure_ascii=False)}")
-            time.sleep(1)
-    except KeyboardInterrupt:
-        sensor_manager.stop_monitoring()
-        print("\n👋 测试结束")
-
-            'rpm': (base_speed + speed_variation) * 100,  # 简化的RPM计算
-            'wheel': int(time_offset * 10) % 100,  # 模拟脉冲计数
-            'timestamp': current_time
-        }
-
-
-if __name__ == "__main__":
-    # 测试代码
-    logging.basicConfig(level=logging.INFO)
-    
-    sensor_manager = RealTimeSensorManager()
-    sensor_manager.start_monitoring()
-    
-    try:
-        while True:
-            data = sensor_manager.get_latest_data()
-            print(f"📊 实时数据: {json.dumps(data, indent=2, ensure_ascii=False)}")
-            time.sleep(1)
-    except KeyboardInterrupt:
-        sensor_manager.stop_monitoring()
-        print("\n👋 测试结束")
-
             'rpm': (base_speed + speed_variation) * 100,  # 简化的RPM计算
             'wheel': int(time_offset * 10) % 100,  # 模拟脉冲计数
             'timestamp': current_time

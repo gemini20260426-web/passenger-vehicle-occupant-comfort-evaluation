@@ -29,48 +29,10 @@ class AnalysisResultCache:
                 'data_output'
             )
             os.makedirs(output_dir, exist_ok=True)
-            
-            # 查找已有的分析缓存文件，优先复用最近修改的（防止残留旧事件）
-            import glob
-            cache_files = glob.glob(os.path.join(output_dir, 'analysis_results_*.db'))
-            if cache_files:
-                best_candidate = None
-                best_mtime = 0
-                best_event_count = 0
-                best_fr_count = 0
-                
-                for candidate in cache_files:
-                    try:
-                        size = os.path.getsize(candidate)
-                        if size < 8192:
-                            continue
-                        mtime = os.path.getmtime(candidate)
-                        # 检查是否有数据
-                        conn = sqlite3.connect(candidate)
-                        event_row = conn.execute("SELECT COUNT(*) FROM behavior_events").fetchone()
-                        fr_row = conn.execute("SELECT COUNT(*) FROM analysis_results").fetchone()
-                        conn.close()
-                        
-                        event_count = event_row[0] if event_row else 0
-                        fr_count = fr_row[0] if fr_row else 0
-                        
-                        # 优先选择最近修改的文件，修改时间相同则选事件数多的
-                        if mtime > best_mtime or (mtime == best_mtime and event_count > best_event_count):
-                            best_mtime = mtime
-                            best_event_count = event_count
-                            best_fr_count = fr_count
-                            best_candidate = candidate
-                    except Exception:
-                        continue
-                
-                if best_candidate:
-                    db_path = best_candidate
-                    logger.info(f"复用已有分析缓存: {db_path}, {best_event_count}个事件, {best_fr_count}条FrameResult, mtime={best_mtime}")
-            
-            # 如果没有找到合适的已有缓存，创建新的
-            if db_path is None:
-                db_path = os.path.join(output_dir, f'analysis_results_{int(time.time())}.db')
-                logger.info(f"创建新分析缓存: {db_path}")
+            # 始终创建新缓存文件，不复用旧缓存
+            # 旧缓存事件仅在用户显式选择 SQLite 缓存模式时通过 load_existing() 加载
+            db_path = os.path.join(output_dir, f'analysis_results_{int(time.time())}.db')
+            logger.info(f"创建新分析缓存: {db_path}")
 
         self.db_path = db_path
         self._lock = threading.Lock()
