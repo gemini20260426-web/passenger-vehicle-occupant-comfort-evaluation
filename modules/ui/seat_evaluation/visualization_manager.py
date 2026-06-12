@@ -77,12 +77,12 @@ class ChartStyle:
 
     # ── 字体 (绝对点数, 基准为7.5英寸卡片) ──
     FONT_SIZE = 9
-    TITLE_SIZE = 10          # 子图标题
+    TITLE_SIZE = 10          # 子图标题 (统一为10pt)
     LABEL_SIZE = 9           # 坐标轴标签
     TICK_SIZE = 8            # 刻度标签
     LEGEND_SIZE = 7.5        # 图例
     ANNOT_SIZE = 7           # 标注
-    SUPTITLE_SIZE = 12       # 总标题
+    SUPTITLE_SIZE = 10       # 总标题 (统一为10pt)
 
     # ── 导出图表字体缩放 (相对于卡片基准) ──
     EXPORT_FONT_SCALE = 1.3  # 导出图表 (16-18英寸) 字体放大系数
@@ -277,20 +277,20 @@ class VisualizationManager:
         ax1.plot(t, sw[:, 1], color=ChartStyle.C_EXP, linewidth=1.5)
         ax1.set_ylabel('车速 (km/h)', fontsize=ChartStyle.LABEL_SIZE)
         ax1.grid(alpha=0.3)
-        ax1.set_title('车辆速度', fontsize=ChartStyle.TITLE_SIZE)
+        ax1.set_title('车辆速度', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
 
         ax2.plot(t, sw[:, 2], color=ChartStyle.C_PURPLE, linewidth=1.5)
         ax2.set_ylabel('方向盘转角 (°)', fontsize=ChartStyle.LABEL_SIZE)
         ax2.grid(alpha=0.3)
-        ax2.set_title('方向盘转角', fontsize=ChartStyle.TITLE_SIZE)
+        ax2.set_title('方向盘转角', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
 
-        ax3.plot(t, exp_head[:, 2], color=self.colors['exp'], linewidth=0.8, alpha=0.8, label='Active')
-        ax3.plot(t, ctrl_head[:, 2], color=self.colors['ctrl'], linewidth=0.8, alpha=0.8, label='Passive')
+        ax3.plot(t, exp_head[:, 2], color=self.colors['exp'], linewidth=0.8, alpha=0.8, label='实验组')
+        ax3.plot(t, ctrl_head[:, 2], color=self.colors['ctrl'], linewidth=0.8, alpha=0.8, label='对照组')
         ax3.set_ylabel('Ay (m/s$^2$)', fontsize=ChartStyle.LABEL_SIZE)
         ax3.set_xlabel('时间 (s)', fontsize=ChartStyle.LABEL_SIZE)
         ax3.grid(alpha=0.3)
         ax3.legend()
-        ax3.set_title('头部横向加速度', fontsize=ChartStyle.TITLE_SIZE)
+        ax3.set_title('头部横向加速度', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
 
         # 事件数 > 30 时截断并标注
         t_max = t[-1] if len(t) > 0 else 1e6
@@ -325,10 +325,10 @@ class VisualizationManager:
             x = np.arange(len(e_vals))
             width = 0.35
             
-            ax.bar(x - width/2, e_vals, width, label='Active', color=self.colors['exp'])
-            ax.bar(x + width/2, c_vals, width, label='Passive', color=self.colors['ctrl'])
+            ax.bar(x - width/2, e_vals, width, label='实验组', color=self.colors['exp'])
+            ax.bar(x + width/2, c_vals, width, label='对照组', color=self.colors['ctrl'])
             
-            ax.set_title(f'{axis}轴 每事件RMS对比', fontsize=ChartStyle.TITLE_SIZE)
+            ax.set_title(f'{axis}轴 每事件RMS对比', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
             ax.set_xlabel('事件序号', fontsize=ChartStyle.LABEL_SIZE)
             ax.set_ylabel('RMS (m/s$^2$)', fontsize=ChartStyle.LABEL_SIZE)
             ax.legend()
@@ -362,12 +362,12 @@ class VisualizationManager:
             if len(f) == 0 or len(exp_psd) == 0 or len(ctrl_psd) == 0:
                 continue
                 
-            ax.semilogy(f, exp_psd, color=self.colors['exp'], label='Active', linewidth=1.2)
-            ax.semilogy(f, ctrl_psd, color=self.colors['ctrl'], label='Passive', linewidth=1.2)
+            ax.semilogy(f, exp_psd, color=self.colors['exp'], label='实验组', linewidth=1.2)
+            ax.semilogy(f, ctrl_psd, color=self.colors['ctrl'], label='对照组', linewidth=1.2)
             ax.set_xlim(0.1, 80)
             ax.set_xlabel('频率 (Hz)', fontsize=ChartStyle.LABEL_SIZE)
             ax.set_ylabel('PSD (m²/s⁴/Hz)', fontsize=ChartStyle.LABEL_SIZE)
-            ax.set_title(f'{axis}轴 功率谱密度', fontsize=ChartStyle.TITLE_SIZE)
+            ax.set_title(f'{axis}轴 功率谱密度', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
             ax.legend()
             ax.grid(alpha=0.3)
             has_data = True
@@ -403,7 +403,7 @@ class VisualizationManager:
             ax.set_ylim(0, y_max)
             ax.set_xlabel('频率 (Hz)', fontsize=ChartStyle.LABEL_SIZE)
             ax.set_ylabel('Active/Passive 比值 (>1=实验组更大)', fontsize=ChartStyle.LABEL_SIZE)
-            ax.set_title(f'{axis}轴 衰减率', fontsize=ChartStyle.TITLE_SIZE)
+            ax.set_title(f'{axis}轴 衰减率', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
             ax.grid(alpha=0.3)
             
             for band_name, (flo, fhi) in {'1-5Hz': (1, 5), '5-20Hz': (5, 20)}.items():
@@ -430,15 +430,14 @@ class VisualizationManager:
             im1 = ax1.pcolormesh(t, f, 10 * np.log10(exp_spec + 1e-10), 
                                 vmin=-80, vmax=-20, cmap='viridis')
             ax1.set_ylim(0, 50)
-            ax1.set_ylabel('频率 (Hz)', fontsize=12)
-            ax1.set_title('Active Seat - STFT', fontsize=14)
+            ax1.set_ylabel('频率 (Hz)', fontsize=ChartStyle.LABEL_SIZE)
+            ax1.set_title('实验组 - STFT', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
             
             im2 = ax2.pcolormesh(t, f, 10 * np.log10(ctrl_spec + 1e-10),
                                 vmin=-80, vmax=-20, cmap='viridis')
             ax2.set_ylim(0, 50)
             ax2.set_xlabel('时间 (s)', fontsize=ChartStyle.LABEL_SIZE)
             ax2.set_ylabel('频率 (Hz)', fontsize=ChartStyle.LABEL_SIZE)
-            ax1.set_title('主动座椅 - STFT', fontsize=ChartStyle.TITLE_SIZE)
             
             fig.colorbar(im1, ax=ax1, label='Power (dB)')
             fig.colorbar(im2, ax=ax2, label='Power (dB)')
@@ -509,7 +508,7 @@ class VisualizationManager:
         ax.set_theta_direction(-1)
         ax.set_xticks(angles)
         ax.set_xticklabels(bands)
-        ax.set_title('频段衰减率 (%)', fontsize=ChartStyle.TITLE_SIZE)
+        ax.set_title('频段衰减率 (%)', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
         ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1.0))
         ax.grid(True)
         
@@ -533,7 +532,7 @@ class VisualizationManager:
                         color=self.colors['green'], linewidth=1, alpha=0.8)
                 ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
                 ax.set_ylabel(f'{axis} 衰减率 (%)', fontsize=ChartStyle.LABEL_SIZE)
-                ax.set_title(f'{axis}轴 窗口衰减', fontsize=ChartStyle.TITLE_SIZE)
+                ax.set_title(f'{axis}轴 窗口衰减', fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')
                 ax.grid(alpha=0.3)
         
         axes[-1].set_xlabel('时间 (s)', fontsize=ChartStyle.LABEL_SIZE)
@@ -578,9 +577,9 @@ class VisualizationManager:
                 ctrl_vals.append(cv if np.isfinite(cv) else 0.0)
 
             x_pos = np.arange(len(axes_names))
-            bars1 = ax.bar(x_pos - width/2, exp_vals, width, label='Active',
+            bars1 = ax.bar(x_pos - width/2, exp_vals, width, label='实验组',
                           color=self.colors['exp'], edgecolor='white', linewidth=0.5)
-            bars2 = ax.bar(x_pos + width/2, ctrl_vals, width, label='Passive',
+            bars2 = ax.bar(x_pos + width/2, ctrl_vals, width, label='对照组',
                           color=self.colors['ctrl'], edgecolor='white', linewidth=0.5)
 
             ax.set_title(mlabel, fontsize=ChartStyle.TITLE_SIZE, fontweight='bold')

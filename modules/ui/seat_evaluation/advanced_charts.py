@@ -93,7 +93,7 @@ def create_event_timeline(t: np.ndarray, speed: np.ndarray, wheel: np.ndarray,
         wheel = wheel[::ds_every]
 
     # ── 图标题（figure suptitle） ──
-    fig.suptitle(title, fontsize=15, fontweight='bold',
+    fig.suptitle(title, fontsize=10, fontweight='bold',
                  fontfamily=CN_FONT_FAMILY, y=0.97)
 
     # ── 上车速曲线 ──
@@ -118,7 +118,7 @@ def create_event_timeline(t: np.ndarray, speed: np.ndarray, wheel: np.ndarray,
             t1 = t0 + 0.5
         etype = evt.get('event_type', evt.get('type', ''))
         ename = evt.get('event_name', evt.get('name', etype)) or etype or '事件'
-        color = EVENT_COLORS.get(etype, COLORS['red'])
+        color = EVENT_COLORS.get(etype, COLORS['accent'])
 
         # 事件色块只画在事件带区域（不覆盖曲线）
         ax1.axvspan(t0, t1, ymin=event_band_bottom / ax1.get_ylim()[1],
@@ -172,9 +172,32 @@ def create_psd_comparison(channel_data_map: Dict[str, Dict],
     if positions is None:
         paired = []
         for exp_name in exp_imus[:3]:
-            ctrl_name = exp_name.replace('-1', '-2')
-            location = exp_name.split('_')[1] if '_' in exp_name else exp_name
-            paired.append((location, exp_name, ctrl_name if ctrl_name in ctrl_imus else None))
+            # 正确配对: 移除尾部 '-1' 后缀，在 ctrl_imus 中查找对应的 '-2' 通道
+            if exp_name.endswith('-1'):
+                base_name = exp_name[:-2]  # 移除末尾 '-1'
+                # 在 ctrl_imus 中查找以 base_name 开头且以 '-2' 结尾的匹配项
+                ctrl_name = None
+                for ctrl in ctrl_imus:
+                    if ctrl.endswith('-2') and ctrl[:-2] == base_name:
+                        ctrl_name = ctrl
+                        break
+                # 备选: 按 IMU 编号 +1 匹配 (IMU1→IMU2, IMU3→IMU4, ...)
+                if ctrl_name is None:
+                    try:
+                        imu_num = int(exp_name.split('_')[0].replace('IMU', ''))
+                        ctrl_num = imu_num + 1
+                        ctrl_prefix = f'IMU{ctrl_num}_'
+                        for ctrl in ctrl_imus:
+                            if ctrl.startswith(ctrl_prefix) and ctrl.endswith('-2'):
+                                ctrl_name = ctrl
+                                break
+                    except (ValueError, IndexError):
+                        pass
+                location = exp_name.split('_')[1] if '_' in exp_name else exp_name
+                paired.append((location, exp_name, ctrl_name))
+            else:
+                location = exp_name.split('_')[1] if '_' in exp_name else exp_name
+                paired.append((location, exp_name, None))
         positions = paired
 
     valid_positions = [(loc, e, c) for loc, e, c in positions
@@ -252,7 +275,7 @@ def create_psd_comparison(channel_data_map: Dict[str, Dict],
                               fontsize=10, fontfamily=CN_FONT_FAMILY)
             if row == 0:
                 ax.set_title(f'{loc} {ax_name}轴PSD' if n_rows == 1 else f'{loc}',
-                            fontsize=11, fontfamily=CN_FONT_FAMILY)
+                            fontsize=10, fontweight='bold', fontfamily=CN_FONT_FAMILY)
             if row == n_rows - 1:
                 ax.set_xlabel('频率 (Hz)', fontsize=10, fontfamily=CN_FONT_FAMILY)
             ax.grid(True, alpha=0.20, linestyle='-')
@@ -272,8 +295,8 @@ def create_psd_comparison(channel_data_map: Dict[str, Dict],
         main_title = f'座椅各点位 {axes_list[0]}轴 功率谱密度对比'
     else:
         main_title = '座椅各点位 三轴功率谱密度对比'
-    fig.suptitle(main_title, fontsize=15, fontweight='bold',
-                 fontfamily=CN_FONT_FAMILY, y=0.98)
+    fig.suptitle(main_title, fontsize=10, fontweight='bold',
+                     fontfamily=CN_FONT_FAMILY, y=1.0)
 
     # ── 单图例（只在左上角出现一次）──
     axes_grid[0, 0].legend(loc='upper right', frameon=True,
@@ -357,7 +380,7 @@ def create_comparison_radar(comparison_data: Dict[str, Dict],
 
     # ── 6. 标题与图例 ──
     fig.suptitle('实验组 vs 对照组 — 归一化对比 (对照组=1.0)',
-                 fontsize=14, fontweight='bold', fontfamily=CN_FONT_FAMILY, y=0.97)
+                 fontsize=10, fontweight='bold', fontfamily=CN_FONT_FAMILY, y=0.97)
 
     ax.legend(loc='upper right', bbox_to_anchor=(1.25, 1.1),
               frameon=True, prop={'family': CN_FONT_FAMILY, 'size': 10})
@@ -403,7 +426,7 @@ def create_attenuation_bar(comparison_data: Dict[str, Dict],
 
     bar_colors = []
     for v in values:
-        bar_colors.append(COLORS['green'] if v >= 0 else COLORS['red'])
+        bar_colors.append(COLORS['green'] if v >= 0 else COLORS['accent'])
 
     # ── 3. 画布尺寸：每条 ~0.35 inch + 头部 1.2 inch ──
     if figsize is None:
@@ -438,7 +461,7 @@ def create_attenuation_bar(comparison_data: Dict[str, Dict],
 
     # ── 6. 标题（figure suptitle）与图例 ──
     fig.suptitle('实验组 vs 对照组 — 各指标衰减效率',
-                 fontsize=14, fontweight='bold',
+                 fontsize=10, fontweight='bold',
                  fontfamily=CN_FONT_FAMILY, y=0.97)
 
     ax.invert_yaxis()
@@ -446,8 +469,8 @@ def create_attenuation_bar(comparison_data: Dict[str, Dict],
 
     from matplotlib.patches import Patch
     legend_elements = [
-        Patch(facecolor=COLORS['green'], label='Active 更优 (衰减率 > 0)'),
-        Patch(facecolor=COLORS['red'], label='Passive 更优 (衰减率 < 0)'),
+        Patch(facecolor=COLORS['green'], label='实验组更优 (衰减率 > 0)'),
+        Patch(facecolor=COLORS['accent'], label='对照组更优 (衰减率 < 0)'),
     ]
     ax.legend(handles=legend_elements, loc='lower right',
               prop={'family': CN_FONT_FAMILY, 'size': 10})
@@ -523,7 +546,7 @@ def create_acceleration_waveform(channel_data_map: Dict[str, Dict],
         ax.tick_params(axis='both', labelsize=9)
 
     # ── 标题与图例 ──
-    fig.suptitle('三轴加速度时域波形 (实验组)', fontsize=15,
+    fig.suptitle('三轴加速度时域波形 (实验组)', fontsize=10,
                  fontweight='bold', fontfamily=CN_FONT_FAMILY, y=0.97)
 
     axes[-1].set_xlabel('时间 (s)', fontsize=11, fontfamily=CN_FONT_FAMILY)
@@ -621,7 +644,7 @@ def create_srs_comparison(channel_data_map: Dict[str, Dict],
                       linestyle=ls['ls'], linewidth=ls['lw'],
                       label=lab)
 
-        ax.set_title(f'{ax_name}轴 SRS', fontsize=11, fontfamily=CN_FONT_FAMILY)
+        ax.set_title(f'{ax_name}轴 SRS', fontsize=10, fontweight='bold', fontfamily=CN_FONT_FAMILY)
         ax.set_xlabel('频率 (Hz)', fontsize=10, fontfamily=CN_FONT_FAMILY)
         if col == 0:
             ax.set_ylabel(f'SRS (g)', fontsize=10, fontfamily=CN_FONT_FAMILY)
@@ -635,7 +658,7 @@ def create_srs_comparison(channel_data_map: Dict[str, Dict],
     title = f'冲击响应谱(SRS)对比 — Q=10'
     if location_name:
         title += f'  |  {location_name}'
-    fig.suptitle(title, fontsize=15, fontweight='bold',
+    fig.suptitle(title, fontsize=10, fontweight='bold',
                  fontfamily=CN_FONT_FAMILY, y=0.98)
 
     fig.subplots_adjust(top=0.88, bottom=0.12, left=0.07, right=0.98, wspace=0.28)

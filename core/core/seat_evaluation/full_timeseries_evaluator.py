@@ -116,11 +116,25 @@ class FullTimeseriesEvaluator:
         exp_keys = list(self.exp.keys())
         ctrl_keys = list(self.ctrl.keys())
         if exp_keys and ctrl_keys:
-            t_exp = set(round(t, 4) for t in self.exp[exp_keys[0]][:, 0])
-            t_ctrl = set(round(t, 4) for t in self.ctrl[ctrl_keys[0]][:, 0])
-            self.common_t = sorted(t_exp & t_ctrl)
+            # 优先取所有 IMU 时间戳的交集，确保多部位数据都能对齐
+            all_t_sets = []
+            for imu_data in list(self.exp.values()) + list(self.ctrl.values()):
+                all_t_sets.append(set(round(t, 4) for t in imu_data[:, 0]))
+            common_all = sorted(set.intersection(*all_t_sets)) if all_t_sets else []
+            # 如果全量交集太小（如不同IMU时间范围不一致），回退到首对IMU交集
+            if len(common_all) >= 100:
+                self.common_t = common_all
+                logger.info(f"  对齐时间: {len(self.common_t)}点（全IMU交集）")
+            else:
+                t_exp = set(round(t, 4) for t in self.exp[exp_keys[0]][:, 0])
+                t_ctrl = set(round(t, 4) for t in self.ctrl[ctrl_keys[0]][:, 0])
+                self.common_t = sorted(t_exp & t_ctrl)
+                logger.info(f"  对齐时间: {len(self.common_t)}点（首对IMU交集，全量交集仅{len(common_all)}点）")
             self.fs = 1.0 / (self.common_t[1] - self.common_t[0]) if len(self.common_t) > 1 else self.cfg['fs']
-            logger.info(f"  对齐时间: {len(self.common_t)}点, fs≈{self.fs:.0f}Hz, {self.common_t[-1]-self.common_t[0]:.1f}s")
+            if self.common_t:
+                logger.info(f"  fs≈{self.fs:.0f}Hz, {self.common_t[-1]-self.common_t[0]:.1f}s")
+            else:
+                logger.warning("  ⚠️ 公共时间轴为空！")
         else:
             logger.warning("  ⚠️ 缺少实验组或对照组!")
 
@@ -178,7 +192,7 @@ class FullTimeseriesEvaluator:
         self.load_from_dataframe(df)
 
     def get_aligned(self, imu_name: str) -> Optional[np.ndarray]:
-        """返回对齐到common_t的数据（优先使用缓存）"""
+        """返回对齐到common_t的数据（优先使用缓存，最近邻匹配防时间戳偏差）"""
         if hasattr(self, '_aligned_cache') and imu_name in self._aligned_cache:
             return self._aligned_cache[imu_name]
         source = self.exp.get(imu_name)
@@ -186,11 +200,16 @@ class FullTimeseriesEvaluator:
             source = self.ctrl.get(imu_name)
         if source is None:
             return None
-        tmap = {round(row[0], 4): row[1:] for row in source}
         n_data_cols = source.shape[1] - 1
+        src_times = source[:, 0]
+        # 最近邻匹配: 在 1ms 容差内找最近的时间戳
         result = []
         for t in self.common_t:
-            result.append([t] + list(tmap.get(t, [np.nan] * n_data_cols)))
+            idx = int(np.argmin(np.abs(src_times - t)))
+            if abs(src_times[idx] - t) < 0.001:
+                result.append([t] + list(source[idx, 1:]))
+            else:
+                result.append([t] + [np.nan] * n_data_cols)
         return np.array(result)
 
     def detect_events(self):
@@ -635,50 +654,91 @@ class FullTimeseriesEvaluator:
         return df_ev
 
     def spectrum_analysis(self) -> Dict[str, Any]:
-        """频谱分析 + 频段衰减 + 相干性"""
+        """频谱分析 + 频段衰减 + 相干性（按身体部位匹配 IMU 对）"""
         logger.info("[5/10] 频谱分析...")
-        exp_keys = list(self.exp.keys())
-        ctrl_keys = list(self.ctrl.keys())
-        if not exp_keys or not ctrl_keys:
+        if not self.exp or not self.ctrl:
             logger.warning("  缺少实验组或对照组数据")
             return {}
-            
-        exp_head = self.get_aligned(exp_keys[0])
-        ctrl_head = self.get_aligned(ctrl_keys[0])
+
+        # ── 按身体部位提取 IMU 名称后缀（去除 -{n} 实验/对照编号）──
+        import re
+        def _extract_body(imu_name: str) -> str:
+            parts = imu_name.split('_', 1)
+            body = parts[1] if len(parts) > 1 else imu_name
+            return re.sub(r'-\d+$', '', body)
+
+        # 构建身体部位 → (exp_key, ctrl_key) 映射
+        exp_body_map = {_extract_body(k): k for k in self.exp.keys()}
+        ctrl_body_map = {_extract_body(k): k for k in self.ctrl.keys()}
+        common_bodies = sorted(set(exp_body_map.keys()) & set(ctrl_body_map.keys()))
+
+        if not common_bodies:
+            logger.warning("  未找到匹配的身体部位 IMU 对")
+            return {}
+
+        # 身体部位中文名映射
+        body_cn = {
+            'Head': '头部', 'head': '头部', '头部眉心': '头部眉心',
+            'Chest': '胸剑突', 'Sternum': '胸剑突', 'sternum': '胸剑突',
+            '胸骨剑突': '胸骨剑突', '躯干T8': '躯干T8',
+            'SeatR': '座垫R点', 'Seat_R': '座垫R点', 'seat_r': '座垫R点', '座垫R点': '座垫R点',
+            'SeatBottom': '座椅底部', 'Seat_Bottom': '座椅底部', 'seat_bottom': '座椅底部', '座椅底部': '座椅底部',
+        }
+
         nfft = self.cfg['nfft_welch']
+        all_spec = {}
 
-        spec = {}
-        for axis_idx, axis in enumerate(['Ax', 'Ay', 'Az']):
-            col = axis_idx + 1
-            evals = exp_head[:, col]
-            cvals = ctrl_head[:, col]
-            valid = ~np.isnan(evals) & ~np.isnan(cvals)
+        for body in common_bodies:
+            exp_key = exp_body_map[body]
+            ctrl_key = ctrl_body_map[body]
+            exp_data = self.get_aligned(exp_key)
+            ctrl_data = self.get_aligned(ctrl_key)
+            if exp_data is None or ctrl_data is None:
+                continue
 
-            f_e, Pxx_e = signal.welch(evals[valid], fs=self.fs, nperseg=nfft)
-            f_c, Pxx_c = signal.welch(cvals[valid], fs=self.fs, nperseg=nfft)
-            f_coh, coh = signal.coherence(evals[valid], cvals[valid], fs=self.fs, nperseg=nfft)
+            spec = {}
+            for axis_idx, axis in enumerate(['Ax', 'Ay', 'Az']):
+                col = axis_idx + 1
+                evals = exp_data[:, col]
+                cvals = ctrl_data[:, col]
+                valid = ~np.isnan(evals) & ~np.isnan(cvals)
 
-            mask = (f_e >= 0.1) & (f_e <= 80)
-            ratio = np.divide(Pxx_e[mask], Pxx_c[mask],
-                              out=np.ones_like(Pxx_e[mask]) * np.nan,
-                              where=Pxx_c[mask] > 1e-15)
+                if valid.sum() < nfft // 2:
+                    logger.warning(f"  {body}/{axis}: 有效数据不足 ({valid.sum()} < {nfft//2})，跳过")
+                    continue
 
-            bands_atten = {}
-            for bname, (flo, fhi) in self.cfg['freq_bands'].items():
-                bm = (f_e[mask] >= flo) & (f_e[mask] <= fhi)
-                if bm.sum() > 0:
-                    bands_atten[bname] = (1 - np.nanmean(ratio[bm])) * 100
+                f_e, Pxx_e = signal.welch(evals[valid], fs=self.fs, nperseg=nfft)
+                f_c, Pxx_c = signal.welch(cvals[valid], fs=self.fs, nperseg=nfft)
+                f_coh, coh = signal.coherence(evals[valid], cvals[valid], fs=self.fs, nperseg=nfft)
 
-            spec[axis] = {
-                'freq': f_e[mask], 'exp_psd': Pxx_e[mask],
-                'ctrl_psd': Pxx_c[mask], 'ratio': ratio,
-                'coherence': coh[mask] if len(coh) == len(mask) else coh[:sum(mask)],
-                'bands_atten': bands_atten
-            }
-            logger.info(f"  {axis}: " + ", ".join([f"{b}={v:.1f}%" for b, v in bands_atten.items() if 'Hz' in b]))
+                mask = (f_e >= 0.1) & (f_e <= 80)
+                ratio = np.divide(Pxx_e[mask], Pxx_c[mask],
+                                  out=np.ones_like(Pxx_e[mask]) * np.nan,
+                                  where=Pxx_c[mask] > 1e-15)
 
-        self.results['spectrum'] = spec
-        return spec
+                bands_atten = {}
+                for bname, (flo, fhi) in self.cfg['freq_bands'].items():
+                    bm = (f_e[mask] >= flo) & (f_e[mask] <= fhi)
+                    if bm.sum() > 0:
+                        bands_atten[bname] = (1 - np.nanmean(ratio[bm])) * 100
+
+                spec[axis] = {
+                    'freq': f_e[mask], 'exp_psd': Pxx_e[mask],
+                    'ctrl_psd': Pxx_c[mask], 'ratio': ratio,
+                    'coherence': coh[mask] if len(coh) == len(mask) else coh[:sum(mask)],
+                    'bands_atten': bands_atten
+                }
+
+            # 使用身体部位英文名作为 key（兼容后续映射）
+            all_spec[body] = spec
+            cn = body_cn.get(body, body)
+            axes_done = ', '.join(spec.keys())
+            logger.info(f"  [{cn}] {axes_done}: " + ", ".join(
+                [f"{b}={v:.1f}%" for b, v in spec.get('Ay', spec.get('Ax', {})).get('bands_atten', {}).items() if 'Hz' in b]
+            ))
+
+        self.results['spectrum'] = all_spec
+        return all_spec
 
     def stft_analysis(self) -> Dict[str, Any]:
         """短时傅里叶变换时频分析"""
@@ -754,47 +814,73 @@ class FullTimeseriesEvaluator:
         return stats_results
 
     def comprehensive_metrics(self) -> Dict[str, float]:
-        """综合评价指标 (VDV, Crest Factor, SEAT等效, 传递系数)"""
+        """综合评价指标 (VDV, Crest Factor, SEAT等效, 传递系数) — 按身体部位匹配 IMU 对"""
         logger.info("[8/10] 综合评价指标...")
-        exp_keys = list(self.exp.keys())
-        ctrl_keys = list(self.ctrl.keys())
-        if not exp_keys or not ctrl_keys:
+        if not self.exp or not self.ctrl:
             logger.warning("  缺少实验组或对照组数据")
             return {}
-            
-        exp_head = self.get_aligned(exp_keys[0])
-        ctrl_head = self.get_aligned(ctrl_keys[0])
-        exp_sternum = self._get_sternum()
 
-        metrics = {}
-        for label, data in [('exp', exp_head), ('ctrl', ctrl_head),
-                             ('sternum', exp_sternum) if exp_sternum is not None else ('_skip', None)]:
-            if data is None:
+        # ── 按身体部位提取 IMU 名称后缀（去除 -{n} 实验/对照编号）──
+        import re
+        def _extract_body(imu_name: str) -> str:
+            parts = imu_name.split('_', 1)
+            body = parts[1] if len(parts) > 1 else imu_name
+            return re.sub(r'-\d+$', '', body)
+
+        exp_body_map = {_extract_body(k): k for k in self.exp.keys()}
+        ctrl_body_map = {_extract_body(k): k for k in self.ctrl.keys()}
+        common_bodies = sorted(set(exp_body_map.keys()) & set(ctrl_body_map.keys()))
+
+        if not common_bodies:
+            logger.warning("  未找到匹配的身体部位 IMU 对")
+            return {}
+
+        body_cn = {
+            'Head': '头部', 'head': '头部', '头部眉心': '头部眉心',
+            'Chest': '胸剑突', 'Sternum': '胸剑突', 'sternum': '胸剑突',
+            '胸骨剑突': '胸骨剑突', '躯干T8': '躯干T8',
+            'SeatR': '座垫R点', 'Seat_R': '座垫R点', 'seat_r': '座垫R点', '座垫R点': '座垫R点',
+            'SeatBottom': '座椅底部', 'Seat_Bottom': '座椅底部', 'seat_bottom': '座椅底部', '座椅底部': '座椅底部',
+        }
+
+        all_metrics = {}
+        for body in common_bodies:
+            exp_key = exp_body_map[body]
+            ctrl_key = ctrl_body_map[body]
+            exp_data = self.get_aligned(exp_key)
+            ctrl_data = self.get_aligned(ctrl_key)
+            if exp_data is None or ctrl_data is None:
                 continue
-            for axis_idx, axis in enumerate(['Ax', 'Ay', 'Az']):
-                col = axis_idx + 1
-                vals = data[:, col]
-                valid = vals[~np.isnan(vals)]
-                if len(valid) < 100:
-                    continue
-                prefix = f'{label}_{axis}'
-                metrics[f'{prefix}_RMS'] = np.sqrt(np.mean(valid**2))
-                metrics[f'{prefix}_Peak'] = np.max(np.abs(valid))
-                metrics[f'{prefix}_CrestFactor'] = metrics[f'{prefix}_Peak'] / metrics[f'{prefix}_RMS'] if metrics[f'{prefix}_RMS'] > 1e-6 else np.nan
-                metrics[f'{prefix}_VDV'] = (np.sum(valid**4) / self.fs) ** 0.25
-                metrics[f'{prefix}_Skewness'] = stats.skew(valid)
-                metrics[f'{prefix}_Kurtosis'] = stats.kurtosis(valid, fisher=True)
-                metrics[f'{prefix}_MAV'] = np.mean(np.abs(valid))
-                metrics[f'{prefix}_ImpulseFactor'] = metrics[f'{prefix}_Peak'] / metrics[f'{prefix}_MAV'] if metrics[f'{prefix}_MAV'] > 1e-6 else np.nan
 
-        for label, data in [('exp', exp_head), ('ctrl', ctrl_head)]:
-            total = np.sqrt(data[:, 1]**2 + data[:, 2]**2 + data[:, 3]**2)
-            valid = total[~np.isnan(total)]
-            metrics[f'{label}_total_VDV'] = (np.sum(valid**4) / self.fs) ** 0.25
+            metrics = {}
+            for label, data in [('exp', exp_data), ('ctrl', ctrl_data)]:
+                for axis_idx, axis in enumerate(['Ax', 'Ay', 'Az']):
+                    col = axis_idx + 1
+                    vals = data[:, col]
+                    valid = vals[~np.isnan(vals)]
+                    if len(valid) < 100:
+                        continue
+                    prefix = f'{label}_{axis}'
+                    metrics[f'{prefix}_RMS'] = np.sqrt(np.mean(valid**2))
+                    metrics[f'{prefix}_Peak'] = np.max(np.abs(valid))
+                    metrics[f'{prefix}_CrestFactor'] = metrics[f'{prefix}_Peak'] / metrics[f'{prefix}_RMS'] if metrics[f'{prefix}_RMS'] > 1e-6 else np.nan
+                    metrics[f'{prefix}_VDV'] = (np.sum(valid**4) / self.fs) ** 0.25
+                    metrics[f'{prefix}_Skewness'] = stats.skew(valid)
+                    metrics[f'{prefix}_Kurtosis'] = stats.kurtosis(valid, fisher=True)
+                    metrics[f'{prefix}_MAV'] = np.mean(np.abs(valid))
+                    metrics[f'{prefix}_ImpulseFactor'] = metrics[f'{prefix}_Peak'] / metrics[f'{prefix}_MAV'] if metrics[f'{prefix}_MAV'] > 1e-6 else np.nan
 
-        self.results['metrics'] = metrics
-        logger.info(f"  计算 {len(metrics)} 个指标")
-        return metrics
+            for label, data in [('exp', exp_data), ('ctrl', ctrl_data)]:
+                total = np.sqrt(data[:, 1]**2 + data[:, 2]**2 + data[:, 3]**2)
+                valid = total[~np.isnan(total)]
+                metrics[f'{label}_total_VDV'] = (np.sum(valid**4) / self.fs) ** 0.25
+
+            all_metrics[body] = metrics
+            cn = body_cn.get(body, body)
+            logger.info(f"  [{cn}] 计算 {len(metrics)} 个指标")
+
+        self.results['metrics'] = all_metrics
+        return all_metrics
 
     def run_all(self) -> Dict[str, Any]:
         """执行全部分析流程"""

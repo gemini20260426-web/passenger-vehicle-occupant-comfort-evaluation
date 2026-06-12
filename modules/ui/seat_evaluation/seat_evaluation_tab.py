@@ -26,6 +26,7 @@ from core.core.analysis.clearable_registry import ClearableResource, ClearableRe
 from .event_manager_panel import EventManagerPanel
 from .instance_view_panel import InstanceViewPanel
 from .statistics_analysis_tab import StatisticsAnalysisTab
+from .statistics_analysis.tab_main import StatisticsAnalysisTab as EnhancedStatisticsAnalysisTab
 from .shaker_main_panel import ShakerMainPanel
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,9 @@ class SeatEvaluationTab(QWidget, ClearableResource):
         self._statistics_tab.set_type_labels(self._type_labels)
         self._statistics_tab.set_event_manager(self._event_manager)
         self.main_tabs.addTab(self._statistics_tab, "📊 全量统计")
+
+        self._enhanced_statistics_tab = EnhancedStatisticsAnalysisTab(config_manager=self.config_manager)
+        self.main_tabs.addTab(self._enhanced_statistics_tab, "📊 增强全量统计")
 
         self._shaker_tab = ShakerMainPanel()
         self.main_tabs.addTab(self._shaker_tab, "🔬 台架实验")
@@ -327,6 +331,8 @@ class SeatEvaluationTab(QWidget, ClearableResource):
             self._instance_view.clear()
         if hasattr(self, '_statistics_tab') and self._statistics_tab:
             self._statistics_tab.clear_all()
+        if hasattr(self, '_enhanced_statistics_tab') and self._enhanced_statistics_tab:
+            self._enhanced_statistics_tab.clear_data()
         self._evaluation_mode = 'incremental'
         self._is_evaluating = False
         self._pending_eval_event = None
